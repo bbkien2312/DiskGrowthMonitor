@@ -1,0 +1,26 @@
+Disk Growth Monitor 1.0.0 - Windows x64
+
+Private Python/Qt runtime is bundled under .venv.
+No global Python, pip, System PATH, Task Scheduler job or Windows Service is installed.
+Choose an empty folder, preferably on D: to avoid consuming C: space.
+The editable source folder must not be overwritten by this installer.
+
+GUI: DiskGrowthMonitor.exe
+CLI: dgm.exe --help
+Admin operations request Windows UAC individually; GUI normally stays unelevated.
+
+WizTree is proprietary and NOT included. Select your installed WizTree executable
+in the System tab. WinDirStat/gdu can be downloaded explicitly into .venv/tools.
+No scan, cleanup or automatic task starts during installation.
+
+Upgrades preserve data and logs. Close the application before upgrading.
+Before uninstalling, stop scans and remove any Task/Service using the application.
+Uninstall preserves scan history, logs and tools downloaded after installation.
+Review retained files yourself; the uninstaller does not erase the whole folder.
+
+This build is not code-signed. Windows may show an unknown-publisher/SmartScreen warning.
+Only run installers from the official project Release. Compare SHA256SUMS.txt.
+
+Portable mode: installer.exe /PORTABLE=1
+This skips Start menu/Desktop shortcuts and the Add/Remove Programs entry.
+It still includes an uninstaller, which preserves user-created data and logs.

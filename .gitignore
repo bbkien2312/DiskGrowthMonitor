@@ -1,0 +1,17 @@
+.venv/
+.runtime/
+data/
+logs/
+dist/
+build/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+*.spec
+!packaging/*.spec
+*.log
+.env
+.env.*
+*.pem
+*.key
+

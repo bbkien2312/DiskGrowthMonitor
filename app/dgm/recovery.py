@@ -1,0 +1,56 @@
+"""Finish an explicitly verified imported snapshot without touching filesystem data."""
+import json
+import logging
+import threading
+import time
+from .scanner import ScanLock
+from .store import Store
+from .platform_ops import ProcessCancelled
+
+
+def rebuild(scan_id, confirmed=False, stop=None, notify=None):
+    stop = stop or threading.Event(); external_notify = notify or (lambda *a: None)
+    if stop.is_set(): raise ProcessCancelled()
+    def notify(event,data):
+        if event=="info": logging.getLogger("dgm").info("RECOVERY %s %s",scan_id,data["message"])
+        external_notify(event,data)
+    with ScanLock(stop) as lock:
+        store = Store(); lock.interrupt = store.db.interrupt
+        try:
+            source = store.scan(scan_id); saved = json.loads(source["summary"] or "{}")
+            if not saved.get("import_complete") and not confirmed:
+                raise ValueError("Chưa có bằng chứng nhập xong. Phải xác nhận dữ liệu đã nhập đầy đủ trước khi phục hồi.")
+            totals = store.totals(scan_id)
+            if not totals["files"] or any(saved.get(k) is not None and totals[k]!=saved[k] for k in ("files","folders")):
+                raise ValueError("Số file/thư mục nhập không khớp; giữ nguyên lượt cũ, không phục hồi như một kết quả đầy đủ.")
+            p = json.loads(source["config"])
+            new_id = store.begin_scan(source["profile"], source["scope"], source["engine"], p)
+            summary = {**saved, "source_scan": scan_id, "captured_at": source["started"], "recovered": True,
+                       "import_complete": False, "phase": "copying", "coverage_unverified": True,
+                       "note": "Phục hồi từ metadata đã nhập; không quét mới, không biết dung lượng trống tại thời điểm cũ nếu chưa được lưu."}
+            store.record_stage(new_id, summary); started = time.monotonic()
+            store.db.set_progress_handler(lambda: int(stop.is_set()), 1000)
+            try:
+                notify("started",{"scan_id":new_id,"engine":source["engine"]})
+                notify("info",{"message":"Đang tạo tham chiếu metadata phục hồi, không quét file..."})
+                store.db.execute("UPDATE scans SET started=? WHERE id=?", (source["started"], new_id))
+                store.db.execute("INSERT INTO members SELECT ?,path_id,revision_id FROM members WHERE scan_id=?", (new_id, scan_id)); store.db.commit()
+                summary["import_complete"]=True;summary["phase"]="aggregating";store.record_stage(new_id,summary)
+                store.aggregate(new_id, stop=stop, notify=notify)
+                summary.update(store.totals(new_id)); summary["phase"] = "partial"
+                summary["errors"] = store.db.execute("SELECT COUNT(*) FROM errors WHERE scan_id=?", (scan_id,)).fetchone()[0]
+                store.db.execute("INSERT INTO errors SELECT ?,path,message FROM errors WHERE scan_id=?", (new_id, scan_id))
+                summary["seconds"] = round(time.monotonic() - started, 3)
+                store.db.set_progress_handler(None, 0)
+                store.finish(new_id, "partial", summary)
+                logging.getLogger("dgm").info("RECOVERY source=%s new=%s seconds=%s", scan_id, new_id, summary["seconds"])
+                return {"scan_id": new_id, "status": "partial", **summary}
+            except BaseException as exc:
+                store.db.set_progress_handler(None, 0); store.db.rollback()
+                cancelled=stop.is_set() or isinstance(exc,(ProcessCancelled,KeyboardInterrupt))
+                status="cancelled" if cancelled else "failed";summary["phase"]=status;summary["seconds"]=round(time.monotonic()-started,3)
+                store.finish(new_id,status,summary)
+                if cancelled:return {"scan_id":new_id,"status":status,**summary}
+                raise
+        finally:
+            lock.interrupt = None; store.close()
