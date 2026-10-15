@@ -59,7 +59,7 @@ class Worker(QThread):
         try:
             self.result.emit(self.function(self))
         except ProcessCancelled as exc:
-            self.event.emit('cancelled',{'message':str(exc)})
+            self.event.emit('cancelled',{'message':str(exc) or 'Đã dừng tác vụ theo yêu cầu.'})
         except Exception as exc:
             import traceback
             if self.stop.is_set():
@@ -95,6 +95,7 @@ class Window(QMainWindow):
         self.background_panels = []
         self.background_state = {}
         self.background_action_busy = False
+        self.realtime_boxes = []
         self.current_plan = None
         self.rows = []
         self.offset = 0
@@ -136,6 +137,8 @@ class Window(QMainWindow):
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(self.poll_background)
         self.poll_timer.start(30000)
+        self.realtime_timer = QTimer(self); self.realtime_timer.timeout.connect(self.poll_realtime)
+        self.realtime_timer.start(3000)
         self.scan_state_timer = QTimer(self); self.scan_state_timer.timeout.connect(self.poll_scan_state); self.scan_state_timer.start(500)
         self.last_scan_id = self.latest_id()
         self.last_scan_signature = self.latest_signature()
@@ -226,13 +229,13 @@ class Window(QMainWindow):
         for key, (table, widths) in self.column_specs.items():
             header = table.header() if isinstance(table, QTreeWidget) else table.horizontalHeader()
             self.preferences.set("columns/" + key, [header.sectionSize(i) for i in range(len(widths))])
-        self.preferences.set("splitter/scan-v2", self.scan_splitter.sizes())
+        self.preferences.set("splitter/scan-v3", self.scan_splitter.sizes())
 
     def reset_layout(self):
         for key, (table, widths) in self.column_specs.items():
             self.preferences.set("columns/" + key, widths)
             interactive_columns(table, widths, self.preferences, key)
-        self.scan_splitter.setSizes([340, 1080])
+        self.scan_splitter.setSizes([sum(self.tree.default_widths())+8, 850]); self.tree.fit_columns()
         self.status.setText("Đã khôi phục chiều rộng cột mặc định.")
 
     def show_text(self, value, title="Kết quả"):
@@ -301,6 +304,7 @@ class Window(QMainWindow):
         root_row.addWidget(QLabel("Phạm vi")); root_row.addWidget(self.roots)
         self.button("Thêm folder", self.pick_root, root_row)
         self.scan_options_toggle = QToolButton(); self.scan_options_toggle.setCheckable(True)
+        self.scan_options_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.scan_options_toggle.setToolTip("Hiện/ẩn công cụ quét, bảo vệ Chrome/Edge, MFT, loại trừ và ngưỡng hiển thị.")
         root_row.addWidget(self.scan_options_toggle)
         layout.addLayout(root_row)
@@ -311,14 +315,15 @@ class Window(QMainWindow):
         row2.addWidget(QLabel("File lớn hơn")); row2.addWidget(self.threshold)
         self.threshold.setToolTip("Chỉ lọc file trong bảng. Vẫn lưu metadata file nhỏ để tính tổng thư mục và phát hiện file tăng vượt ngưỡng.")
         options_layout.addLayout(row2)
-        self.help_box(options_layout, "scan", "Cấu hình quét lưu phạm vi/công cụ/loại trừ/ngưỡng. Lưu cấu hình để lịch chạy dùng lựa chọn mới; Quét ngay chỉ dùng lựa chọn trên màn hình. WizTree/MFT đọc metadata toàn ổ nên không đáp ứng cấm đọc Chrome/Edge. Giữ bảo vệ thì chọn native. Ngưỡng 10 MB chỉ lọc bảng file, không bỏ dung lượng file nhỏ khỏi tổng thư mục.")
+        scan_help=self.help_box(options_layout, "scan", "Cấu hình quét lưu phạm vi/công cụ/loại trừ/ngưỡng. Lưu cấu hình để lịch chạy dùng lựa chọn mới; Quét ngay chỉ dùng lựa chọn trên màn hình. WizTree/MFT đọc metadata toàn ổ nên không đáp ứng cấm đọc Chrome/Edge. Giữ bảo vệ thì chọn native. Ngưỡng 10 MB chỉ lọc bảng file, không bỏ dung lượng file nhỏ khỏi tổng thư mục.")
+        toolrow.addWidget(scan_help.toggle)
         layout.addWidget(self.scan_options)
         self.configuration_scroll = QScrollArea(); self.configuration_scroll.setWidgetResizable(True)
         self.configuration_scroll.setWidget(configuration); self.configuration_scroll.setStyleSheet("QScrollArea{border:0;}")
         outer_layout.addWidget(self.configuration_scroll)
         self.scan_options_toggle.toggled.connect(self.toggle_scan_options)
         self.help_boxes["profile"].toggle.toggled.connect(lambda _: self.toggle_scan_options(self.scan_options_toggle.isChecked()))
-        expanded = bool(self.preferences.values.get("scan/options", False))
+        expanded = bool(self.preferences.values.get("scan/options-v3", True))
         self.scan_options_toggle.setChecked(expanded); self.toggle_scan_options(expanded)
         layout = outer_layout
         actions = QHBoxLayout()
@@ -346,12 +351,13 @@ class Window(QMainWindow):
 
     def toggle_scan_options(self, expanded):
         self.scan_options.setVisible(expanded)
-        self.scan_options_toggle.setText("v Tùy chọn quét" if expanded else "> Tùy chọn quét")
-        height = 211 if expanded else 112
+        self.scan_options_toggle.setText("Tùy chọn quét")
+        self.scan_options_toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        height = 185 if expanded else 112
         if self.help_boxes["profile"].toggle.isChecked():
             height += 55
         self.configuration_scroll.setFixedHeight(min(300, height))
-        self.preferences.set("scan/options", expanded)
+        self.preferences.set("scan/options-v3", expanded)
 
     def refresh_profiles(self):
         current = self.profile_combo.currentText()
@@ -580,6 +586,8 @@ class Window(QMainWindow):
 
     def make_system(self):
         layout = self.add_tab("Hệ thống")
+        from .update_ui import AppUpdatePanel
+        self.app_update_panel=AppUpdatePanel(self);layout.addWidget(self.app_update_panel)
         row = QHBoxLayout()
         self.button("Làm mới phiên bản / môi trường", self.doctor, row)
         self.update_all_button = self.button("Kiểm tra cập nhật tất cả", lambda: self.check_updates(), row)
@@ -866,11 +874,13 @@ class Window(QMainWindow):
         self.times.setEnabled(mode in ("daily", "weekly")); self.weekdays.setEnabled(mode == "weekly")
 
     def make_background_controls(self, layout):
+        box=QGroupBox('Trạng thái và điều khiển chạy nền'); group=QVBoxLayout(box)
         row = QHBoxLayout()
         choice = QComboBox(); choice.addItem("Task Scheduler", "task"); choice.addItem("Windows Service (Admin)", "service")
         choice.setCurrentIndex(1 if self.preferences.values.get("background/kind") == "service" else 0)
         row.addWidget(QLabel("Bộ chạy nền")); row.addWidget(choice)
-        label = QLabel("Chưa kiểm tra"); row.addWidget(label, 1)
+        label = QLabel("Chưa kiểm tra"); label.setWordWrap(True)
+        row.addStretch()
         buttons = {}
         for action, text in [("install", "Cài đặt"), ("enable", "Bật"), ("disable", "Tắt"), ("remove", "Gỡ")]:
             buttons[action] = self.button(text, lambda a=action, c=choice: self.background_control(c.currentData(), a), row)
@@ -878,10 +888,30 @@ class Window(QMainWindow):
         buttons["disable"].setToolTip("Ngừng chạy lịch nhưng giữ đăng ký/cấu hình. Khác với Gỡ.")
         buttons["remove"].setToolTip("Bỏ đăng ký bộ chạy nền. Không xóa lịch, snapshot, cấu hình hay dữ liệu đã quét.")
         self.button("Trạng thái", self.refresh_background, row)
-        layout.addLayout(row)
+        manager=self.button('Mở quản lý Windows',lambda c=choice:self.open_background_manager(c.currentData()),row)
+        manager.setToolTip('Mở Task Scheduler (DiskGrowthMonitor-Local) hoặc Services (DiskGrowthMonitor). Không cài/bật/chạy dịch vụ.')
+        realtime=QCheckBox('Realtime trạng thái'); realtime.setChecked(self.preferences.values.get('background/realtime',True))
+        realtime.setToolTip('Tự kiểm tra trạng thái Task/Service mỗi 3 giây khi hiện cửa sổ; không quét file/ổ đĩa.')
+        realtime.toggled.connect(self.set_realtime);self.realtime_boxes.append(realtime);row.addWidget(realtime)
+        group.addLayout(row);group.addWidget(label);layout.addWidget(box)
         self.background_panels.append((choice, label, buttons))
         choice.currentIndexChanged.connect(lambda *_: self.background_selection_changed(choice.currentData()))
         return row
+
+    def open_background_manager(self, kind):
+        from .background import open_manager
+        try: open_manager(kind)
+        except Exception as exc: self.fail(str(exc))
+
+    def set_realtime(self, enabled):
+        self.preferences.set('background/realtime',enabled)
+        for box in self.realtime_boxes:
+            box.blockSignals(True);box.setChecked(enabled);box.blockSignals(False)
+        if enabled:self.refresh_background()
+
+    def poll_realtime(self):
+        self.realtime_timer.setInterval(15000 if self.isMinimized() or not self.isVisible() else 3000)
+        if self.preferences.values.get('background/realtime',True): self.refresh_background()
 
     def background_selection_changed(self, kind):
         self.preferences.set("background/kind", kind)
@@ -907,29 +937,34 @@ class Window(QMainWindow):
             installed, enabled = state.get("installed"), state.get("enabled")
             running = state.get("running", False)
             text = "Không đọc được trạng thái" if state.get("error") else "Chưa đăng ký" if installed is False else "Đang kiểm tra" if installed is None else "Đã đăng ký • " + ("Đã bật" if enabled else "Đã tắt" if enabled is False else "Chưa rõ bật/tắt")
-            if combo.currentData() == "service" and installed:
+            if installed:
                 text += " • " + ("Đang chạy" if running else "Đã dừng")
             if combo.currentData() == "task" and installed:
                 text += " • " + ("Quyền cao nhất" if state.get("run_level") == "HighestAvailable" else "Quyền thông thường")
-            label.setText(text); label.setToolTip(state.get("error", text))
+            if installed:
+                from .installation import verified_background_owner
+                owned=state.get('owned',verified_background_owner(combo.currentData(),state))
+                text += ' • Bản app này' if owned else ' • Chưa xác minh chủ sở hữu' if state.get('owner_status')=='unknown' else ' • Thuộc bản app khác'
+            else: owned=True
+            checked=self.background_state.get('checked_at')
+            if checked: text += ' • Kiểm tra: '+local_time(checked)
+            paths=[a.get('path','')+' '+a.get('arguments','') for a in state.get('actions',[])]
+            if state.get('binary_path'):paths.append(state['binary_path'])
+            upcoming=self.background_state.get('schedules',{}).get('next_run')
+            if upcoming:text += ' • Lịch tiếp: '+local_time(upcoming)
+            label.setText(text); label.setToolTip(state.get('error') or text+'\n'+'\n'.join(paths))
             available = not self.background_action_busy and not self.admin_busy
             buttons["install"].setEnabled(available and installed is False)
-            buttons["enable"].setEnabled(available and installed is True and (enabled is False or (combo.currentData() == "service" and not running)))
-            buttons["disable"].setEnabled(available and installed is True and (enabled is not False or running))
-            buttons["remove"].setEnabled(available and installed is True)
+            buttons["enable"].setEnabled(available and owned and installed is True and (enabled is False or (combo.currentData() == "service" and not running)))
+            buttons["disable"].setEnabled(available and owned and installed is True and (enabled is not False or running))
+            buttons["remove"].setEnabled(available and owned and installed is True)
         for kind, title in [("task", "Task Scheduler"), ("service", "Service")]:
             state = self.background_state.get(kind, {})
             if state.get("installed"):
                 descriptions.append(title + (": bật" if state.get("enabled") else ": tắt"))
-        enabled_schedules = [s for s in load()["schedules"] if s.get("enabled", True)]
-        self.background_summary.setText("Chạy nền: " + (" • ".join(descriptions) or "chưa đăng ký") + f" • {len(enabled_schedules)} lịch đang bật")
-        try:
-            from .schedule import listing
-            upcoming = [s["next_run"] for s in listing() if s.get("enabled", True) and s.get("next_run")]
-            if upcoming:
-                self.background_summary.setText(self.background_summary.text() + " • Kế tiếp: " + local_time(min(upcoming)))
-        except Exception:
-            pass
+        schedules=self.background_state.get('schedules',{})
+        self.background_summary.setText("Chạy nền: " + (" • ".join(descriptions) or "chưa đăng ký") + f" • {schedules.get('enabled_count',0)} lịch đang bật")
+        if schedules.get('next_run'):self.background_summary.setText(self.background_summary.text()+' • Kế tiếp: '+local_time(schedules['next_run']))
         external = self.background_state.get("scan", {})
         if self.scan_worker is None:
             self.stop_button.setEnabled(external.get("running", False))
@@ -1048,7 +1083,7 @@ class Window(QMainWindow):
         self.history_panel.refresh(); self.tabs.setCurrentIndex(5)
 
     def poll_background(self):
-        self.refresh_background()
+        if self.preferences.values.get('background/realtime',True): self.refresh_background()
         signature = self.latest_signature()
         if signature != self.last_scan_signature:
             self.refresh_history(); self.last_scan_id = signature[0]; self.last_scan_signature = signature

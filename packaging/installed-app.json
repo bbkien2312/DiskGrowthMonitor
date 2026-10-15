@@ -1,1 +1,1 @@
-{"app":"DiskGrowthMonitor","version":"1.0.0","runtime":"private bundled .venv","preserve_on_uninstall":["data","logs",".venv/tools"]}
+{"app":"DiskGrowthMonitor","version":"1.1.0","update_protocol":1,"runtime":"private bundled .venv","preserve_on_uninstall":["data","logs",".venv/tools"]}

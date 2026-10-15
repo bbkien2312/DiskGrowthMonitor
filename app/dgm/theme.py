@@ -8,10 +8,25 @@ QHeaderView::section{background:#eaf0f5;color:#314d68;padding:8px;border:0;borde
 QTabBar::tab{padding:10px 16px;background:#eeeff0;color:#536477;border:1px solid #d5dce3;border-bottom:0;border-top-left-radius:6px;border-top-right-radius:6px;}
 QTabBar::tab:selected{background:#ffffff;color:#1765a6;}
 QTabWidget::pane{border:1px solid #d5dce3;background:#f7f8fa;}
-QGroupBox{border:1px solid #d5dce3;border-radius:7px;margin-top:10px;padding-top:10px;} QGroupBox::title{subcontrol-origin:margin;left:10px;color:#314d68;}
+QGroupBox{background:#eff4f8;border:1px solid #d5dce3;border-radius:7px;margin-top:10px;padding-top:10px;} QGroupBox::title{subcontrol-origin:margin;left:10px;color:#314d68;}
+QGroupBox QLabel,QGroupBox QCheckBox{background:transparent;}
 QCheckBox::indicator{width:15px;height:15px;border:1px solid #95aabd;border-radius:3px;background:#ffffff;}
 QCheckBox::indicator:checked{background:#438ccc;border:1px solid #236aab;}
 QLabel#metric{background:rgba(255,255,255,238);border:1px solid #d8e0e8;border-radius:8px;padding:10px;color:#314760;}
+QWidget#metricCard{border:1px solid #ccd9e4;border-radius:9px;background:#edf2f6;}
+QWidget#metricCard[tone="new"]{background:#e7f2ff;border-color:#bed7f1;}
+QWidget#metricCard[tone="delta"]{background:#e8f4ee;border-color:#bddbcc;}
+QWidget#metricCard[tone="summary"]{background:#fff3df;border-color:#ead5ad;}
+QWidget#metricCard QLabel{background:transparent;border:0;padding:0;}
+QLabel#metricCaption{font-size:11px;font-weight:700;color:#425c73;}
+QLabel#metricValue{font-size:23px;font-weight:700;color:#244b70;}
+QWidget#metricCard[tone="summary"] QLabel#metricValue{font-size:17px;}
+QLabel#metricNote{font-size:11px;color:#586b7a;}
+QLabel#sectionTitle{font-size:13px;font-weight:600;background:#eaf0f6;border-radius:5px;padding:7px;color:#294d6c;}
+QGroupBox::title{font-size:14px;font-weight:600;}
+QHeaderView::section{font-weight:600;}
+QToolButton#helpToggle{font-size:17px;font-weight:600;padding:3px 8px;color:#2470a8;}
+QToolButton:checked{background:#dcecfb;border-color:#75a5d0;}
 QScrollArea{border:0;background:transparent;} QSplitter::handle{background:#d6e0e9;width:7px;}
 QToolTip{background:#fffceb;color:#263e55;border:1px solid #d4cfa8;padding:6px;}
 """

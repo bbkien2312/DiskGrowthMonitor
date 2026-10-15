@@ -71,6 +71,8 @@ class Comparisons:
                 if 'delta_key' not in [r[1] for r in self.db.execute('PRAGMA table_info(scope_items)')]:
                     self.db.execute('ALTER TABLE scope_items ADD COLUMN delta_key INTEGER')
                     self.db.execute('UPDATE scope_items SET delta_key=COALESCE((SELECT c.delta FROM diff_rows c JOIN scopes t ON t.pair_id=c.pair_id WHERE t.id=scope_items.scope_id AND c.path_id=scope_items.path_id),-9223372036854775808)')
+                if 'names_ready' not in [r[1] for r in self.db.execute('PRAGMA table_info(scopes)')]:
+                    self.db.execute('ALTER TABLE scopes ADD COLUMN names_ready INTEGER DEFAULT 0')
                 for column in SCOPE_SORTS.values():
                     self.db.execute(f"CREATE INDEX IF NOT EXISTS scope_{column} ON scope_items(scope_id,{column},path_id)")
                 self.db.commit()
@@ -89,6 +91,13 @@ class Comparisons:
 
     def close(self):
         self.db.set_progress_handler(None, 0); self.db.close()
+
+    def rollback_stage(self):
+        # An interrupting progress callback can interrupt ROLLBACK as well.
+        # Release the transaction before allowing a retry on this connection.
+        self.db.set_progress_handler(None,0)
+        try:self.db.rollback()
+        finally:self.db.set_progress_handler(self._progress,4000)
 
     def overview(self, older, newer):
         store = Store(readonly=True)
@@ -191,41 +200,70 @@ class Comparisons:
             for ancestor in Path(path).parents:
                 self.db.execute("UPDATE diff_rows SET change='unknown' WHERE pair_id=? AND kind='folder' AND path_id=(SELECT id FROM source.paths WHERE path=?)", (pair, str(ancestor)))
 
-    def names(self, pair):
-        if self.db.execute("SELECT names_ready FROM pairs WHERE id=?", (pair,)).fetchone()[0]:
+    def names(self, pair, scope=None):
+        table, identifier = ('pairs',pair) if scope is None else ('scopes',scope)
+        if self.db.execute(f"SELECT names_ready FROM {table} WHERE id=?", (identifier,)).fetchone()[0]:
             return
         with _locked(self.stop):
-            self.stage = "Đang lập thứ tự đường dẫn (một lần)"; self.notify("info", {"message": self.stage})
-            if self.db.execute("SELECT names_ready FROM pairs WHERE id=?",(pair,)).fetchone()[0]:return
-            self.db.execute("DROP TABLE IF EXISTS temp.name_order")
-            self.db.execute("""CREATE TEMP TABLE name_order AS SELECT c.path_id,ROW_NUMBER() OVER(ORDER BY p.path COLLATE NOCASE,c.path_id) AS rank
-            FROM diff_rows c JOIN source.paths p ON p.id=c.path_id WHERE c.pair_id=?""", (pair,))
-            self.db.execute("CREATE UNIQUE INDEX temp.name_id ON name_order(path_id)")
-            self.db.execute("UPDATE diff_rows SET name_rank=(SELECT rank FROM name_order WHERE path_id=diff_rows.path_id) WHERE pair_id=?", (pair,))
-            self.db.execute("UPDATE scope_items SET name_rank=(SELECT c.name_rank FROM diff_rows c JOIN scopes s ON s.pair_id=c.pair_id WHERE s.id=scope_id AND c.path_id=scope_items.path_id) WHERE scope_id IN (SELECT id FROM scopes WHERE pair_id=?)", (pair,))
-            self.db.execute("UPDATE pairs SET names_ready=1 WHERE id=?", (pair,)); self.db.commit()
+            if self.db.execute(f"SELECT names_ready FROM {table} WHERE id=?",(identifier,)).fetchone()[0]:return
+            self.stage = 'Đang lập thứ tự tên '+('toàn phạm vi' if scope is None else 'chỉ trong nhánh đã chọn')+' (một lần)'
+            self.notify('info',{'message':self.stage})
+            rows, key = ('diff_rows','pair_id') if scope is None else ('scope_items','scope_id')
+            try:
+                self.db.execute('BEGIN IMMEDIATE')
+                if self.db.execute(f'SELECT names_ready FROM {table} WHERE id=?',(identifier,)).fetchone()[0]:
+                    self.db.commit();return
+                self.db.execute('DROP TABLE IF EXISTS temp.name_order')
+                self.db.execute(f"""CREATE TEMP TABLE name_order AS SELECT c.path_id,ROW_NUMBER() OVER(ORDER BY p.path COLLATE NOCASE,c.path_id) AS rank
+                FROM {rows} c JOIN source.paths p ON p.id=c.path_id WHERE c.{key}=?""",(identifier,))
+                self.db.execute('CREATE UNIQUE INDEX temp.name_id ON name_order(path_id)')
+                self.db.execute(f"UPDATE {rows} SET name_rank=(SELECT rank FROM name_order WHERE path_id={rows}.path_id) WHERE {key}=?",(identifier,))
+                self.db.execute(f'UPDATE {table} SET names_ready=1 WHERE id=?',(identifier,));self.db.commit()
+            except BaseException:
+                self.rollback_stage();raise
 
-    def scope(self, pair, root_id):
-        row = self.db.execute("SELECT id FROM scopes WHERE pair_id=? AND root_id=?", (pair, root_id)).fetchone()
-        if row:
-            self.db.execute("UPDATE scopes SET touched=? WHERE id=?", (now(),row[0])); self.db.commit()
-            return row[0]
-        self.stage = "Đang lập chỉ mục nhánh thư mục (một lần)"; self.notify("info", {"message": self.stage})
-        self.db.execute("INSERT OR IGNORE INTO scopes(pair_id,root_id,touched) VALUES(?,?,?)", (pair, root_id, now()))
-        scope = self.db.execute("SELECT id FROM scopes WHERE pair_id=? AND root_id=?", (pair, root_id)).fetchone()[0]
-        self.db.execute("""WITH RECURSIVE children(id) AS (VALUES(?) UNION ALL
-        SELECT c.path_id FROM children d CROSS JOIN diff_rows c INDEXED BY diff_parent
-        ON c.pair_id=? AND c.parent_id=d.id WHERE c.path_id<>d.id)
-        INSERT OR IGNORE INTO scope_items(scope_id,path_id,before_key,after_key,abs_delta,allocated_key,created,modified,kind,change,name_rank,delta_key)
-        SELECT ?,c.path_id,COALESCE(c.before,-1),COALESCE(c.after,-1),c.abs_delta,
-        COALESCE(c.allocated,-1),c.created,c.modified,c.kind,c.change,c.name_rank,COALESCE(c.delta,-9223372036854775808) FROM children d
-        JOIN diff_rows c ON c.pair_id=? AND c.path_id=d.id""", (root_id, pair, scope, pair))
-        self.db.commit()
-        for stale in self.db.execute("SELECT id FROM scopes WHERE pair_id=? AND id<>? ORDER BY touched DESC LIMIT -1 OFFSET 2", (pair, scope)).fetchall():
-            self.db.execute("DELETE FROM scope_items WHERE scope_id=?", (stale[0],)); self.db.execute("DELETE FROM scopes WHERE id=?", (stale[0],))
-        self.db.commit(); return scope
+    def scope(self, pair, root_id, recursive=True):
+        # Source path IDs are positive. Negative lookup keys distinguish a cached
+        # direct-children name order from a recursive subtree, without replacing
+        # the v1.0 cache schema or rebuilding its million-row comparisons.
+        lookup=root_id if recursive else -root_id
+        with _locked(self.stop):
+            row=self.db.execute('SELECT id FROM scopes WHERE pair_id=? AND root_id=?',(pair,lookup)).fetchone()
+            if row:
+                self.db.execute('UPDATE scopes SET touched=? WHERE id=?',(now(),row[0]));self.db.commit();return row[0]
+            self.stage='Đang lập chỉ mục '+('nhánh thư mục' if recursive else 'các mục trực tiếp trong thư mục')+' (một lần)'
+            self.notify('info',{'message':self.stage})
+            try:
+                self.db.execute('BEGIN IMMEDIATE')
+                # Another CLI/GUI process may have committed this scope while
+                # BEGIN waited for its writer. Recheck under the SQLite lock.
+                row=self.db.execute('SELECT id FROM scopes WHERE pair_id=? AND root_id=?',(pair,lookup)).fetchone()
+                if row:
+                    self.db.execute('UPDATE scopes SET touched=? WHERE id=?',(now(),row[0]));self.db.commit();return row[0]
+                self.db.execute('INSERT INTO scopes(pair_id,root_id,touched) VALUES(?,?,?)',(pair,lookup,now()))
+                scope=self.db.execute('SELECT id FROM scopes WHERE pair_id=? AND root_id=?',(pair,lookup)).fetchone()[0]
+                fields="""INSERT INTO scope_items(scope_id,path_id,before_key,after_key,abs_delta,allocated_key,created,modified,kind,change,name_rank,delta_key)
+                SELECT ?,c.path_id,COALESCE(c.before,-1),COALESCE(c.after,-1),c.abs_delta,COALESCE(c.allocated,-1),c.created,c.modified,c.kind,c.change,0,COALESCE(c.delta,-9223372036854775808) """
+                if recursive:
+                    self.db.execute("""WITH RECURSIVE children(id) AS (VALUES(?) UNION ALL
+                    SELECT c.path_id FROM children d CROSS JOIN diff_rows c INDEXED BY diff_parent
+                    ON c.pair_id=? AND c.parent_id=d.id WHERE c.path_id<>d.id) """+fields+
+                    'FROM children d JOIN diff_rows c ON c.pair_id=? AND c.path_id=d.id',(root_id,pair,scope,pair))
+                else:
+                    self.db.execute(fields+'FROM diff_rows c INDEXED BY diff_parent WHERE c.pair_id=? AND c.parent_id=?',(scope,pair,root_id))
+                for stale in self.db.execute('SELECT id FROM scopes WHERE pair_id=? AND id<>? ORDER BY touched DESC,id DESC LIMIT -1 OFFSET 2',(pair,scope)).fetchall():
+                    self.db.execute('DELETE FROM scope_items WHERE scope_id=?',(stale[0],));self.db.execute('DELETE FROM scopes WHERE id=?',(stale[0],))
+                self.db.commit();return scope
+            except BaseException:
+                self.rollback_stage();raise
 
     def page(self, pair, *, limit=20, cursor=None, sort="delta", direction="desc", minimum=0, kind="all", changes="all", search="", root=None, recursive=True, folders_only=False):
+        from .presentation import CHANGES
+        if isinstance(changes, str):
+            changes = None if changes == 'all' else sorted(set(x.strip() for x in changes.split(',') if x.strip()))
+        else:
+            changes = sorted(set(changes))
+        if changes is not None and set(changes) - set(CHANGES): raise ValueError('Trạng thái lọc không hợp lệ')
         if minimum<0: raise ValueError("Ngưỡng dung lượng phải >=0")
         minimum=int(minimum)
         if sort not in SORTS or direction not in ("asc", "desc") or not 1 <= limit <= 1000:
@@ -233,9 +271,9 @@ class Comparisons:
         record = self.db.execute("SELECT * FROM pairs WHERE id=? AND status='ready'", (pair,)).fetchone()
         if not record:
             raise ValueError("Chỉ mục so sánh chưa sẵn sàng; chuẩn bị lại từ snapshot.")
-        if sort == "path":
-            self.names(pair)
-        fingerprint = hashlib.sha256(json.dumps([pair,sort,direction,minimum,kind,changes,search,root,recursive,folders_only]).encode()).hexdigest()
+        filters=[pair,minimum,kind,changes,search,root,recursive,folders_only]
+        fingerprint = hashlib.sha256(json.dumps(['cursor-v3',sort,direction,*filters]).encode()).hexdigest()
+        count_key=hashlib.sha256(json.dumps(['count-v3',*filters]).encode()).hexdigest()
         if cursor and cursor.get("filter") != fingerprint:
             raise ValueError("Con trỏ thuộc bộ lọc/mốc khác; tải lại từ đầu.")
         clauses, args = ["c.pair_id=?"], [pair]
@@ -256,8 +294,9 @@ class Comparisons:
             found = self.db.execute("SELECT id FROM source.paths WHERE path=?", (str(Path(effective_root)),)).fetchone()
             if not found:
                 return {"rows": [], "cursor": None, "total": 0, "pair_id": pair}
-            if recursive:
-                scope = self.scope(pair, found[0])
+            if recursive or sort=='path':
+                scope = self.scope(pair, found[0],recursive=recursive)
+                if sort=='path':self.names(pair,scope)
                 joins = f"scope_items s INDEXED BY scope_{SCOPE_SORTS[effective_sort]} JOIN diff_rows c ON c.pair_id=? AND c.path_id=s.path_id JOIN source.paths p ON p.id=c.path_id"
                 args = [pair, pair, scope]; clauses.append("s.scope_id=?")
                 column = SCOPE_SORTS["new" if not record["older"] and sort == "delta" else sort]; key = "s." + column
@@ -265,28 +304,32 @@ class Comparisons:
                 clauses.append("c.parent_id=?"); args.append(found[0])
                 index = "diff_children_new" if folders_only and effective_sort=="new" else "diff_parent"
                 joins = f"diff_rows c INDEXED BY {index} JOIN source.paths p ON p.id=c.path_id"
+        elif sort=='path':
+            self.names(pair)
         if folders_only:
             clauses.append("c.kind='folder'")
         elif kind != "all":
             clauses.append("c.kind=?"); args.append(kind)
-        if changes != "all":
-            clauses.append("c.change=?"); args.append(changes)
+        if changes is not None:
+            clauses.append('c.change IN ('+','.join('?' for _ in changes)+')' if changes else '0')
+            args.extend(changes)
         if minimum:
             clauses.append("(c.kind<>'file' OR c.max_size>?)"); args.append(minimum)
         if search:
             clauses.append("p.path LIKE ? ESCAPE '!' "); args.append("%" + search.replace("!","!!").replace("%","!%").replace("_","!_") + "%")
         where = " AND ".join(clauses)
-        count = self.db.execute("SELECT total FROM query_counts WHERE fingerprint=?",(fingerprint,)).fetchone()
+        count = self.db.execute("SELECT total FROM query_counts WHERE fingerprint=?",(count_key,)).fetchone()
         if count:
             total=count[0]
         elif not any((effective_root,folders_only,minimum,search)):
-            total=sum(x['count'] for x in summary['counts'] if (kind=='all' or x['kind']==kind) and (changes=='all' or x['change']==changes))
+            total=sum(x['count'] for x in summary['counts'] if (kind=='all' or x['kind']==kind) and (changes is None or x['change'] in changes))
         else:
             count_joins=joins if search else joins.replace(" JOIN source.paths p ON p.id=c.path_id","")
             total = self.db.execute("SELECT COUNT(*) FROM " + count_joins + " WHERE " + where, args).fetchone()[0]
         if not count:
-            self.db.execute("INSERT OR REPLACE INTO query_counts VALUES(?,?,?)",(fingerprint,pair,total)); self.db.commit()
+            self.db.execute("INSERT OR REPLACE INTO query_counts VALUES(?,?,?)",(count_key,pair,total)); self.db.commit()
         page_args = list(args)
+        self.stage=f'Đang lấy tối đa {limit:,} mục đã sắp xếp '+('trong thư mục đã chọn' if root else 'trong toàn phạm vi')
         if cursor:
             where += f" AND ({key},c.path_id) {'>' if direction=='asc' else '<'} (?,?)"
             page_args += [cursor["value"], cursor["path_id"]]

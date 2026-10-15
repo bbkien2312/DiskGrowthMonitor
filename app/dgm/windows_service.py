@@ -41,6 +41,23 @@ def service_path():
     return home() / ".venv/tools/service/DiskGrowthMonitorService.exe"
 
 
+def restore_state(original):
+    """Restore exact startup type, including Manual; never reinstall the service."""
+    import win32service
+    if not is_admin(): raise PermissionError('Khôi phục Service cần quyền Admin')
+    startup=original.get('startup_type')
+    if startup not in (win32service.SERVICE_AUTO_START,win32service.SERVICE_DEMAND_START,win32service.SERVICE_DISABLED):
+        raise ValueError('Startup type ban đầu không hợp lệ')
+    manager=win32service.OpenSCManager(None,None,win32service.SC_MANAGER_CONNECT)
+    try:
+        service=win32service.OpenService(manager,SERVICE_ID,win32service.SERVICE_CHANGE_CONFIG)
+        try: win32service.ChangeServiceConfig(service,win32service.SERVICE_NO_CHANGE,startup,win32service.SERVICE_NO_CHANGE,None,None,0,None,None,None,None)
+        finally: win32service.CloseServiceHandle(service)
+    finally: win32service.CloseServiceHandle(manager)
+    if original.get('running'): control('start')
+    return status()
+
+
 def prepare():
     ROOT = home()
     exe = service_path()

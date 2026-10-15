@@ -11,11 +11,13 @@ cleanup_app = typer.Typer(help="Preview và xóa các mục đã duyệt")
 schedules = typer.Typer(help="Lịch chạy và worker nền")
 files = typer.Typer(help="Thao tác file/thư mục")
 ai = typer.Typer(help="Tạo câu hỏi và mở AI web")
+app_updates = typer.Typer(help='Kiểm tra/tải/cài bản app chính thức; không dùng pip hoặc ghi đè source')
 app.add_typer(profiles, name="profile")
 app.add_typer(cleanup_app, name="cleanup")
 app.add_typer(schedules, name="schedule")
 app.add_typer(files, name="file")
 app.add_typer(ai, name="ai")
+app.add_typer(app_updates, name='app-update')
 
 
 def output(data):
@@ -258,6 +260,61 @@ def uninstall_check():
     if blocked or active:raise typer.Exit(2)
 
 
+@app.command('upgrade-check',hidden=True)
+def upgrade_check():
+    from .installation import upgrade_safety
+    result=upgrade_safety(); output(result)
+    if not result['safe_to_upgrade']: raise typer.Exit(2)
+
+
+@app_updates.command('check')
+def app_update_check():
+    from .app_update import check
+    output(check())
+
+
+@app_updates.command('download')
+def app_update_download():
+    from .app_update import check,download
+    release=check(); output({'release':release,'installer':download(release,notify=admin_progress)})
+
+
+@app_updates.command('install')
+def app_update_install(yes: bool = typer.Option(False,'--yes',help='Xác nhận đóng phiên CLI này và chạy bộ cài'),
+                       destination: Optional[Path]=None):
+    from .app_update import check,download,prepare_install,launch,installation_mode,install_separately
+    if installation_mode()=='source' and destination is None:raise typer.BadParameter('Bản source cần --destination trỏ tới thư mục trống khác')
+    release=check()
+    if not yes and not typer.confirm(f'Cài app {release["current"]} → {release["version"]}? Lưu dữ liệu và đóng các cửa sổ app khác trước.'): raise typer.Abort()
+    target=download(release,notify=admin_progress)
+    output(install_separately(release,target,destination) if destination else launch(prepare_install(release,target)))
+
+
+@app_updates.command('status')
+def app_update_status():
+    from .app_update import active_update,pending_recovery
+    output({'active':active_update(),'pending_recovery':pending_recovery()})
+
+
+@app.command('_app-update-stage',hidden=True)
+def app_update_stage(session: Path):
+    from .app_update import stage
+    output(stage(session))
+
+
+@app.command('_app-update-finish',hidden=True)
+def app_update_finish(session: Path, success: bool=False):
+    from .app_update import finish
+    output(finish(session,success=success))
+
+
+@app_updates.command('recover')
+def app_update_recover(session: Path):
+    """Retry recovery from the persisted journal; Admin required for owned runners."""
+    from .app_update import finish
+    output(finish(session))
+
+
 @app.command("packages")
 def packages():
     from .updates import inventory
@@ -445,9 +502,22 @@ def schedule_service(action: str):
 
 
 @app.command("background-status")
-def background_status():
+def background_status(watch: bool=False, interval: float=3):
     from .background import status
-    output(status())
+    import time
+    if interval<1: raise typer.BadParameter('Chu kỳ kiểm tra tối thiểu 1 giây')
+    try:
+        while True:
+            output(status())
+            if not watch:break
+            time.sleep(interval)
+    except KeyboardInterrupt:pass
+
+
+@app.command('background-open')
+def background_open(kind: str):
+    from .background import open_manager
+    output(open_manager(kind))
 
 
 @app.command("background-control")

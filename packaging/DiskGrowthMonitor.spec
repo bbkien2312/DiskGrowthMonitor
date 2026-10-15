@@ -9,7 +9,7 @@ version=importlib.metadata.version('disk-growth-monitor')
 names=['disk-growth-monitor','PySide6-Essentials','shiboken6','typer','psutil','Send2Trash','APScheduler',
     'pywin32','python-dateutil','tzdata','ijson','tzlocal','six','rich','shellingham','annotated-doc',
     'markdown-it-py','mdurl','Pygments','colorama']
-datas=[(str(root/'build/licenses'),'licenses'),(str(root/'THIRD_PARTY.md'),'.')]
+datas=[(str(root/'build/licenses'),'licenses'),(str(root/'THIRD_PARTY.md'),'.'),(str(root/'app/dgm/update_helper.ps1'),'dgm')]
 for name in names:datas+=copy_metadata(name)
 a=Analysis([str(root/'app/packaged_entry.py')],pathex=[str(root/'app')],binaries=[],datas=datas,
     hiddenimports=collect_submodules('dgm')+['win32timezone','win32com.shell.shell','win32com.shell.shellcon','ijson.backends.yajl2_c'],

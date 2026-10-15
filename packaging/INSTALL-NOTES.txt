@@ -1,4 +1,4 @@
-Disk Growth Monitor 1.0.0 - Windows x64
+Disk Growth Monitor 1.1.0 - Windows x64
 
 Private Python/Qt runtime is bundled under .venv.
 No global Python, pip, System PATH, Task Scheduler job or Windows Service is installed.
@@ -14,6 +14,11 @@ in the System tab. WinDirStat/gdu can be downloaded explicitly into .venv/tools.
 No scan, cleanup or automatic task starts during installation.
 
 Upgrades preserve data and logs. Close the application before upgrading.
+For app-assisted updates, the app downloads the official Release, checks SHA-256,
+backs up config/history and temporarily disables/stops only its own runner.
+The runner registration is retained and its original state is restored afterward.
+Manual upgrades require a disabled/stopped runner; legacy builds may need it removed.
+Editable source runs can install only into a separate empty directory.
 Before uninstalling, stop scans and remove any Task/Service using the application.
 Uninstall preserves scan history, logs and tools downloaded after installation.
 Review retained files yourself; the uninstaller does not erase the whole folder.

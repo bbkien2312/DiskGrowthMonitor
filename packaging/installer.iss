@@ -1,7 +1,10 @@
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.1.0"
 #endif
 #define SourceRoot AddBackslash(SourcePath) + ".."
+#ifndef InstallerOutputDir
+  #define InstallerOutputDir SourceRoot + "\dist"
+#endif
 
 [Setup]
 AppId={{8F156E32-B0A2-4C97-AE5D-7808676FAF11}
@@ -17,7 +20,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-OutputDir={#SourceRoot}\dist
+OutputDir={#InstallerOutputDir}
 OutputBaseFilename=installer
 Compression=lzma2
 SolidCompression=yes
@@ -85,18 +88,32 @@ begin
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var Target: String; ExitCode: Integer;
+var Target, Guard: String; Marker: AnsiString; ExitCode: Integer;
 begin
   Result := '';
   Target := ExpandConstant('{app}');
   if HasFiles(Target) and not FileExists(AddBackslash(Target) + 'installed-app.json') then
     Result := 'Choose an empty folder. This installer must not overwrite source code or unrelated files.';
   if (Result = '') and FileExists(AddBackslash(Target) + 'installed-app.json') then begin
-    if not Exec(AddBackslash(Target) + 'dgm.exe', '--home "' + Target + '" uninstall-check',
+    Guard := 'uninstall-check';
+    if LoadStringFromFile(AddBackslash(Target) + 'installed-app.json', Marker) then
+      if (Pos('"update_protocol":1', String(Marker)) > 0) or (Pos('"update_protocol": 1', String(Marker)) > 0) then Guard := 'upgrade-check';
+    if not Exec(AddBackslash(Target) + 'dgm.exe', '--home "' + Target + '" ' + Guard,
       Target, SW_HIDE, ewWaitUntilTerminated, ExitCode) then
       Result := 'Cannot check the previous installation. No update was started.'
     else if ExitCode <> 0 then
-      Result := 'Close the application, stop scans and remove its Task/Service before upgrading.';
+      Result := 'Close the application and stop scans. Disable/stop its Task or Service before upgrading; legacy versions may require removing the runner.';
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var PortableValue: String;
+begin
+  if CurStep = ssPostInstall then begin
+    if PortableMode then PortableValue := 'true' else PortableValue := 'false';
+    SaveStringToFile(ExpandConstant('{app}\installed-app.json'),
+      '{"app":"DiskGrowthMonitor","version":"{#AppVersion}","update_protocol":1,"portable":' + PortableValue +
+      ',"runtime":"private bundled .venv","preserve_on_uninstall":["data","logs",".venv/tools"]}', False);
   end;
 end;
 

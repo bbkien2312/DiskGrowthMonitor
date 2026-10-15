@@ -74,7 +74,7 @@ def test_column_mouse_drag_independent_and_persisted(gui):
     assert header.sectionSize(1) == neighbor
     w.save_layout()
     stored = json.loads((home() / "data/ui-settings.json").read_text(encoding="utf-8"))
-    assert stored["columns/details-v2"][0] == header.sectionSize(0)
+    assert stored["columns/details-v3"][0] == header.sectionSize(0)
     reopened = Window(); pump(app, lambda: not reopened.workers)
     assert reopened.table.horizontalHeader().sectionSize(0) == header.sectionSize(0)
     reopened.close(); app.processEvents()
@@ -87,11 +87,11 @@ def test_help_and_packages_and_no_config_write(gui):
     assert w.engine.currentText() == "wiztree"
     box = w.help_boxes["scan"]
     w.scan_options_toggle.setChecked(True)
-    assert box.toggle.text() == ">" and not box.body.isVisible()
+    assert not box.toggle.icon().isNull() and not box.body.isVisible()
     QTest.mouseClick(box.toggle, Qt.MouseButton.LeftButton)
-    assert box.body.isVisible() and box.toggle.text() == "v"
+    assert box.body.isVisible() and box.toggle.isChecked()
     QTest.mouseClick(box.toggle, Qt.MouseButton.LeftButton)
-    assert not box.body.isVisible() and box.toggle.text() == ">"
+    assert not box.body.isVisible() and not box.toggle.isChecked()
     assert w.package_table.rowCount() >= 10
     assert not w.package_table.item(0, 0).icon().isNull()
     assert (home() / "data/config.json").read_bytes() == before
@@ -114,12 +114,12 @@ def test_async_compare_clear_baseline_and_positive_delta(gui, isolated):
     w.compare(); pump(app, lambda: not w.workers)
     assert "Cũ:" in w.scan_info.text() and "Lần quét 01" in w.scan_info.text() and "Lần quét 02" in w.scan_info.text()
     index = next(i for i, row in enumerate(w.rows) if row["kind"] == "file")
-    assert w.table.model().data(w.table.model().index(index,4)).startswith("↑ +")
+    assert w.table.model().data(w.table.model().index(index,1)).startswith("↑ +")
 
 
 def test_background_buttons_and_scope_confirmation(gui, monkeypatch):
     app, w = gui
-    w.background_done({"task": {"installed": True, "enabled": False}, "service": {"installed": False}, "scan": {"running": False}})
+    w.background_done({"task": {"installed": True, "enabled": False, "actions":[{"path":str(home()/'DiskGrowthMonitor.exe')}]}, "service": {"installed": False}, "scan": {"running": False}})
     _, label, buttons = w.background_panels[0]
     assert "Đã tắt" in label.text()
     assert buttons["enable"].isEnabled() and buttons["remove"].isEnabled()

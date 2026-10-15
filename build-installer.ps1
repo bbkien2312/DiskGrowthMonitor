@@ -1,4 +1,4 @@
-param([switch]$Offline,[switch]$SkipAppBuild)
+param([switch]$Offline,[switch]$SkipAppBuild,[string]$OutputDirectory='dist')
 $ErrorActionPreference='Stop'
 $taskRoot=Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location -LiteralPath $taskRoot
@@ -19,7 +19,9 @@ if(!(Test-Path -LiteralPath $taskCompiler)){
     if($taskSetupProcess.ExitCode -ne 0){throw 'Portable compiler setup failed'}
 }
 $taskVersion=& (Join-Path $taskRoot '.venv\Scripts\python.exe') -c 'from dgm import __version__; print(__version__)'
-& $taskCompiler (('/DAppVersion=')+$taskVersion) (Join-Path $taskRoot 'packaging\installer.iss')
+$taskOutput=if([System.IO.Path]::IsPathRooted($OutputDirectory)){[System.IO.Path]::GetFullPath($OutputDirectory)}else{[System.IO.Path]::GetFullPath((Join-Path $taskRoot $OutputDirectory))}
+New-Item -ItemType Directory -Path $taskOutput -Force | Out-Null
+& $taskCompiler (('/DAppVersion=')+$taskVersion) ('/DInstallerOutputDir='+$taskOutput) (Join-Path $taskRoot 'packaging\installer.iss')
 if($LASTEXITCODE -ne 0){throw 'Installer build failed'}
-& (Join-Path $taskRoot '.venv\Scripts\python.exe') (Join-Path $taskRoot 'packaging\checksum.py')
+& (Join-Path $taskRoot '.venv\Scripts\python.exe') (Join-Path $taskRoot 'packaging\checksum.py') $taskOutput
 if($LASTEXITCODE -ne 0){throw 'Release checksum generation failed'}

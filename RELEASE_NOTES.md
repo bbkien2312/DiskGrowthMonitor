@@ -1,4 +1,18 @@
-# Disk Growth Monitor 1.0.0 — 15/10/2026
+# Disk Growth Monitor 1.1.0 — phát hành 15/10/2026
+
+- Dropdown tải 20/50/100/200/500/1000 mục, lưu riêng tùy chọn GUI. Đổi kích thước lượt tải không làm mất dòng; 20 + 100 = 120 và 20 + 1000 = 1020 đúng thứ hạng toàn kết quả.
+- Sắp xếp toàn phạm vi/bộ lọc hiện tại; đổi cột/chiều giữ số lượng đã mở, thay bằng top/bottom mới. Tên A–Z trước, số/ngày giảm dần trước. Cây folder giới hạn đúng nhánh và tùy chọn gồm thư mục con; tổng quan toàn snapshot giữ nguyên.
+- Tên nhánh lập chỉ mục cục bộ, độc lập với tên toàn phạm vi. COUNT không lặp khi chỉ đổi cách sắp xếp. Hủy lập tên/nhánh rollback an toàn và thử lại được; trang cũ không chen vào kết quả mới sau khi hủy/đổi phạm vi.
+- Cache GUI giới hạn 400–2000 dòng, phân trang có kích thước khác nhau và đọc lại trang cũ không làm lệch cursor. Cursor JSON của bản cũ cần lấy lại trang đầu; snapshot không phải quét lại.
+- Cây mặc định đủ tên System Volume Information và luôn giữ ba cột trong viewport. Chi tiết đưa Mức thay đổi lên cột 2, đường dẫn rút gọn giữa bằng … nhưng tooltip/thao tác giữ nguyên đường dẫn đầy đủ. Lưu bố cục mới riêng, kéo cột và reset có kiểm thử.
+- Bộ lọc trạng thái nhiều lựa chọn, chọn tất cả/bỏ chọn/chỉ có thay đổi. SQL lọc toàn dữ liệu trước sort/paging, tôn trọng phạm vi folder; tổng quan toàn snapshot giữ nguyên.
+- Thẻ dung lượng nền nhẹ, chữ số lớn, nhãn CHÊNH LỆCH DUNG LƯỢNG QUÉT và cảnh báo partial. Tùy chọn quét mở mặc định, icon hướng dẫn dùng icon hệ thống thay ký tự dễ lỗi font.
+- Realtime trạng thái Task/Service 3 giây (15 giây khi ẩn), không quét lại file, không chồng tác vụ. Mở Task Scheduler/Services; nhận diện runner của bản app khác và chặn sửa nhầm.
+- Cập nhật app từ Release chính thức: stable-only, chống downgrade, kiểm tra SHA-256/kích thước, tải có hủy, cài khi xác nhận. Coordinator ngoài runtime tạm dừng/khôi phục runner thuộc bản cài, giữ đăng ký và startup type, SQLite backup, giữ portable mode. Source chỉ cài sang thư mục trống khác; không pip global/git pull tự động. Có journal/log và CLI khôi phục nếu lỗi; chưa ký mã.
+- 189 tests, thêm kiểm tra UI DPI 125%/150%. Runner mutations/UAC/mạng lỗi được kiểm tra bằng mock, không thay đổi runner đang dùng của máy. Coordinator frozen đã thử thay runtime cùng phiên bản, backup/giữ dữ liệu/portable và chặn checksum sai; chưa giả mạo/publish một Release mới để thử nâng phiên bản qua mạng. Đo 200.000 bản ghi SQL ở vòng trước: GUI thêm 100 ~0,038 s; thêm 1000 ~0,050 s; sắp xếp lại giữ 1120 ~0,081 s; peak RSS SQL/GUI ~135,5 MB. Không phải cam kết tốc độ dữ liệu thật.
+- Đã phát hành mã nguồn public và bộ cài Windows x64 tại GitHub Release `v1.1.0`; installer có kèm checksum SHA-256 và báo cáo smoke test.
+
+## Bản 1.0.0 — 15/10/2026
 
 ## Bản phát hành EXE đầu tiên
 

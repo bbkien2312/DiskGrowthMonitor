@@ -23,6 +23,8 @@ class ScanLock:
         self.interrupt = None
 
     def __enter__(self):
+        from .app_update import check_scan_allowed
+        check_scan_allowed()
         self.path = home() / "data/worker.lock"
         import psutil
         try:
@@ -44,6 +46,9 @@ class ScanLock:
         import uuid
         self.owner = {"pid": os.getpid(), "created": psutil.Process().create_time(), "token": uuid.uuid4().hex}
         os.write(self.fd, json.dumps(self.owner).encode())
+        try: check_scan_allowed()
+        except BaseException:
+            os.close(self.fd); self.path.unlink(missing_ok=True); raise
         def watch():
             while not self.watch_done.wait(0.15):
                 try:

@@ -1,10 +1,12 @@
 # Disk Growth Monitor
 
-[Tải bộ cài Windows x64 v1.0.0](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.0.0) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
+[Tải bộ cài Windows x64 v1.1.0](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.1.0) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
+
+**Bản mới nhất: 1.1.0.** Xem thay đổi và tải `installer.exe` cùng `SHA256SUMS.txt` trong GitHub Release.
 
 App Windows tiếng Việt để biết file/folder nào làm ổ đĩa tăng dung lượng giữa các lần quét. CLI và GUI gọi cùng core và đọc cùng database/config. Môi trường nằm trong thư mục app trên ổ D; không cài package Python global hoặc sửa System PATH.
 
-## Bộ cài EXE — 1.0.0
+## Bộ cài EXE — 1.1.0
 
 Tải `installer.exe` và đối chiếu `SHA256SUMS.txt` trong Release. Windows 10/11 x64, không cần cài Python/pip. Bộ cài cho chọn thư mục, mặc định `D:\DiskGrowthMonitor-App` nếu có ổ D, nếu không dùng thư mục Programs của tài khoản hiện tại. Không cài đè thư mục mã nguồn hoặc thư mục không rỗng chưa có dấu nhận diện bản cài.
 
@@ -87,13 +89,15 @@ Profile thư mục khác:
 
 GUI gọi profile là **Cấu hình quét**. Quét ngay/Quét lại dùng lựa chọn hiện tại, không tự ghi đè cấu hình; Lưu cấu hình để lịch dùng lựa chọn mới. Tùy chọn quét thu gọn, hướng dẫn `>` ẩn/hiện và tooltip giúp phân biệt các nút. Mốc Cũ phải trước Mới, cùng phạm vi; chênh lệch Mới − Cũ, giờ Việt Nam UTC+07. Lượt bị hủy/lỗi/đang chạy không đưa vào danh sách so sánh. Snapshot là quan sát trong khoảng quét, không phải backup hay filesystem snapshot nguyên tử.
 
-### Giao diện và dữ liệu 0.2
+### Giao diện và phân trang 1.1
 
 - Số **Lần quét 01, 02…** cố định theo cấu hình, tính cả lượt lỗi/hủy; không đánh số lại sau khi xóa/sắp xếp. ID trong JSON/CLI vẫn là khóa nội bộ, không phải số thứ tự hiển thị.
 - WizTree/MFT xuất tổng thư mục/root sẵn có. Khi không phải lọc lại phạm vi, app dùng các tổng này, không tính SUM toàn ổ cho từng thư mục. Với native/phạm vi loại trừ, cộng một lượt từ con lên cha. Hardlink chỉ tính physical một lần.
 - Tổng quan dùng toàn snapshot, không chỉ những file >10 MB hoặc 20 dòng. Dung lượng file được quét khác dung lượng volume đã dùng; file nhỏ vẫn nằm trong tổng. Partial/coverage chưa đủ được ghi rõ là chênh số liệu quan sát, không bằng chứng đã xóa file.
-- Bảng chi tiết tải **20 mục/lượt**, sắp xếp/lọc toàn kết quả trước khi phân trang. Nhấp tiêu đề để đổi thứ tự; cột mức thay đổi sắp theo số có dấu. Ngưỡng file áp dụng cho `max(Cũ, Mới) > ngưỡng`, nên file giảm xuống dưới ngưỡng vẫn được nhận ra. Thư mục không bị ngưỡng file loại bỏ.
-- Model chỉ giữ tối đa **400 dòng** trong RAM. Cuộn về dòng bị loại khỏi RAM sẽ đọc lại trang từ cache. Dừng tải hủy cả chuẩn bị chỉ mục/cây; So sánh để tải lại. Dừng quét riêng hủy scan/export/import/SQL.
+- Dropdown **20/50/100/200/500/1000 mục mỗi lượt**, mặc định 20, nhớ trong `data/ui-settings.json`. Đổi số lượng giữ dòng đang xem; lần tải tiếp nối đúng thứ hạng. Ví dụ 20 + 100 = top/bottom 120 toàn tập kết quả, không chỉ sắp xếp 20 dòng cũ. Mở phép so sánh mới dùng số đang chọn.
+- Nhấp tiêu đề sắp xếp/lọc toàn kết quả **trong phạm vi và bộ lọc đang áp dụng** trước khi phân trang. Tên/đường dẫn bắt đầu A–Z, dung lượng/ngày bắt đầu giảm dần; nhấp lại đảo chiều. Đổi cột/chiều quay về đầu, lấy lại cùng số lượng đã mở theo thứ tự mới. Cột thay đổi sắp theo số có dấu. Ngưỡng file áp dụng cho `max(Cũ, Mới) > ngưỡng`; folder không bị ngưỡng file loại bỏ.
+- Bấm chọn folder trên cây giới hạn bảng trong folder; bật Gồm thư mục con để tính cả nhánh, tắt để chỉ hiện con trực tiếp. Chỉ bung mũi tên không đổi phạm vi. Xem toàn bộ bỏ giới hạn folder; tổng quan không đổi. Tên trong nhánh được lập chỉ mục riêng, không ép lập thứ tự tên cả ổ; các nhánh/tên toàn phạm vi không ghi đè thứ tự của nhau. COUNT được tái sử dụng khi đổi cột/chiều.
+- Model giữ cache metadata **400–2000 dòng**, không giữ toàn tập trong RAM. Trang có kích thước khác nhau giữ riêng mốc bắt đầu/con trỏ; đọc lại trang bị loại khỏi RAM không làm đổi con trỏ tải tiếp. Dừng tải hủy cả chuẩn bị chỉ mục/cây; So sánh hoặc Lọc để tải lại. Dừng quét riêng hủy scan/export/import/SQL. Chỉ mục ban đầu/nhánh chưa cache vẫn có thể cần chờ.
 - Cây bên trái luôn theo **hai lượt hợp lệ gần nhất của cấu hình, cùng phạm vi**. Nó không theo cặp Cũ/Mới bên phải. Bấm cây chỉ lọc chi tiết, không đổi cặp mốc hoặc tổng quan. Xanh ↑ tăng; đỏ ↓ giảm; xám — chưa biết/mốc đầu. Màu xanh không có nghĩa thay đổi có lợi.
 - Tab **Lịch sử** lưu mọi trạng thái quét và tóm tắt so sánh toàn phạm vi: dung lượng, số file/folder tăng/giảm/thêm/mất/khác. Mở so sánh cũ bằng nhấp đúp; tóm tắt còn sau khi chi tiết cache được loại bỏ. Không suy đoán file mới/mất trong vùng chưa xác minh.
 - Cache ở `data/comparisons.sqlite`: giữ tối đa hai cặp chi tiết và ba nhánh đã mở/cặp; giữ tóm tắt lịch sử. Ngưỡng cache mềm mặc định 768 MB sẽ giảm về một cặp. SQLite tái sử dụng trang trống; kích thước file vật lý không nhất thiết giảm ngay.
@@ -205,6 +209,34 @@ Benchmark chạy engine lần lượt, đo thời gian quét/nhập/diff, peak R
 Engine đã tích hợp: native, WizTree, WinDirStat và gdu. Cài lại engine mã nguồn mở vào `.venv/tools` bằng `launch-cli.cmd engine-install` hoặc nút ở tab Hệ thống. WizTree dùng executable của người dùng, không đóng gói/phân phối kèm.
 
 Hệ thống hiển thị gói/công cụ có icon, phiên bản và đường dẫn; Kiểm tra riêng hoặc tất cả chỉ tra cứu, không cài/cập nhật. Nguồn là [nhà phát hành WizTree](https://diskanalyzer.com/download), [GitHub Releases API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release), [PyPI JSON API](https://docs.pypi.org/api/json/). Không upload đường dẫn/file lên các nguồn này. Mạng lỗi hoặc hạn mức API được báo rõ. Runtime Python khóa riêng; muốn nâng thư viện cần cập nhật khóa và kiểm thử qua môi trường app, không dùng pip global. Engine-install chỉ cài bản OSS đã pin, không tự nâng lên latest.
+
+## Giao diện và cập nhật app (1.1.0)
+
+Cây mặc định đủ tên `System Volume Information` ở cấp đầu và luôn giữ cả ba cột trong chiều ngang đang có. Thu hẹp cửa sổ thì cắt tên bằng `…`; tooltip giữ đường dẫn đầy đủ. Cột chi tiết: Đường dẫn / Mức thay đổi / Dung lượng cũ / Dung lượng mới / Loại / ... . Cấu hình chiều rộng mới dùng khóa riêng để không áp nhầm bố cục cũ sau khi đổi cột.
+
+Trạng thái lọc chọn nhiều mục cùng lúc, có chọn tất cả/bỏ chọn/chỉ có thay đổi; bấm Lọc để áp dụng. Bỏ chọn hết cho kết quả rỗng. Lọc toàn bộ phạm vi rồi mới sắp xếp và phân trang; tổng quan Cũ/Mới không đổi theo bộ lọc. Các ô dung lượng có nền nhẹ và nhãn/giá trị riêng; lượt partial vẫn ghi cảnh báo. Tùy chọn quét mở mặc định, nhớ trạng thái riêng; icon thông tin không phụ thuộc font ký hiệu.
+
+Realtime **chỉ kiểm tra trạng thái Task/Service**, không theo dõi file và không quét lại ổ: 3 giây khi hiện cửa sổ, 15 giây khi ẩn/thu nhỏ, không chạy kiểm tra chồng nhau. Mở quản lý Windows chỉ mở Task Scheduler/Services, không tự bật. Bộ chạy thuộc bản app khác được ghi rõ và không cho sửa từ bản hiện tại.
+
+Tab Hệ thống có phần **cập nhật chính app**, độc lập với kiểm tra thư viện. Chỉ tra/tải/cài khi bấm nút. Nguồn cố định là Release chính thức của `bbkien2312/DiskGrowthMonitor`; lấy bản ổn định, không downgrade. Tải có thể hủy; xác minh kích thước/SHA-256 trước khi chạy. Hash kiểm tra toàn vẹn, **không phải chữ ký nhà phát hành**; binary hiện chưa ký mã.
+
+Bản cài dùng coordinator ngoài runtime để đóng app an toàn, tắt/dừng đúng runner của bản đó (không gỡ), sao lưu cấu hình/UI/history bằng SQLite backup, cài và khôi phục trạng thái bật/tắt/startup type ban đầu. Không cưỡng bức kết thúc quét/DISM; đang có tác vụ thì chờ. Session, log và backup nằm ở `data/updates/session-*`, được giữ để kiểm tra/khôi phục; không tự xóa backup lớn. Bộ cài giữ portable mode. Bản source chỉ mở bộ cài vào thư mục trống khác, không ghi đè source/`.venv`. Nâng từ bản 1.0.0 chưa có updater cần dùng bộ cài mới thủ công.
+
+```powershell
+.\launch-cli.cmd compare 2 --older 1 --changes grown,shrunk,new --limit 100
+.\launch-cli.cmd background-status --watch --interval 3
+.\launch-cli.cmd background-open task
+.\launch-cli.cmd app-update check
+.\launch-cli.cmd app-update download
+.\launch-cli.cmd app-update install
+# Bản source: chọn thư mục trống ngoài source
+.\launch-cli.cmd app-update install --destination D:\DiskGrowthMonitor-New
+.\launch-cli.cmd app-update status
+# Khi journal báo restore_pending, mở CLI Admin nếu runner cần Admin:
+.\launch-cli.cmd app-update recover D:\DiskGrowthMonitor-App\data\updates\session-...\session.json
+```
+
+Nếu cập nhật/khôi phục lỗi, đọc `coordinator.log`, `installer.log`, `session.json` trong session. Backup không tự ghi đè lịch sử đang dùng; cần người dùng xem trước khi khôi phục dữ liệu. Không bảo đảm rollback toàn bộ binary nếu máy tắt giữa lúc cài; có thể chạy lại bộ cài chính thức sau khi kiểm tra runner đã dừng.
 
 ## Hỏi AI
 
