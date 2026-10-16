@@ -139,7 +139,7 @@ def validate(action,payload):
         p=payload['profile']
         if not isinstance(payload['name'],str) or not payload['name'] or not isinstance(p,dict) or not p.get('roots'):raise ValueError('Cấu hình quét không hợp lệ')
         if p.get('engine','native') not in ('native','wiztree','windirstat','gdu'):raise ValueError('Engine không hợp lệ')
-        if p.get('strict_browsers',True) and p.get('engine','native')!='native':raise ValueError('Bảo vệ Chrome/Edge yêu cầu native; không tự đổi phạm vi')
+        if p.get('strict_browsers',False) and p.get('engine','native')!='native':raise ValueError('Bảo vệ Chrome/Edge yêu cầu native; không tự đổi phạm vi')
         Policy(p)
     elif action=='system-check':
         if payload['tool'] not in ('winsxs','drivers','shadowstorage'):raise ValueError('Tool hệ thống không hợp lệ')

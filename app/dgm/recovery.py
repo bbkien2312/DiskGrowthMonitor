@@ -15,6 +15,8 @@ def rebuild(scan_id, confirmed=False, stop=None, notify=None):
         if event=="info": logging.getLogger("dgm").info("RECOVERY %s %s",scan_id,data["message"])
         external_notify(event,data)
     with ScanLock(stop) as lock:
+        from .storage_metrics import begin as begin_storage, finish as finish_storage
+        storage_meter = begin_storage("scan")
         store = Store(); lock.interrupt = store.db.interrupt
         try:
             source = store.scan(scan_id); saved = json.loads(source["summary"] or "{}")
@@ -27,6 +29,7 @@ def rebuild(scan_id, confirmed=False, stop=None, notify=None):
             new_id = store.begin_scan(source["profile"], source["scope"], source["engine"], p)
             summary = {**saved, "source_scan": scan_id, "captured_at": source["started"], "recovered": True,
                        "import_complete": False, "phase": "copying", "coverage_unverified": True,
+                       "coverage_note": "Phục hồi từ metadata đã nhập sẵn, không thực hiện quét mới; độ bao phủ của lượt nguồn không thể xác minh lại.",
                        "note": "Phục hồi từ metadata đã nhập; không quét mới, không biết dung lượng trống tại thời điểm cũ nếu chưa được lưu."}
             store.record_stage(new_id, summary); started = time.monotonic()
             store.db.set_progress_handler(lambda: int(stop.is_set()), 1000)
@@ -37,6 +40,7 @@ def rebuild(scan_id, confirmed=False, stop=None, notify=None):
                 store.db.execute("INSERT INTO members SELECT ?,path_id,revision_id FROM members WHERE scan_id=?", (new_id, scan_id)); store.db.commit()
                 summary["import_complete"]=True;summary["phase"]="aggregating";store.record_stage(new_id,summary)
                 store.aggregate(new_id, stop=stop, notify=notify)
+                summary["folder_totals_source"]="aggregated-files-v1"
                 summary.update(store.totals(new_id)); summary["phase"] = "partial"
                 summary["errors"] = store.db.execute("SELECT COUNT(*) FROM errors WHERE scan_id=?", (scan_id,)).fetchone()[0]
                 store.db.execute("INSERT INTO errors SELECT ?,path,message FROM errors WHERE scan_id=?", (new_id, scan_id))
@@ -44,6 +48,8 @@ def rebuild(scan_id, confirmed=False, stop=None, notify=None):
                 store.db.set_progress_handler(None, 0)
                 store.finish(new_id, "partial", summary)
                 logging.getLogger("dgm").info("RECOVERY source=%s new=%s seconds=%s", scan_id, new_id, summary["seconds"])
+                summary["storage"] = finish_storage(storage_meter)
+                store.finish(new_id, "partial", summary)
                 return {"scan_id": new_id, "status": "partial", **summary}
             except BaseException as exc:
                 store.db.set_progress_handler(None, 0); store.db.rollback()

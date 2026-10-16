@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import ntpath
 import os
 from contextvars import ContextVar
 from pathlib import Path
@@ -23,6 +24,11 @@ def normalize(path) -> str:
     return str(path).replace("\\", "/").rstrip("/").casefold()
 
 
+def comparison_path_key(path) -> str:
+    """Windows path identity for comparing engine exports, retaining display spelling elsewhere."""
+    return ntpath.normcase(ntpath.normpath(str(path).replace("/", "\\"))).casefold()
+
+
 def inside(path, parent) -> bool:
     a, b = normalize(path), normalize(parent)
     return a == b or a.startswith(b + "/")
@@ -38,7 +44,7 @@ def defaults() -> dict:
     return {"schema": 1, "threshold_mb": 10, "retention_days": 90, "max_snapshots": 90,
             "database_limit_mb": 4096, "debug": False,
             "engines": {"wiztree": r"C:\Program Files\WizTree\WizTree64.exe", "windirstat": "", "gdu": ""},
-            "profiles": {"daily": {"roots": ["C:\\"], "excludes": [], "strict_browsers": True, "engine": "wiztree", "mft": False}},
+            "profiles": {"daily": {"roots": ["C:\\"], "excludes": [], "strict_browsers": False, "engine": "wiztree", "mft": True}},
             "schedules": [], "alerts": {"free_gb": 10, "growth_gb": 2},
             "ai_providers": {"ChatGPT": "https://chatgpt.com/", "Gemini": "https://gemini.google.com/", "Claude": "https://claude.ai/", "Copilot": "https://copilot.microsoft.com/"}}
 
@@ -71,7 +77,7 @@ def profile(name: str) -> dict:
 
 def scope_hash(p: dict) -> str:
     scope = {"roots": sorted(normalize(x) for x in p["roots"]), "excludes": sorted(p.get("excludes", [])),
-             "strict_browsers": p.get("strict_browsers", True), "semantics": "logical-allocated-v1",
+             "strict_browsers": p.get("strict_browsers", False), "semantics": "logical-allocated-v1",
              "volumes": sorted({volume_identity(x) for x in p["roots"]})}
     return hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()
 
@@ -97,7 +103,7 @@ class Policy:
         self.roots = [x for i, x in enumerate(roots) if not any(inside(x, prev) for prev in roots[:i])]
 
     def excluded(self, path) -> bool:
-        if self.p.get("strict_browsers", True) and browser_path(path):
+        if self.p.get("strict_browsers", False) and browser_path(path):
             return True
         if inside(path, ROOT):
             return True

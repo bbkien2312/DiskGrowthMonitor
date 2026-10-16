@@ -25,6 +25,9 @@ def test_baseline_growth_and_small_files(isolated):
     (root / "small.txt").write_bytes(b"a" * 200)
     first = scan("demo", prof(root))
     assert first["status"] == "complete" and first["first_scan"]
+    assert first["storage"]["operation"] == "scan"
+    assert first["storage"]["data"]["after_bytes"] >= first["storage"]["data"]["before_bytes"]
+    assert "ước lượng footprint" in first["storage"]["note"]
     (root / "small.txt").write_bytes(b"b" * 400)
     (root / "new.txt").write_bytes(b"c" * 500)
     second = scan("demo", prof(root))

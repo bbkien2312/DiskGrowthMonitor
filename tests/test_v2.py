@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from dgm.store import Store
 from dgm.comparison import Comparisons
-from dgm.config import home
+from dgm.config import defaults, home, Policy
 
 
 def entry(path,kind='file',value=0,identity='',modified=1):
@@ -13,12 +13,31 @@ def entry(path,kind='file',value=0,identity='',modified=1):
             'created':1,'modified':modified,'identity':identity,'attrs':0,'status':'ok','note':''}
 
 
-def snapshot(store,root,items,name='demo',status='complete',coverage=False):
-    p={'roots':[str(root)],'engine':'native','strict_browsers':True}
-    sid=store.begin_scan(name,'same-scope','native',p)
-    store.put(sid,[entry(root,'folder'),*items]);store.aggregate(sid)
+def snapshot(store,root,items,name='demo',status='complete',coverage=False,engine='native',aggregate=True,root_value=0):
+    p={'roots':[str(root)],'engine':engine,'strict_browsers':True}
+    sid=store.begin_scan(name,'same-scope',engine,p)
+    store.put(sid,[entry(root,'folder',root_value),*items])
+    if aggregate:store.aggregate(sid)
     store.finish(sid,status,{**store.totals(sid),'coverage_unverified':coverage})
     return sid
+
+
+def test_default_daily_profile_is_full_drive_fast_wiztree_and_includes_browser_metadata():
+    p=defaults()['profiles']['daily']
+    assert p['roots']==['C:\\'] and p['engine']=='wiztree' and p['mft'] is True
+    assert p['strict_browsers'] is False and p['excludes']==[]
+    assert not Policy(p).excluded(r'C:\Users\example\AppData\Local\Google\Chrome\User Data')
+
+
+def test_history_gc_indexes_path_members_before_collecting_orphans(isolated):
+    s=Store();root=isolated/'virtual';sid=snapshot(s,root,[entry(root/'orphan.bin',value=25)])
+    s.db.execute('DELETE FROM scans WHERE id=?',(sid,));s.db.commit()
+    events=[];s.gc(notify=lambda event,data:events.append((event,data)))
+    plan=s.db.execute('EXPLAIN QUERY PLAN SELECT 1 FROM members WHERE path_id=?',(1,)).fetchall()
+    assert any('members_path' in row[3] for row in plan)
+    assert s.db.execute('SELECT 1 FROM paths WHERE path=?',(str(root/'orphan.bin'),)).fetchone() is None
+    assert any('tối ưu chỉ mục' in data['message'] for _,data in events)
+    s.close()
 
 
 @pytest.fixture
@@ -68,6 +87,8 @@ def test_recursive_scope_tree_children_and_independent_totals(isolated):
     root=isolated/'virtual';s=Store()
     items=[entry(root/f'd{i}','folder') for i in range(45)]+[entry(root/'d1'/'nested','folder'),entry(root/'d1'/'nested'/'file',value=20)]
     a=snapshot(s,root,items);items[-1]['logical']=50;items[-1]['allocated']=50;b=snapshot(s,root,items)
+    s.db.execute('UPDATE scans SET started=(SELECT started FROM scans WHERE id=?) WHERE id=?',(a,b));s.db.commit()
+    assert s.previous(b)==a
     c=Comparisons();pair=c.prepare(a,b)
     first=c.page(pair,root=str(root),recursive=False,folders_only=True,sort='new')
     assert first['total']==45 and len(first['rows'])==20
@@ -137,6 +158,122 @@ def test_external_new_missing_unknown_and_errors(isolated):
     c.close();s.close()
 
 
+def test_cross_engine_case_variants_and_provider_folder_totals_normalize(isolated):
+    root=isolated/'virtual';s=Store()
+    a=snapshot(s,root,[entry(root/'Dir','folder',900),entry(root/'Dir'/'File.bin',value=100)],
+               engine='wiztree',aggregate=False,root_value=900)
+    b=snapshot(s,root,[entry(root/'dir','folder',700),entry(root/'dir'/'file.BIN',value=100)],
+               engine='native',aggregate=False,root_value=700)
+    c=Comparisons();pair=c.prepare(a,b)
+    files=c.page(pair,kind='file')['rows'];folders=c.page(pair,kind='folder')['rows']
+    assert len(files)==1 and files[0]['change']=='same' and files[0]['delta']==0
+    folder=next(row for row in folders if row['path'].casefold()==str(root/'dir').casefold())
+    assert folder['before']==100 and folder['after']==100 and folder['delta']==0 and folder['change']=='same'
+    assert folder['other_path'] is None
+    direct=c.page(pair,root=str(root/'DIR'),recursive=False,folders_only=True)
+    assert direct['total']==0
+    tree=c.page(pair,root=str(root),recursive=False,folders_only=True)
+    assert [row['path'] for row in tree['rows']]==[str(root/'dir')]
+    c.close();s.close()
+
+
+def test_current_wiztree_pair_uses_exported_folder_totals_without_normalizing(isolated):
+    root=isolated/'virtual';s=Store()
+    old=snapshot(s,root,[entry(root/'Dir','folder',900),entry(root/'Dir'/'File.bin',value=100)],
+                 engine='wiztree',aggregate=False,root_value=1000)
+    new=snapshot(s,root,[entry(root/'Dir','folder',800),entry(root/'Dir'/'File.bin',value=100)],
+                 engine='wiztree',aggregate=False,root_value=900)
+    for scan_id in (old,new):
+        row=s.scan(scan_id);summary=json.loads(row['summary']);summary['folder_totals_source']='wiztree-mft-v1';s.record_stage(scan_id,summary)
+    c=Comparisons();pair=c.prepare(old,new)
+    folder=next(row for row in c.page(pair,kind='folder')['rows'] if row['path']==str(root/'Dir'))
+    assert folder['before']==900 and folder['after']==800 and folder['delta']==-100
+    assert c.db.execute('SELECT COUNT(*) FROM normalized_scans').fetchone()[0]==0
+    c.close();s.close()
+
+
+def test_delete_multiple_snapshots_removes_dependent_pairs_and_keeps_other_snapshots(isolated):
+    root=isolated/'virtual';s=Store()
+    a=snapshot(s,root,[entry(root/'a.bin',value=10)])
+    b=snapshot(s,root,[entry(root/'b.bin',value=20)])
+    c=snapshot(s,root,[entry(root/'c.bin',value=30)])
+    cache=Comparisons();cache.prepare(a,b);cache.prepare(b,c)
+    assert cache.delete_for_scans([b])==2
+    assert s.delete_scans([b])==1
+    assert [row['id'] for row in s.scans()]==[c,a]
+    assert s.db.execute('SELECT COUNT(*) FROM members WHERE scan_id=?',(b,)).fetchone()[0]==0
+    assert cache.history()==[]
+    with pytest.raises(ValueError,match='Không tìm thấy lượt quét'):s.delete_scans([b])
+    cache.close();s.close()
+
+
+def test_delete_scans_refuses_running_snapshot(isolated):
+    s=Store();scan_id=s.begin_scan('daily','scope','native',{'roots':['C:\\']})
+    with pytest.raises(ValueError,match='đang chạy'):s.delete_scans([scan_id])
+    assert s.scan(scan_id)['status']=='running'
+    s.close()
+
+
+def test_allocated_delta_is_separate_from_logical_delta(isolated):
+    root=isolated/'virtual';s=Store()
+    old=entry(root/'file',value=100);old['allocated']=4096
+    new=entry(root/'file',value=100);new['allocated']=8192
+    a=snapshot(s,root,[old]);b=snapshot(s,root,[new])
+    c=Comparisons();pair=c.prepare(a,b);row=c.page(pair,kind='file',sort='allocated')['rows'][0]
+    assert row['delta']==0 and row['allocated_before']==4096 and row['allocated_after']==8192
+    assert row['allocated_delta']==4096 and row['change']=='modified'
+    c.close();s.close()
+
+
+def test_case_collisions_are_unknown_not_arbitrarily_matched(isolated):
+    root=isolated/'virtual';s=Store()
+    a=snapshot(s,root,[entry(root/'File',value=10)])
+    b=snapshot(s,root,[entry(root/'File',value=20),entry(root/'file',value=30)],aggregate=False)
+    c=Comparisons();pair=c.prepare(a,b)
+    rows=c.page(pair,kind='file')['rows']
+    assert len(rows)==2 and all(row['change']=='unknown' and row['delta'] is None for row in rows)
+    c.close();s.close()
+
+
+def test_clear_comparison_cache_preserves_snapshots_and_history_clear_is_separate(isolated):
+    root=isolated/'virtual';s=Store();sid=snapshot(s,root,[entry(root/'file',value=10)])
+    c=Comparisons();pair=c.prepare(None,sid)
+    assert c.history() and s.scans()
+    s.close()
+    c.clear_all()
+    assert c.history()==[]
+    c.close()
+    s=Store(readonly=True);assert s.scan(sid)['id']==sid;s.close()
+    s=Store();assert s.db.execute('SELECT COUNT(*) FROM sequence_counters').fetchone()[0]>=1
+    s.clear_scans()
+    assert s.scans()==[] and s.db.execute('SELECT COUNT(*) FROM scan_numbers').fetchone()[0]==0
+    next_id=s.begin_scan('demo','same-scope','native',{'roots':[str(root)]})
+    assert next_id>sid and s.scan(next_id)['ordinal']==2
+    s.close()
+
+
+def test_legacy_store_migrates_scan_id_counter_without_losing_rows(isolated):
+    import sqlite3
+    database=home()/'data/history.sqlite';database.parent.mkdir(parents=True,exist_ok=True)
+    db=sqlite3.connect(database)
+    db.executescript("""
+      CREATE TABLE scans(id INTEGER PRIMARY KEY,profile TEXT,scope TEXT,engine TEXT,started TEXT,finished TEXT,status TEXT,config TEXT,summary TEXT);
+      CREATE TABLE paths(id INTEGER PRIMARY KEY,path TEXT UNIQUE,parent TEXT);
+      CREATE TABLE revisions(id INTEGER PRIMARY KEY,key TEXT UNIQUE,path_id INTEGER,kind TEXT,logical INTEGER,allocated INTEGER,created REAL,modified REAL,identity TEXT,attrs INTEGER,status TEXT,note TEXT);
+      CREATE TABLE members(scan_id INTEGER,path_id INTEGER,revision_id INTEGER,PRIMARY KEY(scan_id,path_id));
+      INSERT INTO scans VALUES(1,'legacy','scope','native','2026-01-01','2026-01-01','complete','{}','{}');
+      INSERT INTO paths VALUES(1,'C:\\Fixture\\File.bin','C:\\Fixture');
+      INSERT INTO revisions VALUES(1,'old-key',1,'file',10,10,1,1,'',0,'ok','');
+      INSERT INTO members VALUES(1,1,1);
+    """);db.close()
+    store=Store()
+    assert store.scan(1)['profile']=='legacy'
+    second=store.begin_scan('legacy','scope','native',{})
+    store.put(second,[entry(r'C:\Fixture\New.bin',value=20)])
+    assert second==2 and store.db.execute('SELECT COUNT(*) FROM members WHERE scan_id=?',(second,)).fetchone()[0]==1
+    store.close()
+
+
 def test_recovery_preserves_cancelled_source_and_time(isolated):
     from dgm.recovery import rebuild
     s=Store();root=isolated/'virtual';sid=snapshot(s,root,[entry(root/'f',value=45)],status='cancelled')
@@ -144,6 +281,7 @@ def test_recovery_preserves_cancelled_source_and_time(isolated):
     with pytest.raises(ValueError,match='bằng chứng'):rebuild(sid)
     result=rebuild(sid,confirmed=True)
     assert result['logical']==45 and result['recovered'] and result['coverage_unverified']
+    assert result['storage']['operation']=='scan' and 'không thực hiện quét mới' in result['coverage_note']
     assert s.scan(sid)==original and s.scan(result['scan_id'])['started']==original['started']
     assert s.db.execute('SELECT revision_id FROM members WHERE scan_id=?',(sid,)).fetchall()==old_revision
     s.close()

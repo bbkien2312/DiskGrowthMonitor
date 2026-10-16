@@ -7,11 +7,12 @@ from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit, QPushButton, QCheckBox, QSplitter, QTreeWidget, QTreeWidgetItem, QTableView, QStyledItemDelegate
 from .store import Store
+from .config import comparison_path_key
 from .comparison import Comparisons
-from .presentation import size, local_time, scan_label, scan_name, change_text, change_color, CHANGES
+from .presentation import size, local_time, scan_label, scan_name, change_text, change_color, CHANGES, storage_delta
 from .ui_helpers import StatusFilter, MetricCard, FittedTree
 
-HEADERS = ["Đường dẫn", "Mức thay đổi", "Dung lượng cũ", "Dung lượng mới", "Loại", "Trên đĩa (mới)", "Ngày tạo", "Ngày sửa", "Trạng thái"]
+HEADERS = ["Đường dẫn", "Mức thay đổi", "Dung lượng cũ", "Dung lượng mới", "Loại", "Chênh lệch trên đĩa", "Ngày tạo", "Ngày sửa", "Trạng thái"]
 SORT_COLUMNS = ["path", "delta", "old", "new", "kind", "allocated", "created", "modified", "change"]
 PAGE_SIZES = (20,50,100,200,500,1000)
 
@@ -79,9 +80,11 @@ class DetailModel(QAbstractTableModel):
             from zoneinfo import ZoneInfo
             stamp = lambda v: datetime.fromtimestamp(v, ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M:%S") if v else "—"
             values = [row["path"], change_text(row["delta"]), size(row["before"]), size(row["after"]),
-                      {"file":"File","folder":"Thư mục","link":"Liên kết"}.get(row["kind"],row["kind"]), size(row["allocated"]),
+                      {"file":"File","folder":"Thư mục","link":"Liên kết"}.get(row["kind"],row["kind"]), change_text(row.get("allocated_delta")),
                       stamp(row["created"]), stamp(row["modified"]), CHANGES.get(row["change"],row["change"])]
             text = values[index.column()]
+            if index.column()==5 and role==Qt.ItemDataRole.ToolTipRole:
+                text += "\nCấp phát cũ → mới: "+size(row.get("allocated_before"))+" → "+size(row.get("allocated_after"))
             if role == Qt.ItemDataRole.ToolTipRole and row.get("other_path"):
                 text += "\nĐường dẫn ở mốc kia: " + row["other_path"]
             return text
@@ -110,14 +113,14 @@ class DiskBrowser(QWidget):
     def __init__(self, owner):
         super().__init__(); self.owner = owner; self.generation = 0; self.tree_generation = 0; self.detail_worker = None; self.loading_workers=set()
         self.detail_jobs=set();self.restore_target=0;self.query_options={}
-        self.pair_id = None; self.tree_pair = None; self.tree_ids = None; self.root = None; self.profile = None; self.sort = "delta"; self.direction = "desc"
+        self.pair_id = None; self.tree_pair = None; self.tree_ids = None; self.latest_tree_ids=None; self.root = None; self.profile = None; self.sort = "delta"; self.direction = "desc";self.pending_open=None
         layout = QVBoxLayout(self); layout.setContentsMargins(0,0,0,0); layout.setSpacing(6)
         controls = QHBoxLayout(); self.older = QComboBox(); self.newer = QComboBox()
         controls.addWidget(QLabel("Mốc cũ")); controls.addWidget(self.older,1); controls.addWidget(QLabel("Mốc mới")); controls.addWidget(self.newer,1)
-        owner.button("So sánh", self.compare, controls); owner.button("Xuất snapshot",owner.export,controls); owner.button("Xóa metadata",owner.delete_snapshot,controls)
+        owner.button("So sánh", self.compare, controls); owner.button("Xuất snapshot",owner.export,controls); owner.button("Xóa lượt quét",owner.delete_snapshot,controls)
         layout.addLayout(controls)
-        self.older.setToolTip("Mốc cũ phải trước mốc mới và cùng phạm vi. Không điều khiển mốc theo dõi của cây bên trái.")
-        self.newer.setToolTip("Cũ/Mới áp dụng cho tổng quan và bảng chi tiết. Cây luôn theo hai lượt hợp lệ gần nhất.")
+        self.older.setToolTip("Mốc cũ phải trước mốc mới và cùng phạm vi. Cây mặc định dùng đúng cặp này.")
+        self.newer.setToolTip("Cũ/Mới áp dụng cho tổng quan, cây và bảng chi tiết khi cây chọn ‘Cặp đang so sánh’.")
         cards = QHBoxLayout(); self.metrics = []
         for tone in ('old','new','delta','summary'):
             label=MetricCard(tone); cards.addWidget(label,1); self.metrics.append(label)
@@ -129,13 +132,16 @@ class DiskBrowser(QWidget):
         owner.button("Lọc / về đầu",self.reload,filters); owner.button("Xem toàn bộ",lambda:self.select_scope(None),filters)
         layout.addLayout(filters)
         self.search.returnPressed.connect(self.reload)
-        compare_help=owner.help_box(layout,"compare","Tổng quan luôn theo toàn phạm vi Cũ/Mới. Cây theo hai lượt gần nhất, độc lập với mốc so sánh; chỉ bung mũi tên chưa đổi phạm vi bảng. Bấm chọn thư mục để lọc chi tiết; bật Gồm thư mục con để tính cả nhánh, Xem toàn bộ để bỏ giới hạn thư mục. Chọn 20/50/100/200/500/1000 mục mỗi lượt; đổi lựa chọn không xóa dòng đang xem. Sắp xếp áp dụng toàn bộ kết quả thỏa bộ lọc, không chỉ dòng đã mở. Đổi cột/chiều giữ số lượng đã mở nhưng lấy lại từ đầu theo thứ tự mới. Cache RAM 400–2000 dòng; cuộn lại đọc từ cache đĩa. Lần đầu lập chỉ mục có thể cần chờ, có Dừng tải. Màu xanh ↑ là tăng dung lượng, không có nghĩa là thay đổi tốt.")
+        compare_help=owner.help_box(layout,"compare","Tổng quan, cây và bảng chi tiết mặc định dùng cùng cặp Cũ/Mới. Có thể chuyển cây sang theo dõi hai lượt hợp lệ gần nhất độc lập. Bấm chọn thư mục để lọc chi tiết; bật Gồm thư mục con để tính cả nhánh. Sắp xếp áp dụng toàn bộ kết quả thỏa bộ lọc. Cột Mức thay đổi tính theo kích thước logic; Chênh lệch trên đĩa tính theo byte cấp phát. Cache RAM 400–2000 dòng; lần đầu lập chỉ mục có thể cần chờ. Màu xanh ↑ là tăng dung lượng, không có nghĩa là thay đổi tốt.")
         filters.addWidget(compare_help.toggle)
         self.info=QLabel("Chưa có kết quả"); self.info.setWordWrap(True); layout.addWidget(self.info)
         self.splitter=QSplitter(); left=QWidget(); ll=QVBoxLayout(left); ll.setContentsMargins(0,0,0,0)
-        self.tree_label=QLabel("Theo dõi gần nhất"); self.tree_label.setObjectName('sectionTitle'); self.tree_label.setWordWrap(True); ll.addWidget(self.tree_label)
+        tree_header=QHBoxLayout();self.tree_label=QLabel("Cây thư mục • cặp so sánh đang chọn");self.tree_label.setObjectName('sectionTitle');self.tree_label.setWordWrap(True);tree_header.addWidget(self.tree_label,1)
+        self.tree_mode=QComboBox();self.tree_mode.addItem("Cặp đang so sánh","selected");self.tree_mode.addItem("Theo dõi lượt mới nhất","latest")
+        self.tree_mode.setCurrentIndex(max(0,self.tree_mode.findData(owner.preferences.values.get('tree/mode','selected'))))
+        self.tree_mode.setToolTip("Chọn cặp so sánh để cây khớp bảng chi tiết, hoặc theo dõi hai lượt hợp lệ mới nhất.");tree_header.addWidget(self.tree_mode);ll.addLayout(tree_header)
         self.tree=FittedTree(); self.tree.setHeaderLabels(["Thư mục","Mới nhất","Thay đổi"]); self.tree.setAlternatingRowColors(True)
-        self.tree.itemExpanded.connect(self.expand); self.tree.itemClicked.connect(self.clicked)
+        self.tree.itemExpanded.connect(self.expand); self.tree.itemClicked.connect(self.clicked);self.tree.itemDoubleClicked.connect(self.open_tree_item)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu); self.tree.customContextMenuRequested.connect(self.tree_menu)
         ll.addWidget(self.tree); self.splitter.addWidget(left)
         right=QWidget(); rl=QVBoxLayout(right); rl.setContentsMargins(0,0,0,0)
@@ -146,14 +152,15 @@ class DiskBrowser(QWidget):
         self.table.setItemDelegateForColumn(0,PathDelegate(self.table))
         self.table.verticalHeader().setDefaultSectionSize(30)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu); self.table.customContextMenuRequested.connect(self.table_menu)
+        self.table.doubleClicked.connect(self.open_row)
         self.table.horizontalHeader().setSortIndicatorShown(True); self.table.horizontalHeader().setSortIndicator(1,Qt.SortOrder.DescendingOrder)
         self.table.horizontalHeader().sectionClicked.connect(self.sort_clicked)
+        self.tree_mode.currentIndexChanged.connect(self.tree_mode_changed)
         rl.addWidget(self.table,1); self.splitter.addWidget(right)
         layout.addWidget(self.splitter,1)
         widths=self.tree.default_widths();left.setMinimumWidth(330);right.setMinimumWidth(430)
         self.splitter.setSizes(owner.preferences.values.get("splitter/scan-v3",[sum(widths)+8,850]))
-        # A new key avoids applying old widths to the reordered columns.
-        owner.columns(self.tree,"tree-v3",widths); owner.columns(self.table,"details-v3",[300,145,120,120,85,135,170,170,185])
+        owner.columns(self.tree,"tree-v3",widths); owner.columns(self.table,"details-v3",[300,145,120,120,85,155,170,170,185])
         footer=QHBoxLayout(); self.page_label=QLabel("0 mục");self.page_label.setWordWrap(True);footer.addWidget(self.page_label,1)
         footer.addWidget(QLabel('Mỗi lượt:'));self.page_size=QComboBox()
         for count in PAGE_SIZES:self.page_size.addItem(str(count),count)
@@ -168,6 +175,7 @@ class DiskBrowser(QWidget):
         footer.addStretch(); owner.button("Hỏi AI",owner.ai_snapshot,footer); layout.addLayout(footer)
 
     def refresh(self, profile):
+        tree_ids=None
         store=Store(readonly=True)
         try:
             all_rows=sorted(store.scans(),key=lambda r:(r["started"],r["id"]),reverse=True)
@@ -187,26 +195,57 @@ class DiskBrowser(QWidget):
             if changed: self.root=None
             if valid:
                 latest=valid[0]; previous=store.previous(latest["id"])
-                if self.tree_ids!=(previous,latest["id"]): self.refresh_tree(previous,latest)
+                self.latest_tree_ids=(previous,latest["id"])
+                tree_ids=self.latest_tree_ids if self.tree_mode.currentData()=='latest' else self.selected_tree_ids(store)
             else:
-                self.tree_generation+=1; self.tree.clear(); self.tree_ids=None; self.tree_label.setText("Chưa có lượt hợp lệ để theo dõi.")
+                self.latest_tree_ids=None
         finally: store.close()
 
-    def refresh_tree(self, previous, latest):
-        self.tree_generation+=1; generation=self.tree_generation; self.tree_ids=(previous,latest["id"]); self.tree.clear(); self.tree_pair=None
+        if tree_ids and self.tree_ids!=tree_ids:self.refresh_tree(*tree_ids)
+        elif not tree_ids:
+            self.tree_generation+=1;self.tree.clear();self.tree_ids=None;self.tree_pair=None
+            self.tree_label.setText("Chưa có lượt hợp lệ để hiển thị.")
+
+    def selected_tree_ids(self,store=None):
+        newer=self.newer.currentData()
+        if not newer:return None
+        owned=store is None
+        store=store or Store(readonly=True)
+        try:
+            selected=self.older.currentData()
+            older=store.previous(newer) if selected is None else selected or None
+            return older,newer
+        finally:
+            if owned:store.close()
+
+    def tree_mode_changed(self,*_):
+        mode=self.tree_mode.currentData()
+        self.owner.preferences.set('tree/mode',mode)
+        if mode=='latest':
+            if self.latest_tree_ids:self.refresh_tree(*self.latest_tree_ids)
+        else:
+            selected=self.selected_tree_ids()
+            if selected and getattr(self,'ids',None)!=selected:self.compare()
+            elif selected:self.refresh_tree(*selected)
+
+    def refresh_tree(self, previous, newer_id):
+        self.tree_generation+=1; generation=self.tree_generation; self.tree_ids=(previous,newer_id); self.tree.clear(); self.tree_pair=None
         store=Store(readonly=True)
-        try: prior=store.scan(previous) if previous else None
+        try:
+            prior=store.scan(previous) if previous else None
+            latest=store.scan(newer_id)
         finally: store.close()
-        self.tree_label.setText("Theo dõi gần nhất (độc lập)\n"+(scan_name(prior)+" → " if prior else "Mốc ban đầu → ")+scan_name(latest)+"\n"+local_time(latest["started"]))
+        title="Theo dõi lượt mới nhất (độc lập)" if self.tree_mode.currentData()=='latest' else "Cây theo cặp so sánh"
+        self.tree_label.setText(title+"\n"+(scan_name(prior)+" → " if prior else "Mốc ban đầu → ")+scan_name(latest)+"\n"+local_time(latest["started"]))
         roots=json.loads(latest["config"])["roots"]
         def prepare(worker):
             cache=Comparisons(worker.stop,worker.event.emit)
             try:
-                pair=cache.prepare(previous,latest["id"])
+                pair=cache.prepare(previous,newer_id)
                 rows=[]
                 for root in roots:
-                    record=cache.db.execute("SELECT c.*,p.path FROM diff_rows c JOIN source.paths p ON p.id=c.path_id WHERE c.pair_id=? AND p.path=?",(pair,str(Path(root)))).fetchone()
-                    if record: rows.append(dict(record))
+                    records=cache.db.execute("SELECT c.*,p.path FROM diff_rows c JOIN source.paths p ON p.id=c.path_id WHERE c.pair_id=? AND dgm_path_key(p.path)=dgm_path_key(?)",(pair,str(Path(root)))).fetchmany(2)
+                    if len(records)==1: rows.append(dict(records[0]))
                 return pair,rows
             finally: cache.close()
         def done(value):
@@ -297,6 +336,8 @@ class DiskBrowser(QWidget):
             older=store.previous(newer) if selected is None else selected or None
             a=store.scan(older) if older else None;b=store.scan(newer)
         finally:store.close()
+        self.ids=(older,newer)
+        if self.tree_mode.currentData()=='selected' and self.tree_ids!=self.ids:self.refresh_tree(*self.ids)
         old_totals=json.loads(a["summary"] or "{}") if a else None;new_totals=json.loads(b["summary"] or "{}")
         self.metrics[0].setText("DUNG LƯỢNG CŨ\n"+size(old_totals.get("logical") if old_totals else None))
         self.metrics[1].setText("DUNG LƯỢNG MỚI\n"+size(new_totals.get("logical")))
@@ -308,7 +349,6 @@ class DiskBrowser(QWidget):
         volumes=new_totals.get("volumes",{})
         disk=" • Ổ tại mốc mới: "+"; ".join(f"{v} đã dùng {size(x['used'])}, trống {size(x['free'])}" for v,x in volumes.items()) if volumes else " • Dung lượng trống tại mốc này chưa được lưu."
         self.info.setText(("Cũ: "+scan_label(a)+" → " if a else "Mốc ban đầu • ")+"Mới: "+scan_label(b)+"\nTổng file quét ≠ dung lượng ổ đã dùng; thư mục cha gồm con, không cộng trùng."+disk+warnings)
-        self.ids=(older,newer)
         def prepare(worker):
             cache=Comparisons(worker.stop,worker.event.emit)
             try:return cache.prepare(older,newer)
@@ -328,6 +368,11 @@ class DiskBrowser(QWidget):
             self.stop_details();self.query_options=self.options();self.restore_target=wanted
             self.model.reset();self.update_page_text();self.fetch_group(0)
         else:self.compare()
+
+    def cache_cleared(self):
+        self.generation+=1;self.stop_details();self.pair_id=None;self.model.reset();self.owner.rows=[]
+        self.load_button.setEnabled(False);self.update_page_text()
+        self.info.setText("Cache so sánh đã xóa; snapshot vẫn được giữ. Bấm So sánh để tạo lại kết quả khi cần.")
 
     def fetch_group(self,group):
         if not self.pair_id:return
@@ -354,13 +399,20 @@ class DiskBrowser(QWidget):
             self.owner.displayed_scan_id=self.ids[1]
             if self.owner.scan_worker is None:
                 restoring=self.restore_target>self.model.loaded and bool(self.model.next_cursor)
-                self.owner.status.setText((f'Đang lấy lại {self.model.loaded:,}/{self.restore_target:,} mục theo thứ tự mới…' if restoring else f"Đã sẵn sàng • hiển thị {self.model.loaded:,}/{page['total']:,} mục chi tiết; tổng quan tính toàn phạm vi."))
+                self.owner.status.setText((f'Đang lấy lại {self.model.loaded:,}/{self.restore_target:,} mục theo thứ tự mới…' if restoring else f"Đã sẵn sàng • hiển thị {self.model.loaded:,}/{page['total']:,} mục chi tiết; tổng quan tính toàn phạm vi • Δ data/log {storage_delta(summary.get('storage'))}. Xem tooltip trong Lịch sử để biết dung lượng trước/sau."))
+            if self.pending_open and self.pending_open[0]==generation:
+                pending_row=self.pending_open[1];start=self.model.starts[group]
+                if start<=pending_row<start+len(page["rows"]):
+                    self.pending_open=None;self._dispatch_open(self.model.row_at(pending_row))
         worker=self.owner.job(fetch,done)
         if append:self.detail_worker=worker
         self.track_detail(worker)
         def finished():
             if generation!=self.generation:return
             self.model.pending.discard(group)
+            if not accepted[0] and self.pending_open and self.pending_open[0]==generation:
+                pending_row=self.pending_open[1]
+                if group<len(self.model.starts) and self.model.starts[group]<=pending_row<self.model.starts[group]+self.model.lengths[group]:self.pending_open=None
             if self.detail_worker is worker:self.detail_worker=None
             if append:
                 if accepted[0] and self.restore_target>self.model.loaded and self.model.next_cursor:
@@ -393,6 +445,28 @@ class DiskBrowser(QWidget):
     def table_menu(self,point):
         index=self.table.indexAt(point);row=self.model.row_at(index.row()) if index.isValid() else None
         if row:self.owner.path_menu(row["path"],self.table.viewport().mapToGlobal(point))
+
+    def open_row(self,index):
+        if not index.isValid():return
+        row_index=index.row();self.pending_open=(self.generation,row_index)
+        row=self.model.row_at(row_index)
+        if not row:
+            self.owner.status.setText("Đang tải lại dòng đã rời cache để mở mục…")
+            return
+        self.pending_open=None;self._dispatch_open(row)
+
+    def _dispatch_open(self,row):
+        if not row:return
+        if row['kind']=='folder':
+            if self.root!=row['path']:self.select_scope(row['path'])
+            self.table.setFocus()
+        else:
+            self.owner.file_action(row['path'],'open')
+
+    def open_tree_item(self,item,column):
+        data=item.data(0,Qt.ItemDataRole.UserRole)
+        if data and not data.get('more') and self.root!=data['path']:
+            self.select_scope(data['path'])
 
     def tree_menu(self,point):
         item=self.tree.itemAt(point);data=item.data(0,Qt.ItemDataRole.UserRole) if item else None

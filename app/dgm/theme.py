@@ -29,4 +29,6 @@ QToolButton#helpToggle{font-size:17px;font-weight:600;padding:3px 8px;color:#247
 QToolButton:checked{background:#dcecfb;border-color:#75a5d0;}
 QScrollArea{border:0;background:transparent;} QSplitter::handle{background:#d6e0e9;width:7px;}
 QToolTip{background:#fffceb;color:#263e55;border:1px solid #d4cfa8;padding:6px;}
+QProgressBar{background:#ffffff;border:1px solid #cad5df;border-radius:6px;min-height:12px;text-align:center;color:#294562;}
+QProgressBar::chunk{background:#79aedd;border-radius:5px;}
 """

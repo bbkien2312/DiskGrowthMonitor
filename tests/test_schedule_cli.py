@@ -36,3 +36,20 @@ def test_cli_gui_same_profile_storage(isolated):
     result = runner.invoke(app, ["compare", str(rows[0]["id"])])
     assert result.exit_code == 0 and "Lần đầu quét" in result.output
 
+
+def test_cli_delete_selected_and_all_snapshots(isolated):
+    from dgm.store import Store
+    store=Store();ids=[]
+    for name in ("one","two","three"):
+        scan_id=store.begin_scan(name,"same-scope","native",{"roots":["C:\\"]})
+        store.finish(scan_id,"complete",{})
+        ids.append(scan_id)
+    store.close();runner=CliRunner()
+    result=runner.invoke(app,["snapshots-delete","--id",str(ids[0]),"--id",str(ids[1])],input="y\n")
+    assert result.exit_code==0,result.output
+    assert '"deleted_snapshots": 2' in result.output
+    store=Store(readonly=True);assert [row['id'] for row in store.scans()]==[ids[2]];store.close()
+    result=runner.invoke(app,["snapshots-delete","--all"],input="y\nXOA LICH SU\n")
+    assert result.exit_code==0,result.output
+    store=Store(readonly=True);assert store.scans()==[];store.close()
+

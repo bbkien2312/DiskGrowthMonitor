@@ -8,6 +8,8 @@ from .platform_ops import reset_measurements, measurements
 
 
 def benchmark(name, p, engines=("native", "wiztree"), repeats=3, notify=None, cancel=None):
+    from .storage_metrics import begin as begin_storage, finish as finish_storage
+    storage_meter = begin_storage("benchmark")
     cancel = cancel or threading.Event()
     results = []
     reference = None
@@ -15,7 +17,7 @@ def benchmark(name, p, engines=("native", "wiztree"), repeats=3, notify=None, ca
         for engine in list(engines)[round_number % len(engines):] + list(engines)[:round_number % len(engines)]:
             if cancel.is_set():
                 break
-            if p.get("strict_browsers", True) and engine != "native":
+            if p.get("strict_browsers", False) and engine != "native":
                 if round_number == 0:
                     results.append({"engine": engine, "status": "skipped", "reason": "Profile cấm đọc browser metadata; không chạy MFT toàn ổ"})
                 continue
@@ -69,6 +71,7 @@ def benchmark(name, p, engines=("native", "wiztree"), repeats=3, notify=None, ca
                                 "folders": result["folders"], "errors": result.get("errors", 0), **samples,
                                 "logical": result.get("logical"), "allocated": result.get("allocated"),
                                 "accuracy_matches_reference": signature == reference if reference is not None else None,
+                                "scan_storage": result.get("storage"),
                                 "cpu_seconds_total": round(cpu + sum(x["cpu_seconds"] for x in children), 3),
                                 "read_bytes_total": io.read_bytes - io_start.read_bytes + sum(x["read_bytes"] for x in children),
                                 "write_bytes_total": io.write_bytes - io_start.write_bytes + sum(x["write_bytes"] for x in children),
@@ -79,6 +82,9 @@ def benchmark(name, p, engines=("native", "wiztree"), repeats=3, notify=None, ca
             finally:
                 stop.set()
                 thread.join()
+    storage = finish_storage(storage_meter)
+    for item in results:
+        item["benchmark_storage"] = storage
     store = Store()
     store.db.execute("INSERT INTO benchmarks(created,content) VALUES(?,?)", (now(), json.dumps(results, ensure_ascii=False)))
     store.db.commit()

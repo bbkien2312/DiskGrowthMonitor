@@ -1,3 +1,12 @@
+# Disk Growth Monitor 1.1.1 — phát hành 16/10/2026
+
+- Làm rõ trạng thái “Hoàn tất • có giới hạn”: với WizTree/engine ngoài, app không thể tự xác minh đã bao phủ toàn bộ phạm vi; với native, lịch sử hiển thị số mục/vùng không đọc được. Đây là cảnh báo về độ tin cậy, không phải kết luận chắc chắn đã thiếu dữ liệu. Các thay đổi thêm/mất có thể chuyển thành “chưa xác định” khi phạm vi chưa được xác minh.
+- Ghi lại dung lượng data/log trước và sau từng lượt quét, cặp so sánh và lần chạy benchmark. Đo kích thước file SQLite của app (bao gồm WAL/SHM) cùng app/audit log đã xoay vòng; không duyệt nội dung ổ đĩa được quét và không phải số cluster NTFS đã cấp phát.
+- Lịch sử GUI có cột “Δ data / log”, tooltip cho dung lượng trước/sau và giải thích cách đọc. CLI trả về cùng số liệu; benchmark gắn số đo tổng thao tác và số đo từng lượt scan.
+- Chênh lệch là ước lượng footprint trong khoảng thao tác: SQLite có thể tái sử dụng trang đã cấp phát, cache comparison có thể bị trim và log có thể xoay vòng. Mẫu sau được chụp trước khi ghi metadata thống kê để không tự tính phần ghi của chính nó.
+- Tiếp tục giữ các thay đổi đã duyệt cho lượt trước: mở file/folder bằng double-click, tối ưu chuẩn hóa đối chiếu, và xóa chọn một/nhiều/toàn bộ snapshot cùng cache phụ thuộc.
+- Kiểm chứng: 210 test tự động; smoke test installer frozen với fixture riêng xác nhận cài mới, scan/compare, nâng cấp an toàn và gỡ cài đặt vẫn giữ data/log.
+
 # Disk Growth Monitor 1.1.0 — phát hành 15/10/2026
 
 - Dropdown tải 20/50/100/200/500/1000 mục, lưu riêng tùy chọn GUI. Đổi kích thước lượt tải không làm mất dòng; 20 + 100 = 120 và 20 + 1000 = 1020 đúng thứ hạng toàn kết quả.

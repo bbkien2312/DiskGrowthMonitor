@@ -125,6 +125,7 @@ def test_background_buttons_and_scope_confirmation(gui, monkeypatch):
     assert buttons["enable"].isEnabled() and buttons["remove"].isEnabled()
     assert not buttons["disable"].isEnabled()
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.No)
+    w.strict.setChecked(True)
     w.begin_scan()
     assert w.scan_worker is None and w.engine.currentText() == "wiztree"
 

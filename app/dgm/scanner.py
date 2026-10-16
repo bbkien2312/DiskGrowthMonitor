@@ -166,7 +166,7 @@ def wiztree_entries(policy, config, stop, notify):
         output = work / f"wiztree-{os.getpid()}-{index}.csv"
         output.unlink(missing_ok=True)
         args = [exe, root, f"/export={output}", "/exportfolders=1", "/exportfiles=1", "/exportalldates=1", "/exportUTCTime=1", "/exportmftrecno=1", "/exportdrivecapacity=1"]
-        if policy.p.get("strict_browsers", True):
+        if policy.p.get("strict_browsers", False):
             raise ValueError("WizTree raw MFT không đáp ứng profile cấm đọc metadata trình duyệt")
         # Explicitly allow MFT only in a profile whose browser protection was disabled.
         args += ["/admin=1" if policy.p.get("mft", False) else "/admin=0"]
@@ -239,7 +239,7 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
     stop, external_notify = stop or threading.Event(), notify or (lambda *a: None)
     requested = p.get("engine", "native")
     engine = requested
-    if p.get("strict_browsers", True) and engine != "native":
+    if p.get("strict_browsers", False) and engine != "native":
         raise ValueError("Không đọc/quét Chrome/Edge yêu cầu công cụ native. Chọn native rõ ràng; app không tự đổi engine.")
     if engine == "wiztree" and p.get("mft", False) and not is_admin():
         if not allow_uac:raise PermissionError('Quét MFT chạy nền cần quyền Admin; cài/bật Task hoặc Service bằng Admin. Không mở UAC trong lịch nền.')
@@ -250,6 +250,8 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
     if engine not in ("native", "wiztree", "windirstat", "gdu"):
         raise ValueError("Engine không hợp lệ")
     policy = Policy(p)
+    from .storage_metrics import begin as begin_storage, finish as finish_storage
+    storage_meter = begin_storage("scan")
     start = time.perf_counter()
     with ScanLock(stop) as lock, StoreContext() as store:
         lock.interrupt = store.db.interrupt
@@ -257,7 +259,9 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
         store.db.execute("UPDATE scans SET status='failed',finished=? WHERE status='running'", (datetime.now(timezone.utc).isoformat(),))
         store.db.commit()
         scan_id = store.begin_scan(name, scope_hash(p), engine, p)
-        summary = {"files": 0, "folders": 0, "volumes": {}, "root_overview": {}, "phase": "preparing", "scope_note": "Chỉ các vùng được phép; không suy đoán dung lượng vùng loại trừ"}
+        summary = {"files": 0, "folders": 0, "volumes": {}, "root_overview": {}, "phase": "preparing",
+                   "measurement_semantics": "dgm-logical-allocated-v2",
+                   "scope_note": "Logical cộng theo từng đường dẫn file; byte cấp phát chỉ tính một lần cho hardlink. Nguồn tổng thư mục được lưu theo engine; snapshot cũ thiếu nguồn sẽ chuẩn hóa một lần khi so sánh."}
         last_log = [0.0]
         def notify(event, data):
             if event == "overview":
@@ -277,7 +281,7 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
             if stop.is_set():
                 raise Cancelled()
             notify("info", {"message": "Đang chuẩn bị lịch sử quét..."})
-            store.prune()
+            store.prune(notify=notify)
             from .engines import windirstat_entries, gdu_entries
             factories = {"wiztree": wiztree_entries, "windirstat": windirstat_entries, "gdu": gdu_entries}
             summary["phase"] = "importing"
@@ -301,17 +305,31 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
             summary["import_complete"] = True; summary["phase"] = "aggregating"
             store.record_stage(scan_id, summary)
             store.db.set_progress_handler(lambda: int(stop.is_set()), 1000)
-            if engine == "wiztree" and p.get("mft", False) and not p.get("excludes") and not any(inside(home(),r) for r in policy.roots):
-                notify("info", {"message": "Dùng tổng thư mục đã có trong WizTree; không cộng lại từng thư mục."})
+            wiztree_totals = engine == "wiztree" and p.get("mft", False) and not p.get("excludes") and not any(inside(home(),r) for r in policy.roots)
+            if wiztree_totals:
+                notify("info", {"message": "Dùng tổng thư mục gốc từ WizTree; chỉ xử lý hardlink. So sánh WizTree không chuẩn hóa lại các thư mục."})
                 store.dedupe(scan_id,stop)
             else:
-                notify("info", {"message": "Đang tính dung lượng các thư mục theo lô..."})
+                notify("info", {"message": "Chuẩn hóa dung lượng thư mục từ danh sách file (dùng chung cho mọi công cụ)..."})
                 store.aggregate(scan_id, stop=stop, notify=notify)
+            summary["folder_totals_source"] = "wiztree-mft-v1" if wiztree_totals else "aggregated-files-v1"
             error_count = store.db.execute("SELECT COUNT(*) FROM errors WHERE scan_id=?", (scan_id,)).fetchone()[0]
             summary["errors"] = error_count
             if error_count or engine != "native":
                 status = "partial"
             summary["coverage_unverified"] = engine != "native"
+            coverage_reasons = []
+            if engine != "native":
+                coverage_reasons.append(
+                    f"Kết quả đến từ engine ngoài ({engine}); app không thể tự xác minh đã bao phủ toàn bộ phạm vi. "
+                    "Đây là trạng thái thận trọng, không khẳng định chắc chắn đã bỏ sót; phân loại thêm/mất có thể chưa xác định."
+                )
+            if error_count:
+                coverage_reasons.append(
+                    f"Có {error_count:,} mục/vùng không đọc được; thay đổi trong các vùng đó có thể chưa đầy đủ."
+                )
+            if coverage_reasons:
+                summary["coverage_note"] = " ".join(coverage_reasons)
             for root in policy.roots:
                 try:
                     d = shutil.disk_usage(root)
@@ -347,6 +365,9 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
         summary["first_scan"] = previous is None
         result = {"scan_id": scan_id, "status": status, "previous": previous, **summary}
         logging.getLogger("dgm").info("SCAN finished %s", result)
+        summary["storage"] = finish_storage(storage_meter)
+        result["storage"] = summary["storage"]
+        store.finish(scan_id, status, summary)
         notify("finished", result)
         return result
 

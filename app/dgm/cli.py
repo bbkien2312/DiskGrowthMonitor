@@ -56,7 +56,7 @@ def profile_list():
 
 @profiles.command("set")
 def profile_set(name: str, root: list[str] = typer.Option(..., "--root"), exclude: list[str] = typer.Option([], "--exclude"),
-                engine: str = "wiztree", strict_browsers: bool = True, threshold_mb: float = 10, mft: bool = False):
+                engine: str = "wiztree", strict_browsers: bool = False, threshold_mb: float = 10, mft: bool = True):
     from .config import load, save, Policy
     if engine not in ("native", "wiztree", "windirstat", "gdu") or threshold_mb < 0:
         raise typer.BadParameter("Engine/ngưỡng không hợp lệ")
@@ -206,6 +206,39 @@ def comparison_delete(pair_id: int):
         if typer.confirm("Xóa metadata/cache của so sánh này? Không xóa snapshot hay file trên ổ."):
             cache.delete(pair_id); output({"deleted_comparison":pair_id})
     finally: cache.close()
+
+
+@app.command("comparison-cache-clear")
+def comparison_cache_clear():
+    from .comparison import Comparisons
+    if not typer.confirm("Xóa toàn bộ cache so sánh? Snapshot lịch sử vẫn được giữ và cache sẽ được tạo lại khi cần."):
+        raise typer.Exit()
+    cache=Comparisons()
+    try:
+        cache.clear_all();output({"cleared":"comparison-cache","snapshots_preserved":True})
+    finally:cache.close()
+
+
+@app.command("history-clear")
+def history_clear():
+    from .comparison import Comparisons
+    from .store import Store
+    store=Store(readonly=True)
+    try:
+        count=store.db.execute("SELECT COUNT(*) FROM scans").fetchone()[0]
+        if store.db.execute("SELECT 1 FROM scans WHERE status='running' LIMIT 1").fetchone():
+            raise typer.BadParameter("Có lượt quét đang chạy; dừng lượt đó trước.")
+    finally:store.close()
+    if not typer.confirm(f"Xóa {count} snapshot, lỗi quét và cache so sánh? Không xóa file thật, cấu hình hay log."):
+        raise typer.Exit()
+    cache=Comparisons()
+    try:cache.clear_all()
+    finally:cache.close()
+    store=Store()
+    try:
+        store.clear_scans()
+        output({"cleared":"scan-history-and-comparison-cache","snapshots":count,"files_preserved":True})
+    finally:store.close()
 
 
 @app.command("export")
@@ -388,9 +421,48 @@ def snapshot_delete(scan_id: int):
     s = Store()
     row = s.scan(scan_id)
     if typer.confirm(f"Xóa metadata snapshot #{scan_id} ({row['profile']})? Không xóa file đã quét."):
-        s.db.execute("DELETE FROM scans WHERE id=?", (scan_id,)); s.db.commit()
+        from .comparison import Comparisons
+        cache=Comparisons()
+        try:cache.delete_for_scan(scan_id)
+        finally:cache.close()
+        s.delete_scan(scan_id)
         output({"deleted_snapshot": scan_id})
     s.close()
+
+
+@app.command("snapshots-delete")
+def snapshots_delete(scan_id: Optional[list[int]] = typer.Option(None,"--id",help="ID lượt quét; lặp --id để chọn nhiều"),
+                     all_scans: bool = typer.Option(False,"--all",help="Xóa toàn bộ lịch sử quét")):
+    from .store import Store
+    from .presentation import scan_name
+    if all_scans and scan_id:
+        raise typer.BadParameter("Dùng --all hoặc --id, không dùng đồng thời.")
+    store=Store(readonly=True)
+    try:
+        rows=store.scans();by_id={row["id"]:row for row in rows}
+        ids=sorted(by_id) if all_scans else sorted(set(scan_id or []))
+        if not ids:raise typer.BadParameter("Chỉ định --id <ID> (có thể lặp) hoặc --all.")
+        missing=set(ids)-by_id.keys()
+        if missing:raise typer.BadParameter("Không tìm thấy ID: "+", ".join(map(str,sorted(missing))))
+        running=[scan_id for scan_id in ids if by_id[scan_id]["status"]=="running"]
+        if running:raise typer.BadParameter("Không xóa lượt đang chạy: "+", ".join(map(str,running)))
+        labels=[scan_name(by_id[scan_id]) for scan_id in ids[:8]]
+        if len(ids)>8:labels.append(f"… và {len(ids)-8} lượt khác")
+    finally:store.close()
+    scope="toàn bộ lịch sử" if all_scans else f"{len(ids)} lượt đã chọn"
+    typer.echo("\n".join(labels))
+    if not typer.confirm(f"Xóa metadata {scope} và cache so sánh phụ thuộc? File/thư mục thật, cấu hình và log được giữ."):
+        raise typer.Exit()
+    if all_scans and typer.prompt("Nhập XOA LICH SU để tiếp tục")!="XOA LICH SU":
+        raise typer.Exit()
+    from .comparison import Comparisons
+    cache=Comparisons()
+    try:cache.delete_for_scans(ids)
+    finally:cache.close()
+    store=Store()
+    try:count=store.delete_scans(ids)
+    finally:store.close()
+    output({"deleted_snapshots":count,"comparison_cache_removed":True,"files_preserved":True})
 
 
 @app.command("engine-install")

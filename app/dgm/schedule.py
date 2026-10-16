@@ -68,7 +68,7 @@ def add(spec):
             "times": ["09:00"], "timezone": "Asia/Ho_Chi_Minh", "profile": "daily", "anchor": now(),
             "cleanup_rules": [], "update_done": False, **spec}
     p = profile(spec["profile"])
-    if p.get("strict_browsers", True) and p.get("engine", "native") != "native":
+    if p.get("strict_browsers", False) and p.get("engine", "native") != "native":
         raise ValueError("Cấu hình đang bảo vệ Chrome/Edge nhưng chọn công cụ ngoài native. Sửa và Lưu cấu hình trước khi thêm lịch.")
     spec["next_run"] = next_time(spec).isoformat()
     cfg = load()

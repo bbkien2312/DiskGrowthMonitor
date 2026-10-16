@@ -10,9 +10,10 @@ from PySide6.QtGui import QAction, QColor, QIcon, QFont, QFontDatabase
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget,
     QPushButton, QComboBox, QLineEdit, QCheckBox, QDoubleSpinBox, QSpinBox, QPlainTextEdit, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QFileDialog, QInputDialog, QMenu, QSplitter,
-    QTreeWidget, QTreeWidgetItem, QSystemTrayIcon, QStyle, QGroupBox, QToolButton, QScrollArea)
+    QTreeWidget, QTreeWidgetItem, QSystemTrayIcon, QStyle, QGroupBox, QToolButton, QScrollArea, QProgressBar)
 from .config import ROOT, load, save, profile
 from .store import Store
+from .comparison import Comparisons
 from .ui_helpers import Preferences, HelpBox, interactive_columns
 from .presentation import scan_label, scan_name
 from .platform_ops import ProcessCancelled
@@ -101,6 +102,9 @@ class Window(QMainWindow):
         self.offset = 0
         self.status = QLabel("Sẵn sàng • CLI và GUI dùng chung dữ liệu")
         self.status.setWordWrap(True)
+        self.scan_progress = QProgressBar(); self.scan_progress.setRange(0, 100); self.scan_progress.setValue(0)
+        self.scan_progress.setFormat("Sẵn sàng"); self.scan_progress.setTextVisible(True)
+        self.scan_progress.setAccessibleName("Tiến độ quét"); self.scan_progress.setFixedSize(320, 16)
         from .theme import LIGHT
         self.setStyleSheet(LIGHT)
         outer = QWidget()
@@ -110,7 +114,7 @@ class Window(QMainWindow):
         layout.addWidget(title)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
-        status_row=QHBoxLayout();status_row.addWidget(self.status,1)
+        status_row=QHBoxLayout();status_row.addWidget(self.status,1);status_row.addWidget(self.scan_progress)
         self.admin_stop_button=self.button('Dừng tác vụ Admin',self.cancel_admin,status_row)
         self.admin_stop_button.setToolTip('Gửi yêu cầu dừng cho đúng tác vụ này. DISM được chờ kết thúc an toàn; không cưỡng bức tắt.')
         self.admin_stop_button.hide();layout.addLayout(status_row)
@@ -194,6 +198,8 @@ class Window(QMainWindow):
         import logging
         logging.getLogger("dgm").error("GUI %s", message)
         self.status.setText("Lỗi: " + message.splitlines()[0])
+        if self.scan_worker is not None:
+            self.scan_progress.setRange(0, 100); self.scan_progress.setValue(0); self.scan_progress.setFormat("Quét thất bại")
         QMessageBox.warning(self, "Không hoàn tất", message)
 
     def set_scan_busy(self, busy):
@@ -204,6 +210,10 @@ class Window(QMainWindow):
             control.setEnabled(not blocked)
         self.mft.setEnabled(not blocked and not self.strict.isChecked())
         self.stop_button.setEnabled(busy)
+        if busy:
+            self.scan_progress.setRange(0, 0); self.scan_progress.setFormat("Đang khởi tạo lượt quét...")
+        elif self.scan_progress.maximum() == 0:
+            self.scan_progress.setRange(0, 100); self.scan_progress.setValue(0); self.scan_progress.setFormat("Sẵn sàng")
 
     def set_admin_busy(self,busy):
         self.admin_busy=busy;self.set_scan_busy(self.scan_worker is not None)
@@ -248,16 +258,33 @@ class Window(QMainWindow):
 
     def progress(self, event, data):
         if event=='uac-state':
-            self.set_admin_busy(data['phase']!='done');return
+            self.set_admin_busy(data['phase']!='done')
+            if self.scan_worker is not None and data['phase'] != 'done':
+                self.scan_progress.setRange(0, 0); self.scan_progress.setFormat("Đang chờ xác nhận quyền Admin...")
+            return
         if event=='cancelled':
-            self.status.setText(data['message']);return
+            self.status.setText(data['message'])
+            if self.scan_worker is not None:
+                self.scan_progress.setRange(0, 100); self.scan_progress.setValue(0); self.scan_progress.setFormat("Đã yêu cầu dừng")
+            return
         if event == "progress":
             if not (self.scan_worker and self.scan_worker.stop.is_set()):
                 self.status.setText(f"{data['count']:,}" + (f"/{data['total']:,}" if data.get('total') else "") + f" mục • {data['path']}")
+                if self.scan_worker is not None:
+                    total = data.get("total")
+                    if total:
+                        self.scan_progress.setRange(0, total); self.scan_progress.setValue(min(data["count"], total))
+                        self.scan_progress.setFormat(f"%p% • {data['count']:,}/{total:,} mục")
+                    else:
+                        self.scan_progress.setRange(0, 0); self.scan_progress.setFormat(f"Đang xử lý • {data['count']:,} mục")
         elif event == "info":
             if not (self.scan_worker and self.scan_worker.stop.is_set()):
                 self.status.setText(data["message"])
+                if self.scan_worker is not None:
+                    self.scan_progress.setRange(0, 0); self.scan_progress.setFormat(data["message"])
         elif event == "started":
+            if self.scan_worker is not None:
+                self.scan_progress.setRange(0, 0); self.scan_progress.setFormat("Đã tạo mốc quét; đang chuẩn bị...")
             s=Store(readonly=True)
             try:label=scan_name(s.scan(data['scan_id']))
             finally:s.close()
@@ -386,7 +413,7 @@ class Window(QMainWindow):
         p = profile(name)
         self.roots.setText(";".join(p["roots"]))
         self.excludes.setText(";".join(p.get("excludes", [])))
-        self.strict.setChecked(p.get("strict_browsers", True))
+        self.strict.setChecked(p.get("strict_browsers", False))
         self.mft.setChecked(p.get("mft", False)); self.mft.setEnabled(not self.strict.isChecked())
         self.engine.setCurrentText(p.get("engine", "wiztree"))
         self.threshold.setValue(p["threshold_mb"])
@@ -482,14 +509,29 @@ class Window(QMainWindow):
 
     def scan_done(self, result):
         if result.get('before_start'):
-            self.status.setText(result.get('message','Đã hủy cấp quyền; tác vụ chưa chạy.'));return
-        status = {"cancelled": "Đã dừng", "failed": "Không hoàn tất", "complete": "Hoàn tất", "partial": "Hoàn tất, chưa xác minh đủ / có mục không đọc được"}.get(result["status"], result["status"])
+            self.status.setText(result.get('message','Đã hủy cấp quyền; tác vụ chưa chạy.'))
+            self.scan_progress.setRange(0, 100); self.scan_progress.setValue(0); self.scan_progress.setFormat("Chưa bắt đầu quét")
+            return
+        status = {"cancelled": "Đã dừng", "failed": "Không hoàn tất", "complete": "Hoàn tất", "partial": "Hoàn tất • có giới hạn"}.get(result["status"], result["status"])
+        if result["status"] == "partial":
+            if result.get("coverage_unverified"):
+                status += " (engine ngoài: chưa xác minh toàn phạm vi)"
+            elif result.get("errors"):
+                status += f" ({result['errors']:,} mục/vùng không đọc được)"
+            elif result.get("recovered"):
+                status += " (phục hồi metadata, không quét mới)"
+        if result["status"] in ("complete", "partial"):
+            self.scan_progress.setRange(0, 100); self.scan_progress.setValue(100); self.scan_progress.setFormat(status)
+        else:
+            self.scan_progress.setRange(0, 100); self.scan_progress.setValue(0); self.scan_progress.setFormat(status)
         store=Store(readonly=True)
         try:
             try: label=scan_name(store.scan(result['scan_id']))
             except ValueError: label="Lượt quét"
         finally: store.close()
-        self.status.setText(f"{label}: {status} • {result['files']:,} file • {result['seconds']:.1f}s")
+        from .presentation import storage_delta
+        storage_text=storage_delta(result.get("storage"))
+        self.status.setText(f"{label}: {status} • {result['files']:,} file • {result['seconds']:.1f}s • Δ data/log {storage_text}")
         self.refresh_history()
         if result["status"] in ("complete", "partial"):
             self.newer.setCurrentIndex(self.newer.findData(result["scan_id"]))
@@ -576,10 +618,13 @@ class Window(QMainWindow):
         store=Store(readonly=True)
         try: label=scan_label(store.scan(scan_id))
         finally: store.close()
-        if QMessageBox.question(self, "Xóa metadata", f"Xóa {label}? Không xóa file đã quét.") == QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, "Xóa lượt quét", f"Xóa metadata của {label} và các cache so sánh phụ thuộc? Không xóa file đã quét, cấu hình hay log.") == QMessageBox.StandardButton.Yes:
             def remove(_):
+                cache=Comparisons()
+                try:cache.delete_for_scan(scan_id)
+                finally:cache.close()
                 s=Store()
-                try:s.db.execute("DELETE FROM scans WHERE id=?",(scan_id,));s.db.commit()
+                try:s.delete_scan(scan_id)
                 finally:s.close()
                 return True
             self.job(remove,lambda _:(self.refresh_history(),self.compare()))

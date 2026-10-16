@@ -8,7 +8,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from .config import home, load, normalize
+from .config import home, load, normalize, comparison_path_key
 from .store import Store, now
 from .platform_ops import ProcessCancelled
 
@@ -22,9 +22,9 @@ def _locked(stop):
         yield
     finally: _build_lock.release()
 
-VERSION = 2
+VERSION = 4
 SORTS = {"delta": "COALESCE(delta,-9223372036854775808)", "old": "COALESCE(before,-1)", "new": "COALESCE(after,-1)",
-         "created": "created", "modified": "modified", "allocated": "COALESCE(allocated,-1)",
+         "created": "created", "modified": "modified", "allocated": "COALESCE(allocated_delta,-9223372036854775808)",
          "kind": "kind", "change": "change", "path": "name_rank"}
 SCOPE_SORTS = {"delta": "delta_key", "old": "before_key", "new": "after_key", "created": "created",
                "modified": "modified", "allocated": "allocated_key", "kind": "kind", "change": "change", "path": "name_rank"}
@@ -38,6 +38,7 @@ class Comparisons:
         self.path = home() / "data/comparisons.sqlite"
         self.db = sqlite3.connect(f"file:{self.path.as_posix()}?mode=rwc", uri=True, timeout=30)
         self.db.row_factory = sqlite3.Row
+        self.db.create_function("dgm_path_key", 1, comparison_path_key, deterministic=True)
         self.db.execute("PRAGMA journal_mode=WAL"); self.db.execute("PRAGMA cache_size=-16384")
         self.db.execute("ATTACH DATABASE ? AS source", (f"file:{(home() / 'data/history.sqlite').as_posix()}?mode=ro",))
         self.db.executescript("""
@@ -45,7 +46,8 @@ class Comparisons:
           created TEXT,status TEXT,summary TEXT,touched TEXT,names_ready INTEGER DEFAULT 0,UNIQUE(older,newer,version));
         CREATE TABLE IF NOT EXISTS diff_rows(pair_id INTEGER,path_id INTEGER,parent_id INTEGER,kind TEXT,
           old_revision INTEGER,new_revision INTEGER,before INTEGER,after INTEGER,delta INTEGER,abs_delta INTEGER,
-          max_size INTEGER,allocated INTEGER,created REAL,modified REAL,change TEXT,other_path_id INTEGER,name_rank INTEGER DEFAULT 0,
+          max_size INTEGER,allocated INTEGER,allocated_before INTEGER,allocated_after INTEGER,allocated_delta INTEGER,
+          created REAL,modified REAL,change TEXT,other_path_id INTEGER,name_rank INTEGER DEFAULT 0,
           PRIMARY KEY(pair_id,path_id)) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS scopes(id INTEGER PRIMARY KEY,pair_id INTEGER,root_id INTEGER,touched TEXT,UNIQUE(pair_id,root_id));
         CREATE TABLE IF NOT EXISTS scope_items(scope_id INTEGER,path_id INTEGER,before_key INTEGER,after_key INTEGER,
@@ -58,19 +60,27 @@ class Comparisons:
         CREATE INDEX IF NOT EXISTS diff_new ON diff_rows(pair_id,COALESCE(after,-1),path_id);
         CREATE INDEX IF NOT EXISTS diff_created ON diff_rows(pair_id,created,path_id);
         CREATE INDEX IF NOT EXISTS diff_modified ON diff_rows(pair_id,modified,path_id);
-        CREATE INDEX IF NOT EXISTS diff_allocated ON diff_rows(pair_id,COALESCE(allocated,-1),path_id);
         CREATE INDEX IF NOT EXISTS diff_change ON diff_rows(pair_id,change,path_id);
         CREATE INDEX IF NOT EXISTS diff_kind ON diff_rows(pair_id,kind,path_id);
         CREATE INDEX IF NOT EXISTS diff_name ON diff_rows(pair_id,name_rank,path_id);
         CREATE INDEX IF NOT EXISTS diff_children_new ON diff_rows(pair_id,parent_id,kind,COALESCE(after,-1),path_id);
         CREATE TABLE IF NOT EXISTS query_counts(fingerprint TEXT PRIMARY KEY,pair_id INTEGER,total INTEGER);
+        CREATE TABLE IF NOT EXISTS normalized_folders(scan_id INTEGER,path_id INTEGER,logical INTEGER,allocated INTEGER,
+          PRIMARY KEY(scan_id,path_id)) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS normalized_scans(scan_id INTEGER PRIMARY KEY);
         """)
         with _build_lock:
             try:
                 self.db.execute('BEGIN IMMEDIATE')
+                columns={r[1] for r in self.db.execute('PRAGMA table_info(diff_rows)')}
+                for name in ('allocated_before','allocated_after','allocated_delta'):
+                    if name not in columns:self.db.execute(f'ALTER TABLE diff_rows ADD COLUMN {name} INTEGER')
+                self.db.execute('DROP INDEX IF EXISTS diff_allocated')
+                self.db.execute('CREATE INDEX diff_allocated ON diff_rows(pair_id,COALESCE(allocated_delta,-9223372036854775808),path_id)')
                 if 'delta_key' not in [r[1] for r in self.db.execute('PRAGMA table_info(scope_items)')]:
                     self.db.execute('ALTER TABLE scope_items ADD COLUMN delta_key INTEGER')
                     self.db.execute('UPDATE scope_items SET delta_key=COALESCE((SELECT c.delta FROM diff_rows c JOIN scopes t ON t.pair_id=c.pair_id WHERE t.id=scope_items.scope_id AND c.path_id=scope_items.path_id),-9223372036854775808)')
+                self.db.execute('UPDATE scope_items SET allocated_key=COALESCE((SELECT c.allocated_delta FROM diff_rows c JOIN scopes t ON t.pair_id=c.pair_id WHERE t.id=scope_items.scope_id AND c.path_id=scope_items.path_id),-9223372036854775808) WHERE allocated_key IS NOT NULL')
                 if 'names_ready' not in [r[1] for r in self.db.execute('PRAGMA table_info(scopes)')]:
                     self.db.execute('ALTER TABLE scopes ADD COLUMN names_ready INTEGER DEFAULT 0')
                 for column in SCOPE_SORTS.values():
@@ -105,63 +115,139 @@ class Comparisons:
             b = store.scan(newer); a = store.scan(older) if older else None
             if b["status"] not in ("complete", "partial") or (a and a["status"] not in ("complete", "partial")):
                 raise ValueError("Lượt đang chạy/bị hủy/lỗi không dùng để so sánh.")
-            if a and (a["scope"] != b["scope"] or a["started"] >= b["started"]):
+            if a and (a["scope"] != b["scope"] or (a["started"],a["id"]) >= (b["started"],b["id"])):
                 raise ValueError("Mốc cũ phải trước mốc mới và cùng phạm vi/bộ loại trừ.")
             return {"older": a, "newer": b, "old_totals": json.loads(a["summary"] or "{}") if a else None,
                     "new_totals": json.loads(b["summary"] or "{}")}
         finally:
             store.close()
 
+    def _normalize_folders(self, scan_id):
+        if not scan_id or self.db.execute('SELECT 1 FROM normalized_scans WHERE scan_id=?',(scan_id,)).fetchone():
+            return
+        self.stage='Đang chuẩn hóa tổng thư mục từ file trong snapshot'
+        self.notify('info',{'message':self.stage})
+        direct={row['parent']:[row['logical'] or 0,row['allocated'] or 0] for row in self.db.execute("""SELECT p.parent,
+          SUM(r.logical) AS logical,SUM(r.allocated) AS allocated FROM source.members m
+          JOIN source.paths p ON p.id=m.path_id JOIN source.revisions r ON r.id=m.revision_id
+          WHERE m.scan_id=? AND r.kind='file' GROUP BY p.parent""",(scan_id,))}
+        folders=self.db.execute("""SELECT m.path_id,p.path,p.parent FROM source.members m
+          JOIN source.paths p ON p.id=m.path_id JOIN source.revisions r ON r.id=m.revision_id
+          WHERE m.scan_id=? AND r.kind='folder' ORDER BY LENGTH(p.path) DESC,m.path_id""",(scan_id,)).fetchall()
+        exact={row['path']:row['path_id'] for row in folders};by_key={}
+        for row in folders:by_key.setdefault(comparison_path_key(row['path']),[]).append(row['path_id'])
+        totals={row['path_id']:list(direct.get(row['path'],(0,0))) for row in folders}
+        for index,row in enumerate(folders):
+            if self.stop.is_set():raise ProcessCancelled()
+            parent=exact.get(row['parent'])
+            if parent is None:
+                candidates=by_key.get(comparison_path_key(row['parent']),[])
+                if len(candidates)==1:parent=candidates[0]
+            if parent in totals and parent!=row['path_id']:
+                totals[parent][0]+=totals[row['path_id']][0];totals[parent][1]+=totals[row['path_id']][1]
+            if index and index%10000==0:self.notify('progress',{'count':index,'total':len(folders),'path':'Chuẩn hóa dung lượng thư mục'})
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            self.db.execute('DELETE FROM normalized_folders WHERE scan_id=?',(scan_id,))
+            self.db.executemany('INSERT INTO normalized_folders VALUES(?,?,?,?)',
+                ((scan_id,path_id,values[0],values[1]) for path_id,values in totals.items()))
+            self.db.execute('INSERT OR IGNORE INTO normalized_scans VALUES(?)',(scan_id,));self.db.commit()
+        except BaseException:
+            self.db.rollback();raise
+
+    def _comparison_map(self, table, scan_id):
+        self.db.execute(f'DROP TABLE IF EXISTS temp.{table}')
+        self.db.execute(f"""CREATE TEMP TABLE {table} AS SELECT m.path_id,p.path,p.parent,
+          dgm_path_key(p.path) AS path_key,m.revision_id,r.kind,
+          CASE WHEN r.kind='folder' THEN COALESCE(nf.logical,r.logical) ELSE r.logical END AS logical,
+          CASE WHEN r.kind='folder' THEN COALESCE(nf.allocated,r.allocated) ELSE r.allocated END AS allocated,
+          r.created,r.modified,r.identity,r.attrs,r.status,
+          COUNT(*) OVER(PARTITION BY dgm_path_key(p.path)) AS key_count
+          FROM source.members m JOIN source.paths p ON p.id=m.path_id JOIN source.revisions r ON r.id=m.revision_id
+          LEFT JOIN normalized_folders nf ON nf.scan_id=m.scan_id AND nf.path_id=m.path_id WHERE m.scan_id=?""",(scan_id,))
+        self.db.execute(f'CREATE INDEX temp.{table}_key ON {table}(path_key)')
+        self.db.execute(f'ALTER TABLE {table} ADD COLUMN parent_path_id INTEGER')
+        self.db.execute(f"""UPDATE {table} AS child SET parent_path_id=(
+          SELECT CASE WHEN COUNT(*)=1 THEN MIN(parent.path_id) END FROM {table} AS parent
+          WHERE parent.path_key=dgm_path_key(child.parent)) WHERE child.key_count=1""")
+
     def prepare(self, older, newer):
+        from .storage_metrics import begin as begin_storage, finish as finish_storage
+        storage_meter = begin_storage("comparison")
         overview = self.overview(older, newer)
         with _locked(self.stop):
             existing = self.db.execute("SELECT * FROM pairs WHERE older=? AND newer=? AND version=?", (older or 0, newer, VERSION)).fetchone()
             if existing and existing["status"] == "ready":
                 self.db.execute("UPDATE pairs SET touched=? WHERE id=?", (now(), existing["id"])); self.db.commit()
+                summary = json.loads(existing["summary"] or "{}")
+                summary["storage"] = finish_storage(storage_meter)
+                self.db.execute("UPDATE pairs SET summary=? WHERE id=?", (json.dumps(summary, ensure_ascii=False), existing["id"]))
+                self.db.commit()
+                logging.getLogger("dgm").info("COMPARE cached old=%s new=%s", older, newer)
                 return existing["id"]
             self.trim(keep=existing["id"] if existing else None, target_pairs=1)
             self.db.execute("INSERT OR IGNORE INTO pairs(older,newer,version,created,status,touched) VALUES(?,?,?,?,?,?)", (older or 0, newer, VERSION, now(), "building", now()))
             pair = self.db.execute("SELECT id FROM pairs WHERE older=? AND newer=? AND version=?", (older or 0, newer, VERSION)).fetchone()[0]
             self.db.commit()
             try:
+                # Current scans record where folder totals came from: WizTree's
+                # export, or an aggregation already performed by the scanner.
+                # Only pre-provenance snapshots need the expensive compatibility
+                # normalization, which is cached once per snapshot.
+                if older and not overview["old_totals"].get("folder_totals_source"):
+                    self._normalize_folders(older)
+                if not overview["new_totals"].get("folder_totals_source"):
+                    self._normalize_folders(newer)
+                self._comparison_map('compare_new',newer)
+                self._comparison_map('compare_old',older or 0)
                 self.db.execute("DELETE FROM diff_rows WHERE pair_id=?", (pair,))
                 self.db.execute("DELETE FROM query_counts WHERE pair_id=?",(pair,))
                 self.stage = "Đang lập chỉ mục chi tiết so sánh (một lần)"
                 self.notify("info", {"message": self.stage})
                 uncertain = bool(older and (overview["old_totals"].get("coverage_unverified") or overview["new_totals"].get("coverage_unverified")))
                 self.db.execute("""INSERT INTO diff_rows(pair_id,path_id,parent_id,kind,old_revision,new_revision,before,after,
-                delta,abs_delta,max_size,allocated,created,modified,change)
-                SELECT ?,n.path_id,CASE WHEN pp.id=p.id THEN NULL ELSE pp.id END,r.kind,o.revision_id,n.revision_id,
-                q.logical,r.logical,CASE WHEN ?=0 THEN NULL ELSE r.logical-COALESCE(q.logical,0) END,
-                CASE WHEN ?=0 THEN -1 ELSE ABS(r.logical-COALESCE(q.logical,0)) END,MAX(r.logical,COALESCE(q.logical,0)),
-                r.allocated,r.created,r.modified,
-                CASE WHEN ?=0 THEN 'first_scan' WHEN o.path_id IS NULL THEN CASE WHEN ? THEN 'unknown' ELSE 'new' END
-                  WHEN r.status IN ('changed-during-scan','unavailable-after-export') OR q.status IN ('changed-during-scan','unavailable-after-export') THEN 'unknown'
-                  WHEN r.identity<>'' AND q.identity<>'' AND (r.identity LIKE 'wiz:%')=(q.identity LIKE 'wiz:%') AND r.identity<>q.identity THEN 'replaced'
-                  WHEN r.logical>q.logical THEN 'grown' WHEN r.logical<q.logical THEN 'shrunk'
-                  WHEN r.modified<>q.modified OR r.created<>q.created OR r.attrs<>q.attrs THEN 'modified' ELSE 'same' END
-                FROM source.members n JOIN source.paths p ON p.id=n.path_id JOIN source.revisions r ON r.id=n.revision_id
-                LEFT JOIN source.paths pp ON pp.path=p.parent
-                LEFT JOIN source.members o ON o.scan_id=? AND o.path_id=n.path_id LEFT JOIN source.revisions q ON q.id=o.revision_id
-                WHERE n.scan_id=?""", (pair, older or 0, older or 0, older or 0, int(uncertain), older or 0, newer))
+                delta,abs_delta,max_size,allocated,allocated_before,allocated_after,allocated_delta,created,modified,change,other_path_id)
+                SELECT ?,n.path_id,CASE WHEN n.parent_path_id=n.path_id THEN NULL ELSE n.parent_path_id END,n.kind,o.revision_id,n.revision_id,
+                o.logical,n.logical,CASE WHEN ?=0 OR n.key_count>1 OR d.matches IS NOT NULL OR e.matches IS NOT NULL THEN NULL ELSE n.logical-COALESCE(o.logical,0) END,
+                CASE WHEN ?=0 OR n.key_count>1 OR d.matches IS NOT NULL OR e.matches IS NOT NULL THEN -1 ELSE ABS(n.logical-COALESCE(o.logical,0)) END,MAX(n.logical,COALESCE(o.logical,0)),
+                n.allocated,o.allocated,n.allocated,CASE WHEN ?=0 OR n.key_count>1 OR d.matches IS NOT NULL OR e.matches IS NOT NULL THEN NULL ELSE n.allocated-COALESCE(o.allocated,0) END,
+                n.created,n.modified,
+                CASE WHEN n.key_count>1 OR d.matches IS NOT NULL OR e.matches IS NOT NULL THEN 'unknown' WHEN ?=0 THEN 'first_scan' WHEN o.path_id IS NULL THEN CASE WHEN ? THEN 'unknown' ELSE 'new' END
+                  WHEN n.status IN ('changed-during-scan','unavailable-after-export') OR o.status IN ('changed-during-scan','unavailable-after-export') THEN 'unknown'
+                  WHEN n.identity<>'' AND o.identity<>'' AND (n.identity LIKE 'wiz:%')=(o.identity LIKE 'wiz:%') AND n.identity<>o.identity THEN 'replaced'
+                  WHEN n.logical>o.logical THEN 'grown' WHEN n.logical<o.logical THEN 'shrunk'
+                  WHEN n.allocated<>o.allocated OR n.modified<>o.modified OR n.created<>o.created OR n.attrs<>o.attrs THEN 'modified' ELSE 'same' END,
+                NULL
+                FROM compare_new n
+                LEFT JOIN compare_old o ON o.path_key=n.path_key AND n.key_count=1 AND o.key_count=1
+                LEFT JOIN (SELECT path_key,COUNT(*) AS matches FROM compare_old GROUP BY path_key HAVING COUNT(*)>1) d ON d.path_key=n.path_key
+                LEFT JOIN (SELECT path_key,COUNT(*) AS matches FROM compare_new GROUP BY path_key HAVING COUNT(*)>1) e ON e.path_key=n.path_key
+                """, (pair, older or 0, older or 0, older or 0, older or 0, int(uncertain)))
                 if older:
-                    self.db.execute("""INSERT INTO diff_rows(pair_id,path_id,parent_id,kind,old_revision,new_revision,before,after,
-                    delta,abs_delta,max_size,allocated,created,modified,change)
-                    SELECT ?,o.path_id,CASE WHEN pp.id=p.id THEN NULL ELSE pp.id END,r.kind,o.revision_id,NULL,r.logical,NULL,
-                    -r.logical,r.logical,r.logical,NULL,r.created,r.modified,CASE WHEN ? THEN 'unknown' ELSE 'missing' END
-                    FROM source.members o JOIN source.paths p ON p.id=o.path_id JOIN source.revisions r ON r.id=o.revision_id
-                    LEFT JOIN source.paths pp ON pp.path=p.parent LEFT JOIN source.members n ON n.scan_id=? AND n.path_id=o.path_id
-                    WHERE o.scan_id=? AND n.path_id IS NULL""", (pair, int(uncertain), newer, older))
+                    self.db.execute("""INSERT OR IGNORE INTO diff_rows(pair_id,path_id,parent_id,kind,old_revision,new_revision,before,after,
+                    delta,abs_delta,max_size,allocated,allocated_before,allocated_after,allocated_delta,created,modified,change)
+                    SELECT ?,o.path_id,CASE WHEN o.parent_path_id=o.path_id THEN NULL ELSE o.parent_path_id END,o.kind,o.revision_id,NULL,o.logical,NULL,
+                    CASE WHEN ? OR o.key_count>1 OR e.matches IS NOT NULL THEN NULL ELSE -o.logical END,
+                    CASE WHEN ? OR o.key_count>1 OR e.matches IS NOT NULL THEN -1 ELSE o.logical END,
+                    o.logical,o.allocated,o.allocated,NULL,CASE WHEN ? OR o.key_count>1 OR e.matches IS NOT NULL THEN NULL ELSE -o.allocated END,
+                    o.created,o.modified,CASE WHEN o.key_count>1 OR e.matches IS NOT NULL OR ? THEN 'unknown' ELSE 'missing' END
+                    FROM compare_old o
+                    LEFT JOIN compare_new n ON n.path_key=o.path_key AND n.key_count=1 AND o.key_count=1
+                    LEFT JOIN (SELECT path_key,COUNT(*) AS matches FROM compare_new GROUP BY path_key HAVING COUNT(*)>1) e ON e.path_key=o.path_key
+                    WHERE n.path_id IS NULL""", (pair, int(uncertain), int(uncertain), int(uncertain), int(uncertain)))
                     if not uncertain:
                         self._moves(pair, older, newer)
                     self._inaccessible(pair, older, newer)
-                self.db.execute("UPDATE diff_rows SET delta=NULL,abs_delta=-1 WHERE pair_id=? AND change='unknown'", (pair,))
+                self.db.execute("UPDATE diff_rows SET delta=NULL,abs_delta=-1,allocated_delta=NULL WHERE pair_id=? AND change='unknown'", (pair,))
                 counts = [dict(r) for r in self.db.execute("SELECT kind,change,COUNT(*) AS count FROM diff_rows WHERE pair_id=? GROUP BY kind,change", (pair,))]
                 summary = {**overview, "counts": counts, "rows": sum(r["count"] for r in counts), "comparison_version": VERSION}
                 self.db.execute("UPDATE pairs SET status='ready',summary=?,touched=?,names_ready=0 WHERE id=?", (json.dumps(summary, ensure_ascii=False), now(), pair))
                 self.db.commit()
                 logging.getLogger("dgm").info("COMPARE ready old=%s new=%s rows=%s", older, newer, summary["rows"])
                 self.trim(keep=pair)
+                summary["storage"] = finish_storage(storage_meter)
+                self.db.execute("UPDATE pairs SET summary=?,touched=? WHERE id=?", (json.dumps(summary, ensure_ascii=False), now(), pair))
+                self.db.commit()
                 return pair
             except BaseException as exc:
                 self.db.set_progress_handler(None, 0); self.db.rollback()
@@ -174,11 +260,14 @@ class Comparisons:
         for label, scan in (("old", older), ("new", newer)):
             self.db.execute(f"DROP TABLE IF EXISTS temp.uid_{label}")
             self.db.execute(f"""CREATE TEMP TABLE uid_{label} AS SELECT r.identity,r.kind,MIN(m.path_id) AS path_id,
-            MIN(r.created) AS created,MIN(r.logical) AS logical,COUNT(*) AS count FROM source.members m
-            JOIN source.revisions r ON r.id=m.revision_id WHERE m.scan_id=? AND r.identity<>'' GROUP BY r.identity,r.kind""", (scan,))
+            MIN(r.created) AS created,MIN(CASE WHEN r.kind='folder' THEN COALESCE(nf.logical,r.logical) ELSE r.logical END) AS logical,
+            MIN(CASE WHEN r.kind='folder' THEN COALESCE(nf.allocated,r.allocated) ELSE r.allocated END) AS allocated,COUNT(*) AS count FROM source.members m
+            JOIN source.revisions r ON r.id=m.revision_id LEFT JOIN normalized_folders nf ON nf.scan_id=m.scan_id AND nf.path_id=m.path_id
+            WHERE m.scan_id=? AND r.identity<>'' GROUP BY r.identity,r.kind""", (scan,))
             self.db.execute(f"CREATE INDEX temp.uid_{label}_key ON uid_{label}(identity,kind)")
         self.db.execute("DROP TABLE IF EXISTS temp.moves")
-        self.db.execute("""CREATE TEMP TABLE moves AS SELECT a.path_id AS old_id,b.path_id AS new_id,a.logical AS before,b.logical AS after
+        self.db.execute("""CREATE TEMP TABLE moves AS SELECT a.path_id AS old_id,b.path_id AS new_id,a.logical AS before,b.logical AS after,
+        a.allocated AS allocated_before,b.allocated AS allocated_after
         FROM uid_old a JOIN uid_new b ON b.identity=a.identity AND b.kind=a.kind
         JOIN diff_rows x ON x.pair_id=? AND x.path_id=a.path_id AND x.change='missing'
         JOIN diff_rows y ON y.pair_id=? AND y.path_id=b.path_id AND y.change='new'
@@ -186,19 +275,21 @@ class Comparisons:
         self.db.execute("CREATE UNIQUE INDEX temp.move_new ON moves(new_id)"); self.db.execute("CREATE UNIQUE INDEX temp.move_old ON moves(old_id)")
         self.db.execute("""UPDATE diff_rows SET change='moved',before=(SELECT before FROM moves WHERE new_id=path_id),
         delta=after-(SELECT before FROM moves WHERE new_id=path_id),abs_delta=ABS(after-(SELECT before FROM moves WHERE new_id=path_id)),
+        allocated_before=(SELECT allocated_before FROM moves WHERE new_id=path_id),
+        allocated_delta=(SELECT allocated_after-allocated_before FROM moves WHERE new_id=path_id),
         max_size=MAX(after,(SELECT before FROM moves WHERE new_id=path_id)),
         other_path_id=(SELECT old_id FROM moves WHERE new_id=path_id) WHERE pair_id=? AND path_id IN (SELECT new_id FROM moves)""", (pair,))
-        self.db.execute("""UPDATE diff_rows SET change='moved_from',delta=0,abs_delta=0,
+        self.db.execute("""UPDATE diff_rows SET change='moved_from',delta=0,abs_delta=0,allocated_delta=0,
         other_path_id=(SELECT new_id FROM moves WHERE old_id=path_id) WHERE pair_id=? AND path_id IN (SELECT old_id FROM moves)""", (pair,))
 
     def _inaccessible(self, pair, older, newer):
         # Prefix ranges mark descendants; ancestors are explicitly indexed IDs.
         for row in self.db.execute("SELECT DISTINCT path FROM source.errors WHERE scan_id IN (?,?)", (older, newer)).fetchall():
-            path = row[0]; prefix = path.rstrip("\\/") + "\\"
+            path = row[0]; key=comparison_path_key(path);prefix=key.rstrip("\\")+"\\"
             self.db.execute("""UPDATE diff_rows SET change='unknown' WHERE pair_id=? AND path_id IN
-            (SELECT id FROM source.paths WHERE path=? OR (path>=? AND path<?))""", (pair, path, prefix, prefix + chr(0x10ffff)))
+            (SELECT id FROM source.paths WHERE dgm_path_key(path)=? OR substr(dgm_path_key(path),1,length(?))=?)""", (pair, key, prefix, prefix))
             for ancestor in Path(path).parents:
-                self.db.execute("UPDATE diff_rows SET change='unknown' WHERE pair_id=? AND kind='folder' AND path_id=(SELECT id FROM source.paths WHERE path=?)", (pair, str(ancestor)))
+                self.db.execute("UPDATE diff_rows SET change='unknown' WHERE pair_id=? AND kind='folder' AND path_id IN (SELECT id FROM source.paths WHERE dgm_path_key(path)=?)", (pair, comparison_path_key(ancestor)))
 
     def names(self, pair, scope=None):
         table, identifier = ('pairs',pair) if scope is None else ('scopes',scope)
@@ -243,7 +334,7 @@ class Comparisons:
                 self.db.execute('INSERT INTO scopes(pair_id,root_id,touched) VALUES(?,?,?)',(pair,lookup,now()))
                 scope=self.db.execute('SELECT id FROM scopes WHERE pair_id=? AND root_id=?',(pair,lookup)).fetchone()[0]
                 fields="""INSERT INTO scope_items(scope_id,path_id,before_key,after_key,abs_delta,allocated_key,created,modified,kind,change,name_rank,delta_key)
-                SELECT ?,c.path_id,COALESCE(c.before,-1),COALESCE(c.after,-1),c.abs_delta,COALESCE(c.allocated,-1),c.created,c.modified,c.kind,c.change,0,COALESCE(c.delta,-9223372036854775808) """
+                SELECT ?,c.path_id,COALESCE(c.before,-1),COALESCE(c.after,-1),c.abs_delta,COALESCE(c.allocated_delta,-9223372036854775808),c.created,c.modified,c.kind,c.change,0,COALESCE(c.delta,-9223372036854775808) """
                 if recursive:
                     self.db.execute("""WITH RECURSIVE children(id) AS (VALUES(?) UNION ALL
                     SELECT c.path_id FROM children d CROSS JOIN diff_rows c INDEXED BY diff_parent
@@ -289,19 +380,20 @@ class Comparisons:
         column = SORTS[sort]
         if not record["older"] and sort == "delta":
             column = SORTS["new"]
-        key = "c." + column if "(" not in column else column.replace("before", "c.before").replace("after", "c.after").replace("allocated", "c.allocated").replace("delta","c.delta")
+        key = "COALESCE(c."+column[len("COALESCE("):] if column.startswith("COALESCE(") else "c."+column
         if effective_root:
-            found = self.db.execute("SELECT id FROM source.paths WHERE path=?", (str(Path(effective_root)),)).fetchone()
-            if not found:
+            found = self.db.execute("SELECT c.path_id FROM diff_rows c JOIN source.paths p ON p.id=c.path_id WHERE c.pair_id=? AND dgm_path_key(p.path)=dgm_path_key(?) LIMIT 2", (pair,str(effective_root))).fetchall()
+            if len(found)!=1:
                 return {"rows": [], "cursor": None, "total": 0, "pair_id": pair}
+            root_id=found[0][0]
             if recursive or sort=='path':
-                scope = self.scope(pair, found[0],recursive=recursive)
+                scope = self.scope(pair, root_id,recursive=recursive)
                 if sort=='path':self.names(pair,scope)
                 joins = f"scope_items s INDEXED BY scope_{SCOPE_SORTS[effective_sort]} JOIN diff_rows c ON c.pair_id=? AND c.path_id=s.path_id JOIN source.paths p ON p.id=c.path_id"
                 args = [pair, pair, scope]; clauses.append("s.scope_id=?")
                 column = SCOPE_SORTS["new" if not record["older"] and sort == "delta" else sort]; key = "s." + column
             else:
-                clauses.append("c.parent_id=?"); args.append(found[0])
+                clauses.append("c.parent_id=?"); args.append(root_id)
                 index = "diff_children_new" if folders_only and effective_sort=="new" else "diff_parent"
                 joins = f"diff_rows c INDEXED BY {index} JOIN source.paths p ON p.id=c.path_id"
         elif sort=='path':
@@ -350,7 +442,7 @@ class Comparisons:
         return json.loads(self.db.execute("SELECT summary FROM pairs WHERE id=?", (pair,)).fetchone()[0])
 
     def history(self):
-        return [dict(r) for r in self.db.execute("SELECT id,older,newer,created,status,summary FROM pairs ORDER BY id DESC")]
+        return [dict(r) for r in self.db.execute("SELECT id,older,newer,created,status,summary FROM pairs WHERE version=? ORDER BY id DESC",(VERSION,))]
 
     def delete(self, pair):
         for row in self.db.execute("SELECT id FROM scopes WHERE pair_id=?",(pair,)).fetchall():
@@ -359,6 +451,46 @@ class Comparisons:
         self.db.execute("DELETE FROM diff_rows WHERE pair_id=?",(pair,))
         self.db.execute("DELETE FROM query_counts WHERE pair_id=?",(pair,))
         self.db.execute("DELETE FROM pairs WHERE id=?",(pair,)); self.db.commit()
+
+    def delete_for_scan(self, scan_id):
+        return self.delete_for_scans([scan_id])
+
+    def delete_for_scans(self, scan_ids):
+        scan_ids=sorted({int(scan_id) for scan_id in scan_ids})
+        if not scan_ids:return 0
+        with _locked(self.stop):
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                pair_count=0
+                for offset in range(0,len(scan_ids),400):
+                    if self.stop.is_set():raise ProcessCancelled()
+                    batch=scan_ids[offset:offset+400];marks=','.join('?' for _ in batch)
+                    pairs=[row[0] for row in self.db.execute(f'SELECT id FROM pairs WHERE older IN ({marks}) OR newer IN ({marks})',(*batch,*batch))]
+                    pair_count+=len(pairs)
+                    for pair_offset in range(0,len(pairs),400):
+                        pair_batch=pairs[pair_offset:pair_offset+400];pair_marks=','.join('?' for _ in pair_batch)
+                        scopes=f'SELECT id FROM scopes WHERE pair_id IN ({pair_marks})'
+                        self.db.execute(f'DELETE FROM scope_items WHERE scope_id IN ({scopes})',pair_batch)
+                        self.db.execute(f'DELETE FROM scopes WHERE pair_id IN ({pair_marks})',pair_batch)
+                        self.db.execute(f'DELETE FROM diff_rows WHERE pair_id IN ({pair_marks})',pair_batch)
+                        self.db.execute(f'DELETE FROM query_counts WHERE pair_id IN ({pair_marks})',pair_batch)
+                        self.db.execute(f'DELETE FROM pairs WHERE id IN ({pair_marks})',pair_batch)
+                    self.db.execute(f'DELETE FROM normalized_folders WHERE scan_id IN ({marks})',batch)
+                    self.db.execute(f'DELETE FROM normalized_scans WHERE scan_id IN ({marks})',batch)
+                self.db.commit()
+            except BaseException:
+                self.db.rollback();raise
+            return pair_count
+
+    def clear_all(self):
+        with _locked(self.stop):
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                for table in ('scope_items','scopes','diff_rows','query_counts','pairs','normalized_folders','normalized_scans'):
+                    self.db.execute(f'DELETE FROM {table}')
+                self.db.commit();self.db.execute('VACUUM');self.db.execute('PRAGMA main.wal_checkpoint(TRUNCATE)')
+            except BaseException:
+                self.db.rollback();raise
 
     def trim(self, keep=None, target_pairs=2):
         ready = self.db.execute("SELECT id FROM pairs WHERE status='ready' AND id<>COALESCE(?,-1) ORDER BY touched DESC", (keep,)).fetchall()

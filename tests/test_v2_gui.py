@@ -3,7 +3,7 @@ os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 import json
 import time
 import pytest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QInputDialog
 from PySide6.QtCore import Qt
 from dgm.gui import Window
 from dgm.config import home,load,save
@@ -40,7 +40,7 @@ def test_virtual_lru_400_rows_refetches_and_does_not_reset_cursor(gui):
     assert model.row_at(0)['path']=='loaded' and model.next_cursor==cursor and len(model.chunks)==20
 
 
-def test_tree_latest_independent_old_new_and_scope(gui,isolated):
+def test_tree_uses_selected_pair_by_default_and_latest_is_optional(gui,isolated):
     app,w=gui;s=Store();root=isolated/'virtual'
     a=snapshot(s,root,[entry(root/'f',value=10)]);b=snapshot(s,root,[entry(root/'f',value=20)]);c=snapshot(s,root,[entry(root/'f',value=40)])
     cfg=load();cfg['profiles']['demo']={'roots':[str(root)],'engine':'native','strict_browsers':True,'threshold_mb':0};save(cfg)
@@ -48,12 +48,95 @@ def test_tree_latest_independent_old_new_and_scope(gui,isolated):
     assert w.browser.tree_ids==(b,c)
     w.older.setCurrentIndex(w.older.findData(a));w.newer.setCurrentIndex(w.newer.findData(b));w.compare();pump(app,lambda:not w.workers)
     model=w.browser.model;row=next(r for chunk in model.chunks.values() for r in chunk if r['kind']=='file')
-    assert row['delta']==10 and w.tree.topLevelItem(0).text(2).startswith('↑ +20')
+    assert row['delta']==10 and w.browser.tree_ids==(a,b) and w.tree.topLevelItem(0).text(2).startswith('↑ +10')
     w.browser.select_scope(str(root));pump(app,lambda:not w.workers)
-    assert w.browser.ids==(a,b) and w.browser.tree_ids==(b,c) and w.newer.currentData()==b
+    assert w.browser.ids==(a,b) and w.browser.tree_ids==(a,b) and w.newer.currentData()==b
+    w.browser.tree_mode.setCurrentIndex(w.browser.tree_mode.findData('latest'));pump(app,lambda:not w.workers)
+    assert w.browser.tree_ids==(b,c) and w.tree.topLevelItem(0).text(2).startswith('↑ +20')
+    w.browser.tree_mode.setCurrentIndex(w.browser.tree_mode.findData('selected'));pump(app,lambda:not w.workers)
+    assert w.browser.tree_ids==(a,b)
     w.history_panel.refresh();pump(app,lambda:not w.workers)
     assert w.history_panel.scans.rowCount()==3 and w.history_panel.pairs.rowCount()>=2
     s.close()
+
+
+def test_double_click_file_opens_and_folder_selects_scope(gui,monkeypatch):
+    app,w=gui;opened=[];scopes=[]
+    monkeypatch.setattr(w,'file_action',lambda path,action:opened.append((path,action)))
+    monkeypatch.setattr(w.browser,'select_scope',lambda path:scopes.append(path))
+    model=w.browser.model
+    model.accept(0,{'rows':[{'path':'D:/fixture/file.bin','kind':'file'},
+                            {'path':'D:/fixture/folder','kind':'folder'}],
+                    'total':2,'cursor':None})
+    w.browser.open_row(model.index(0,0));w.browser.open_row(model.index(1,0))
+    assert opened==[('D:/fixture/file.bin','open')]
+    assert scopes==['D:/fixture/folder']
+
+
+def test_double_click_reloads_evicted_row_then_opens_it(gui,monkeypatch):
+    app,w=gui;opened=[];browser=w.browser;model=browser.model
+    row={'path':'D:/fixture/file.bin','kind':'file','change':'same','delta':0,'before':1,'after':1,
+         'allocated':1,'allocated_before':1,'allocated_after':1,'allocated_delta':0,
+         'created':1,'modified':1,'other_path':None}
+    model.accept(0,{'rows':[row],'total':1,'cursor':None});model.chunks.clear()
+    browser.pair_id=77;browser.ids=(None,7);browser.query_options={};browser.detail_worker=None
+    monkeypatch.setattr(w,'file_action',lambda path,action:opened.append((path,action)))
+    monkeypatch.setattr(Comparisons,'page',lambda self,pair,**options:{'rows':[row],'total':1,'cursor':None})
+    monkeypatch.setattr(Comparisons,'summary',lambda self,pair:{'counts':[{'count':1,'kind':'file','change':'same'}]})
+    browser.open_row(model.index(0,0))
+    pump(app,lambda:not w.workers)
+    assert opened==[('D:/fixture/file.bin','open')]
+    assert browser.pending_open is None
+
+
+def test_history_deletes_selected_snapshot_and_dependent_cache_only(gui,isolated,monkeypatch):
+    app,w=gui;root=isolated/'virtual';store=Store()
+    a=snapshot(store,root,[entry(root/'a',value=10)])
+    b=snapshot(store,root,[entry(root/'b',value=20)])
+    c=snapshot(store,root,[entry(root/'c',value=30)])
+    cache=Comparisons();cache.prepare(a,b);cache.prepare(b,c);cache.close();store.close()
+    panel=w.history_panel;panel.refresh();pump(app,lambda:not w.workers)
+    index=next(i for i,row in enumerate(panel.scan_rows) if row['id']==b)
+    panel.scans.selectRow(index)
+    monkeypatch.setattr(QMessageBox,'warning',lambda *args:QMessageBox.StandardButton.Yes)
+    panel.delete_selected_scans();pump(app,lambda:not w.workers)
+    store=Store(readonly=True);assert {row['id'] for row in store.scans()}=={a,c};store.close()
+    cache=Comparisons();assert all(row['older']!=b and row['newer']!=b for row in cache.history());cache.close()
+    assert 'Đã xóa metadata của 1 lượt' in panel.info.text()
+
+
+def test_history_select_all_requires_phrase_then_removes_all_metadata(gui,isolated,monkeypatch):
+    app,w=gui;root=isolated/'virtual';store=Store()
+    snapshot(store,root,[entry(root/'a',value=10)]);snapshot(store,root,[entry(root/'b',value=20)]);store.close()
+    panel=w.history_panel;panel.refresh();pump(app,lambda:not w.workers);panel.select_all_scans()
+    monkeypatch.setattr(QMessageBox,'warning',lambda *args:QMessageBox.StandardButton.Yes)
+    phrases=iter([('NOT THE PHRASE',True),('XOA LICH SU',True)])
+    monkeypatch.setattr(QInputDialog,'getText',lambda *args:next(phrases))
+    panel.delete_selected_scans()
+    store=Store(readonly=True);assert len(store.scans())==2;store.close()
+    panel.delete_selected_scans();pump(app,lambda:not w.workers)
+    store=Store(readonly=True);assert store.scans()==[];store.close()
+    assert panel.info.text().startswith('Đã xóa metadata của 2 lượt')
+
+
+def test_history_clear_controls_cache_and_metadata_only(gui,isolated,monkeypatch):
+    app,w=gui;root=isolated/'virtual';store=Store()
+    sid=snapshot(store,root,[entry(root/'file',value=10)])
+    cache=Comparisons();cache.prepare(None,sid);cache.close();store.close()
+    config_before=(home()/'data/config.json').read_bytes()
+    log=home()/'logs/preserve-me.log';log.write_text('keep',encoding='utf-8')
+    monkeypatch.setattr(QMessageBox,'question',lambda *args:QMessageBox.StandardButton.Yes)
+    panel=w.history_panel;panel.clear_cache();pump(app,lambda:not w.workers)
+    store=Store(readonly=True);assert store.scan(sid)['id']==sid;store.close()
+    cache=Comparisons();assert cache.history()==[];cache.close()
+    assert w.browser.info.text().startswith('Cache so sánh đã xóa')
+    monkeypatch.setattr(QMessageBox,'warning',lambda *args:QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QInputDialog,'getText',lambda *args:('XOA LICH SU',True))
+    panel.clear_history();pump(app,lambda:not w.workers)
+    store=Store(readonly=True);assert store.scans()==[];store.close()
+    assert (home()/'data/config.json').read_bytes()==config_before
+    assert log.read_text(encoding='utf-8')=='keep'
+    cache=Comparisons();assert cache.history()==[];cache.close()
 
 
 def test_history_baseline_opens_explicit_no_old(gui,isolated):
@@ -145,6 +228,20 @@ def test_admin_phase_locks_mutations_not_browsing(gui):
     assert w.tabs.isEnabled() and w.table.isEnabled()
     w.progress('uac-state',{'phase':'done','operation':'system-check'})
     assert w.scan_button.isEnabled() and all(b.isEnabled() for b in w.system_check_buttons+w.cleanup_action_buttons)
+
+
+def test_scan_progress_bar_switches_between_stage_and_known_fraction(gui):
+    from types import SimpleNamespace
+    import threading
+    app,w=gui
+    assert w.engine.currentText()=='wiztree' and w.mft.isChecked() and not w.strict.isChecked()
+    w.scan_worker=SimpleNamespace(stop=threading.Event())
+    w.progress('info',{'message':'Đang dọn lịch sử không còn liên kết...'})
+    assert w.scan_progress.minimum()==0 and w.scan_progress.maximum()==0
+    w.progress('progress',{'count':25,'total':100,'path':'Tổng hợp thư mục'})
+    assert w.scan_progress.maximum()==100 and w.scan_progress.value()==25
+    assert '25/100' in w.scan_progress.format() and 'Tổng hợp thư mục' in w.status.text()
+    w.scan_worker=None
 
 
 def test_local_cancel_never_stops_some_other_scan(gui,monkeypatch):

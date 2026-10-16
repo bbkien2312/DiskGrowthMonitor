@@ -1,8 +1,16 @@
 # Disk Growth Monitor
 
-[Tải bộ cài Windows x64 v1.1.0](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.1.0) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
+[Tải bộ cài Windows x64 v1.1.1](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.1.1) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
 
-**Bản mới nhất: 1.1.0.** Xem thay đổi và tải `installer.exe` cùng `SHA256SUMS.txt` trong GitHub Release.
+**Bản mới nhất: 1.1.1.** Xem thay đổi và tải `installer.exe` cùng `SHA256SUMS.txt` trong GitHub Release.
+
+## Bản 1.1.1
+
+- Lịch sử giải thích vì sao một lượt hoàn tất nhưng chưa xác minh đầy đủ: engine ngoài không chứng minh được độ bao phủ; native có mục/vùng không đọc được sẽ nêu số lượng. Đây là mức tin cậy thận trọng, không tự khẳng định chắc chắn đã bỏ sót.
+- Mỗi lượt quét, so sánh và benchmark ghi dung lượng data/log trước, sau và chênh lệch; chỉ đo kích thước file database riêng của app (SQLite/WAL/SHM) cùng log app/audit, không quét lại file trên ổ và không phải số cluster NTFS đã cấp phát. Lịch sử có cột Δ data/log và tooltip chi tiết. SQLite có thể tái sử dụng trang trống, log có thể xoay vòng; số Δ là ước lượng footprint của thao tác.
+- Kiểm chứng bản này: 210 test tự động và smoke test bộ cài frozen trên fixture riêng (cài, scan/compare, update an toàn và gỡ cài đặt giữ lại dữ liệu).
+
+## Bộ cài EXE — 1.1.1
 
 App Windows tiếng Việt để biết file/folder nào làm ổ đĩa tăng dung lượng giữa các lần quét. CLI và GUI gọi cùng core và đọc cùng database/config. Môi trường nằm trong thư mục app trên ổ D; không cài package Python global hoặc sửa System PATH.
 
@@ -92,7 +100,7 @@ GUI gọi profile là **Cấu hình quét**. Quét ngay/Quét lại dùng lựa 
 ### Giao diện và phân trang 1.1
 
 - Số **Lần quét 01, 02…** cố định theo cấu hình, tính cả lượt lỗi/hủy; không đánh số lại sau khi xóa/sắp xếp. ID trong JSON/CLI vẫn là khóa nội bộ, không phải số thứ tự hiển thị.
-- WizTree/MFT xuất tổng thư mục/root sẵn có. Khi không phải lọc lại phạm vi, app dùng các tổng này, không tính SUM toàn ổ cho từng thư mục. Với native/phạm vi loại trừ, cộng một lượt từ con lên cha. Hardlink chỉ tính physical một lần.
+- WizTree/MFT xuất tổng thư mục/root sẵn có; so sánh WizTree dùng trực tiếp số đó, không chuẩn hóa lại. Native/các engine khác cộng dung lượng từ con lên cha ngay khi quét và ghi dấu nguồn dữ liệu. Chỉ snapshot cũ thiếu dấu nguồn mới cần chuẩn hóa tương thích một lần, có cache. Hardlink chỉ tính physical một lần.
 - Tổng quan dùng toàn snapshot, không chỉ những file >10 MB hoặc 20 dòng. Dung lượng file được quét khác dung lượng volume đã dùng; file nhỏ vẫn nằm trong tổng. Partial/coverage chưa đủ được ghi rõ là chênh số liệu quan sát, không bằng chứng đã xóa file.
 - Dropdown **20/50/100/200/500/1000 mục mỗi lượt**, mặc định 20, nhớ trong `data/ui-settings.json`. Đổi số lượng giữ dòng đang xem; lần tải tiếp nối đúng thứ hạng. Ví dụ 20 + 100 = top/bottom 120 toàn tập kết quả, không chỉ sắp xếp 20 dòng cũ. Mở phép so sánh mới dùng số đang chọn.
 - Nhấp tiêu đề sắp xếp/lọc toàn kết quả **trong phạm vi và bộ lọc đang áp dụng** trước khi phân trang. Tên/đường dẫn bắt đầu A–Z, dung lượng/ngày bắt đầu giảm dần; nhấp lại đảo chiều. Đổi cột/chiều quay về đầu, lấy lại cùng số lượng đã mở theo thứ tự mới. Cột thay đổi sắp theo số có dấu. Ngưỡng file áp dụng cho `max(Cũ, Mới) > ngưỡng`; folder không bị ngưỡng file loại bỏ.
@@ -100,6 +108,7 @@ GUI gọi profile là **Cấu hình quét**. Quét ngay/Quét lại dùng lựa 
 - Model giữ cache metadata **400–2000 dòng**, không giữ toàn tập trong RAM. Trang có kích thước khác nhau giữ riêng mốc bắt đầu/con trỏ; đọc lại trang bị loại khỏi RAM không làm đổi con trỏ tải tiếp. Dừng tải hủy cả chuẩn bị chỉ mục/cây; So sánh hoặc Lọc để tải lại. Dừng quét riêng hủy scan/export/import/SQL. Chỉ mục ban đầu/nhánh chưa cache vẫn có thể cần chờ.
 - Cây bên trái luôn theo **hai lượt hợp lệ gần nhất của cấu hình, cùng phạm vi**. Nó không theo cặp Cũ/Mới bên phải. Bấm cây chỉ lọc chi tiết, không đổi cặp mốc hoặc tổng quan. Xanh ↑ tăng; đỏ ↓ giảm; xám — chưa biết/mốc đầu. Màu xanh không có nghĩa thay đổi có lợi.
 - Tab **Lịch sử** lưu mọi trạng thái quét và tóm tắt so sánh toàn phạm vi: dung lượng, số file/folder tăng/giảm/thêm/mất/khác. Mở so sánh cũ bằng nhấp đúp; tóm tắt còn sau khi chi tiết cache được loại bỏ. Không suy đoán file mới/mất trong vùng chưa xác minh.
+- Tab **Lịch sử** cho chọn một/nhiều lượt (Ctrl/Shift) hoặc **Chọn tất cả lượt**, rồi xóa metadata và cache so sánh phụ thuộc sau xác nhận; không xóa file thật, cấu hình, lịch hay log. CLI tương ứng: `snapshots-delete --id 12 --id 15` hoặc `snapshots-delete --all` (toàn bộ còn yêu cầu nhập `XOA LICH SU`).
 - Cache ở `data/comparisons.sqlite`: giữ tối đa hai cặp chi tiết và ba nhánh đã mở/cặp; giữ tóm tắt lịch sử. Ngưỡng cache mềm mặc định 768 MB sẽ giảm về một cặp. SQLite tái sử dụng trang trống; kích thước file vật lý không nhất thiết giảm ngay.
 - Lần đầu vẫn cần nhập/index toàn dữ liệu. Đo một triệu bản ghi: index so sánh ~25 s; nhánh lớn lần đầu ~8 s; trang kế tiếp ~0,001 s. Đây là dữ liệu giả lập, không phải cam kết thời gian toàn ổ. Số đo/RAM: `data/performance-v2-results.json`.
 
@@ -112,6 +121,7 @@ CLI dùng cùng chỉ mục và tổng quan:
 .\launch-cli.cmd tree --profile daily --root 'C:\'
 .\launch-cli.cmd comparison-history
 .\launch-cli.cmd comparison-delete PAIR_ID
+.\launch-cli.cmd snapshots-delete --id 12 --id 15
 .\launch-cli.cmd logs --level ERROR --follow
 ```
 

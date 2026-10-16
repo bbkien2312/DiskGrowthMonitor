@@ -8,7 +8,7 @@ def test_gui_five_tabs_and_shared_core(isolated):
     app = QApplication.instance() or QApplication([])
     window = Window()
     assert window.tabs.count() == 6
-    assert window.strict.isChecked()
+    assert not window.strict.isChecked() and window.mft.isChecked()
     assert window.threshold.value() == 10
     assert window.rule_boxes["pip-cache"].isChecked() is False
     import time

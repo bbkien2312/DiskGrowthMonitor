@@ -37,10 +37,12 @@ class Store:
         CREATE TABLE IF NOT EXISTS scan_numbers(scan_id INTEGER PRIMARY KEY,profile TEXT,ordinal INTEGER,
           UNIQUE(profile,ordinal));
         CREATE TABLE IF NOT EXISTS sequence_counters(profile TEXT PRIMARY KEY,next_number INTEGER);
+        CREATE TABLE IF NOT EXISTS scan_id_counter(id INTEGER PRIMARY KEY CHECK(id=1),next_id INTEGER NOT NULL);
         """)
         missing = self.db.execute("SELECT id,profile FROM scans WHERE id NOT IN (SELECT scan_id FROM scan_numbers) ORDER BY started,id").fetchall()
         for row in missing:
             self._number(row[0], row[1])
+        self.db.execute("INSERT OR IGNORE INTO scan_id_counter VALUES(1,(SELECT COALESCE(MAX(scan_id),0)+1 FROM scan_numbers))")
         self.db.commit()
 
     def _number(self, scan_id, profile):
@@ -101,13 +103,16 @@ class Store:
         self.db.close()
 
     def begin_scan(self, name, scope, engine, profile):
-        next_id = self.db.execute("SELECT COALESCE(MAX(scan_id),0)+1 FROM scan_numbers").fetchone()[0]
-        cur = self.db.execute("INSERT INTO scans(id,profile,scope,engine,started,status,config) VALUES(?,?,?,?,?,?,?)",
-                              (next_id, name, scope, engine, now(), "running", json.dumps(profile)))
-        self.db.commit()
-        scan_id = cur.lastrowid
-        self._number(scan_id, name); self.db.commit()
-        return scan_id
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            next_id=self.db.execute('SELECT next_id FROM scan_id_counter WHERE id=1').fetchone()[0]
+            self.db.execute('UPDATE scan_id_counter SET next_id=? WHERE id=1',(next_id+1,))
+            cur = self.db.execute("INSERT INTO scans(id,profile,scope,engine,started,status,config) VALUES(?,?,?,?,?,?,?)",
+                                  (next_id, name, scope, engine, now(), "running", json.dumps(profile)))
+            scan_id=cur.lastrowid;self._number(scan_id,name);self.db.commit()
+            return scan_id
+        except BaseException:
+            self.db.rollback();raise
 
     def put(self, scan_id, entries):
         # Three indexed joins per batch, rather than executing view triggers and
@@ -203,9 +208,49 @@ class Store:
     def record_stage(self, scan_id, summary):
         self.db.execute("UPDATE scans SET summary=? WHERE id=?", (json.dumps(summary, ensure_ascii=False), scan_id)); self.db.commit()
 
-    def gc(self):
+    def gc(self, notify=None):
+        notify = notify or (lambda *args: None)
+        indexed = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='members_path'").fetchone()
+        if not indexed:
+            notify("info", {"message": "Đang tối ưu chỉ mục lịch sử lần đầu; thao tác này chỉ cần thực hiện một lần..."})
+            self.db.execute("CREATE INDEX IF NOT EXISTS members_path ON members(path_id)")
+        notify("info", {"message": "Đang dọn dữ liệu lịch sử không còn liên kết..."})
         self.db.execute("DELETE FROM revisions WHERE NOT EXISTS (SELECT 1 FROM members WHERE revision_id=revisions.id)")
+        self.db.execute("DELETE FROM paths WHERE NOT EXISTS (SELECT 1 FROM members WHERE path_id=paths.id)")
         self.db.commit()
+
+    def delete_scan(self, scan_id):
+        return self.delete_scans([scan_id])
+
+    def delete_scans(self, scan_ids):
+        scan_ids=sorted({int(scan_id) for scan_id in scan_ids})
+        if not scan_ids:return 0
+        existing={row['id']:row['status'] for row in self.db.execute('SELECT id,status FROM scans')}
+        missing=set(scan_ids)-existing.keys()
+        if missing:raise ValueError('Không tìm thấy lượt quét: '+', '.join(f'#{scan_id}' for scan_id in sorted(missing)))
+        running=[scan_id for scan_id in scan_ids if existing[scan_id]=='running']
+        if running:raise ValueError('Không thể xóa lượt quét đang chạy: '+', '.join(f'#{scan_id}' for scan_id in running))
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            for offset in range(0,len(scan_ids),500):
+                batch=scan_ids[offset:offset+500];marks=','.join('?' for _ in batch)
+                self.db.execute(f'DELETE FROM scans WHERE id IN ({marks})',batch)
+                self.db.execute(f'DELETE FROM scan_numbers WHERE scan_id IN ({marks})',batch)
+            self.db.commit()
+            self.gc()
+            return len(scan_ids)
+        except BaseException:
+            self.db.rollback();raise
+
+    def clear_scans(self):
+        if self.db.execute("SELECT 1 FROM scans WHERE status='running' LIMIT 1").fetchone():
+            raise ValueError('Dừng lượt quét đang chạy trước khi xóa lịch sử.')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            self.db.execute('DELETE FROM scans');self.db.execute('DELETE FROM scan_numbers');self.db.commit();self.gc()
+            self.db.execute('VACUUM');self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        except BaseException:
+            self.db.rollback();raise
 
     def scans(self, profile=None):
         where, args = ("WHERE s.profile=?", (profile,)) if profile else ("", ())
@@ -219,7 +264,7 @@ class Store:
 
     def previous(self, scan_id):
         curr = self.scan(scan_id)
-        row = self.db.execute("SELECT id FROM scans WHERE started<? AND scope=? AND profile=? AND status IN ('complete','partial') ORDER BY started DESC,id DESC LIMIT 1", (curr["started"], curr["scope"],curr["profile"])).fetchone()
+        row = self.db.execute("SELECT id FROM scans WHERE (started<? OR (started=? AND id<?)) AND scope=? AND profile=? AND status IN ('complete','partial') ORDER BY started DESC,id DESC LIMIT 1", (curr["started"],curr["started"],scan_id,curr["scope"],curr["profile"])).fetchone()
         return row[0] if row else None
 
     def entries(self, scan_id, minimum=0, kind="all", search="", limit=1000, offset=0):
@@ -308,7 +353,9 @@ class Store:
             writer.writerow([x[0] for x in cur.description])
             writer.writerows(cur)
 
-    def prune(self):
+    def prune(self, notify=None):
+        notify = notify or (lambda *args: None)
+        notify("info", {"message": "Đang kiểm tra các mốc lịch sử cần giữ..."})
         cfg = load()
         cutoff = datetime.now(timezone.utc).timestamp() - cfg["retention_days"] * 86400
         rows = self.scans()
@@ -325,6 +372,6 @@ class Store:
             if not protected and row["status"] != "running" and (age or total[row["scope"]] > cfg["max_snapshots"]):
                 self.db.execute("DELETE FROM scans WHERE id=?", (row["id"],))
         self.db.commit()
-        self.gc()
+        self.gc(notify=notify)
         self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
