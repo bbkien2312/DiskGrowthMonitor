@@ -1,8 +1,29 @@
 # Disk Growth Monitor
 
-[Tải bộ cài Windows x64 v1.1.1](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.1.1) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
+[Tải bộ cài Windows x64 v1.2.0](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.2.0) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
 
-**Bản mới nhất: 1.1.1.** Xem thay đổi và tải `installer.exe` cùng `SHA256SUMS.txt` trong GitHub Release.
+**Bản mới nhất: 1.2.0.** Tải `installer.exe` và đối chiếu `SHA256SUMS.txt` trong GitHub Release. GUI yêu cầu UAC Admin ngay khi mở, không chỉ khi cài; hủy UAC thì app không mở dữ liệu.
+
+## Bản 1.2.0
+
+- **Lịch sử → Kiểm tra & chuẩn hóa**: chọn một/nhiều lượt hoặc chọn các lượt chuẩn cũ, xem trước/sau rồi áp dụng. Lớp chuẩn hóa có phiên bản trong `data/normalization.sqlite`, không sửa snapshot gốc, có nút dùng lại bản gốc. Tổng quan, cây và chi tiết cùng dùng lớp đã chọn; cache phụ thuộc được xây lại khi dữ liệu chuẩn hóa đổi.
+- File/thư mục/reparse/hardlink và metadata thiếu dùng cùng quy tắc. Size là tổng logic theo đường dẫn (có thể lớn hơn sức chứa ổ do hardlink/nén/sparse); Allocated đếm hardlink một lần. Có GB/GiB. Nếu bản cũ đã mất số cấp phát, app cảnh báo thiếu nguồn và giữ chưa xác định, không đoán lại bằng file hiện tại.
+- Giải thích chính xác khác biệt phạm vi. **Chỉ phần chung** là lựa chọn chủ động khi hai lượt khác bộ loại trừ; tính lại cả tổng thư mục trong phạm vi chung, không gọi đây là tổng toàn ổ. Không khôi phục dữ liệu của vùng chưa được quét.
+- CSV WizTree kiểm tra cột, số byte, tên cột ngày/MFT và dấu phân cách ngày Windows. Nhật ký nhập ghi tổng file, phần bị loại trừ, reparse và hardlink. Nguồn CSV nén có SHA-256, mặc định tối đa 512 MB / 90 ngày, chỉnh trong Hệ thống hoặc dọn riêng tại Lịch sử. Nguồn có thể đã hết hạn; không tự khẳng định dữ liệu cũ phục hồi chính xác.
+- Thanh trạng thái kéo chỉnh chiều cao, tiến độ riêng toàn chiều rộng, tóm tắt dài cuộn/sao chép được. Log có `[DEBUG]`, `[INFO]`, `[WARNING]`, `[ERROR]`, màu theo mức; đọc cả định dạng cũ và traceback. Bấm thông báo desktop khôi phục cửa sổ đang chạy.
+- GUI EXE có manifest `requireAdministrator`; source launcher và `dgm.exe gui` cũng xin UAC trước khi tạo cấu hình/log/data. CLI không giao diện và lịch nền giữ cơ chế quyền theo tác vụ; không bật UAC bất ngờ trong service.
+
+CLI tương đương (ID là ID nội bộ trong kết quả `history`):
+
+```powershell
+dgm.exe snapshot-audit --id 10 --id 14
+dgm.exe snapshot-normalize --all-legacy --yes
+dgm.exe snapshot-original --id 10 --yes
+dgm.exe compare 14 --older 13 --common
+dgm.exe source-cache-clear --yes
+```
+
+Kiểm tra trước không đổi dữ liệu gốc. So sánh tự chuẩn bị lớp chuẩn hóa một lần nếu cần; lượt mới dùng kết quả đã chuẩn hóa lúc nhập. Dùng lại bản gốc sẽ tắt tự áp dụng lớp cho lượt đó đến khi bạn chủ động chuẩn hóa lại. Chỉ số/data/log và mọi dữ liệu cá nhân không nằm trong mã nguồn hay bộ cài.
 
 ## Bản 1.1.1
 
@@ -10,7 +31,19 @@
 - Mỗi lượt quét, so sánh và benchmark ghi dung lượng data/log trước, sau và chênh lệch; chỉ đo kích thước file database riêng của app (SQLite/WAL/SHM) cùng log app/audit, không quét lại file trên ổ và không phải số cluster NTFS đã cấp phát. Lịch sử có cột Δ data/log và tooltip chi tiết. SQLite có thể tái sử dụng trang trống, log có thể xoay vòng; số Δ là ước lượng footprint của thao tác.
 - Kiểm chứng bản này: 210 test tự động và smoke test bộ cài frozen trên fixture riêng (cài, scan/compare, update an toàn và gỡ cài đặt giữ lại dữ liệu).
 
-## Bộ cài EXE — 1.1.1
+### Các cải tiến cập nhật/giao diện tích hợp trong 1.2.0
+
+Cập nhật trong app dùng nguyên data/lịch sử hiện tại và không yêu cầu chọn thư mục mới. Với bản chạy từ source, runtime Release nằm tại `.dgm-app` bên trong thư mục hiện có; launcher cũ và lệnh `python -m dgm` tự mở bản đã cập nhật. Source cùng `.venv` phát triển vẫn giữ lại; dùng biến môi trường `DGM_SOURCE=1` khi muốn chạy source để phát triển. Bản EXE cài đặt cập nhật ngay tại vị trí EXE hiện tại. Updater sao lưu cả database lịch sử quét/benchmark lẫn so sánh.
+
+Tiến độ quét, so sánh, tải chi tiết, benchmark và tải cập nhật chạy 0–100% theo các bước. Bước chưa biết tổng giữ ở mốc hiện tại và hiển thị số mục đã đọc. Các bước có tổng (nhập CSV, tổng hợp thư mục, tải bộ cài) tăng theo khối lượng; phần trăm không suy ngược từ thời gian chờ. Dòng “Đã xong” và kết quả sau quét liệt kê cụ thể những phần đã xử lý.
+
+- Chuẩn snapshot v3 dùng cùng quy tắc cho WizTree/native/gdu/WinDirStat: đường dẫn chuẩn được lập chỉ mục lúc nhập, giữ riêng logical/allocated và giá trị chưa biết. Tổng folder đối chiếu từ file một lần lúc quét; không chuẩn hóa lại khi xem/so sánh các snapshot mới. Hardlink chọn cùng đường dẫn đại diện, kể cả khi engine export byte cấp phát ở đường dẫn khác.
+- Byte cấp phát Windows lấy qua `GetFileInformationByHandleEx` (Standard/Compression Info), không lấy độ dài file thông thường làm size-on-disk. [FILE_STANDARD_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_standard_info). So sánh khác engine dùng độ chính xác thời gian chung một giây; cùng engine giữ độ chính xác gốc. Khác quyền đọc/vùng chưa xác minh vẫn được cảnh báo, không suy ra chắc chắn file đã mất.
+- Cấu hình gọn ở trên; các lựa chọn quét luôn có sẵn, chỉ ghi chú ẩn/hiện. Hai khung cây/chi tiết ưu tiên chiều cao; cửa sổ nhỏ dùng cuộn dọc thay vì cắt khung. Ghi chú kết quả tự mở sau thành công, không bật lại khi tải thêm/sắp xếp.
+- Lịch sử tự nạp khi mở, làm mới theo kết quả mới, giữ lựa chọn/vị trí cuộn; nâng cấp thuật toán không làm mất tóm tắt cũ. Chi tiết giới hạn dữ liệu/data/log nằm ở vùng xem dòng được chọn.
+- Một nút **Cập nhật** thực hiện kiểm tra → tải → SHA-256 → sao lưu → cài đúng vị trí → xác minh phiên bản/lịch sử → mở lại. Installer mới yêu cầu UAC admin; tiến trình mở lại được khởi động trước UAC để giữ tài khoản ban đầu. Không báo thành công chỉ vì đã mở bộ cài. CLI tương đương: `dgm.exe app-update install --yes`.
+
+## Bộ cài EXE
 
 App Windows tiếng Việt để biết file/folder nào làm ổ đĩa tăng dung lượng giữa các lần quét. CLI và GUI gọi cùng core và đọc cùng database/config. Môi trường nằm trong thư mục app trên ổ D; không cài package Python global hoặc sửa System PATH.
 
@@ -21,7 +54,7 @@ Tải `installer.exe` và đối chiếu `SHA256SUMS.txt` trong Release. Windows
 - GUI: `DiskGrowthMonitor.exe`; CLI tương đương: `dgm.exe --help`. Các ví dụ `launch-cli.cmd` bên dưới có thể thay bằng `dgm.exe` ở bản cài.
 - Hai EXE dùng **một runtime riêng trong `.venv`**, không nhân đôi Python/Qt, không sửa PATH hay đăng ký Python hệ thống. Đây là runtime đóng gói, không phải virtualenv để chạy pip; muốn thay thư viện hãy sửa/kiểm thử/build từ nguồn.
 - Installer không kèm cấu hình cá nhân, snapshot, database, log, cache, WizTree hoặc engine OSS đã tải trên máy phát triển. Không tự quét/xóa/cài Task/Service. WizTree chọn từ bản người dùng đã cài; engine OSS chỉ tải khi người dùng yêu cầu.
-- Cài theo tài khoản, không cần Admin lúc cài. Tác vụ cần quyền sẽ xin UAC riêng. Shortcut Start menu, Desktop tùy chọn; có trình gỡ cài đặt trong Installed apps. Không tự đóng app đang chạy khi nâng cấp.
+- Cài và mở GUI đều yêu cầu Admin qua UAC. Shortcut Start menu, Desktop tùy chọn; có trình gỡ cài đặt trong Installed apps. Không tự đóng app đang chạy khi nâng cấp.
 - Gỡ cài đặt chặn nếu app/quét đang chạy hoặc còn Task/Service đăng ký; gỡ chúng trong app trước. Chỉ gỡ file đã cài, **giữ `data`, `logs`, công cụ tải thêm** để người dùng tự duyệt. Không xóa đệ quy cả thư mục app.
 - Dữ liệu bản nguồn tại `D:\DiskGrowthMonitor\data` vẫn được giữ, không tự chuyển sang bản cài. Bản cài mới tạo lịch sử mới tại thư mục cài đặt.
 - Chưa ký mã: Windows có thể hiện Unknown publisher/SmartScreen. Không tắt cơ chế bảo vệ; kiểm tra nguồn tải và SHA-256 trước khi chạy.
@@ -46,7 +79,7 @@ Kết quả `dist/installer.exe`, `dist/SHA256SUMS.txt`. Compiler Inno Setup 6.7
 ## Chạy bản mã nguồn
 
 - Nhấp `launch-gui.cmd` để mở GUI.
-- Khi cần Admin (WizTree MFT, kiểm tra hệ thống, dọn hệ thống hoặc quản lý chạy nền), app tự hiện UAC cho đúng tác vụ. Chỉ cần bấm Yes; không phải đóng/mở lại GUI.
+- GUI yêu cầu UAC ngay khi mở để dùng được bản cài trong Program Files; đã Admin thì không hỏi lặp. CLI không giao diện xin quyền riêng khi tác vụ cần (MFT, kiểm tra/dọn hệ thống, quản lý chạy nền).
 - `launch-admin.cmd` vẫn là phương án dự phòng để mở toàn app bằng Administrator, không cần dùng thường xuyên.
 - Terminal: `D:\DiskGrowthMonitor\launch-cli.cmd --help`.
 - Cài/tạo lại môi trường: `install-local.cmd`; gói dev/build: `install-local.cmd -Dev`.
@@ -70,9 +103,9 @@ Exit code: 0 complete; 2 partial/lỗi truy cập; 1 failed; 130 cancelled. Snap
 
 Cấu hình mới mặc định chọn WizTree. Cấu hình đang có được giữ nguyên, không tự đổi phạm vi/bảo vệ trình duyệt. Nếu bật bảo vệ Chrome/Edge thì phải chọn native rõ ràng; CLI báo không tương thích, GUI hỏi trước khi đổi lựa chọn. Không âm thầm đổi engine. MFT toàn ổ đọc chỉ mục toàn ổ: lọc kết quả không bảo đảm metadata browser chưa được đọc. WizTree MFT dùng worker Admin của app qua UAC; worker giữ quyền điều khiển tiến trình quét nên vẫn có thể Dừng quét.
 
-### Quyền Admin tự động — 0.2.1
+### Quyền Admin tự động
 
-- GUI/CLI mặc định giữ quyền thường. Chỉ tác vụ cần quyền mới mở worker Admin một lần; lựa chọn chưa lưu (phạm vi, engine, MFT, loại trừ, bảo vệ browser, ngưỡng) được chuyển nguyên vẹn, không ghi đè cấu hình.
+- Từ 1.2.0, GUI yêu cầu Admin ngay từ lúc mở. CLI không giao diện giữ quyền hiện tại và dùng worker Admin cho tác vụ cần quyền; lựa chọn chưa lưu (phạm vi, engine, MFT, loại trừ, bảo vệ browser, ngưỡng) được chuyển nguyên vẹn, không ghi đè cấu hình.
 - Yes: tiếp tục tác vụ, chuyển tiến độ/log về cửa sổ hiện tại. No/đóng UAC: hủy trước khi chạy, không thử lại và không tạo lượt quét giả; CLI trả mã 130. Nếu đã Admin thì chạy thẳng, không hỏi lại.
 - Khi đang chờ/chạy Admin, các nút khởi động tác vụ xung đột bị khóa; vẫn xem cây, lịch sử và nhật ký được. **Dừng quét** hoặc **Dừng tác vụ Admin** chỉ gửi yêu cầu cho worker của tác vụ đó. Với DISM, app chờ bước Windows hiện tại kết thúc an toàn rồi không xử lý các mục tiếp theo; không cưỡng bức tắt DISM khi hủy hoặc quá thời gian dự kiến.
 - Dọn dẹp vẫn phải xem đề xuất/chọn mục/gõ xác nhận **trước UAC**. Worker kiểm tra dấu vân tay đề xuất và kiểm tra lại file; đề xuất đã thay đổi sau duyệt thì không xóa. Hủy giữa các mục giữ nguyên phần chưa xử lý; kết quả báo cả phần đã xử lý, không tự chạy lại.
@@ -230,7 +263,7 @@ Realtime **chỉ kiểm tra trạng thái Task/Service**, không theo dõi file 
 
 Tab Hệ thống có phần **cập nhật chính app**, độc lập với kiểm tra thư viện. Chỉ tra/tải/cài khi bấm nút. Nguồn cố định là Release chính thức của `bbkien2312/DiskGrowthMonitor`; lấy bản ổn định, không downgrade. Tải có thể hủy; xác minh kích thước/SHA-256 trước khi chạy. Hash kiểm tra toàn vẹn, **không phải chữ ký nhà phát hành**; binary hiện chưa ký mã.
 
-Bản cài dùng coordinator ngoài runtime để đóng app an toàn, tắt/dừng đúng runner của bản đó (không gỡ), sao lưu cấu hình/UI/history bằng SQLite backup, cài và khôi phục trạng thái bật/tắt/startup type ban đầu. Không cưỡng bức kết thúc quét/DISM; đang có tác vụ thì chờ. Session, log và backup nằm ở `data/updates/session-*`, được giữ để kiểm tra/khôi phục; không tự xóa backup lớn. Bộ cài giữ portable mode. Bản source chỉ mở bộ cài vào thư mục trống khác, không ghi đè source/`.venv`. Nâng từ bản 1.0.0 chưa có updater cần dùng bộ cài mới thủ công.
+Bản cài dùng coordinator ngoài runtime để đóng app an toàn, tắt/dừng đúng runner của bản đó (không gỡ), sao lưu cấu hình/UI/history và comparison bằng SQLite backup, cài và khôi phục trạng thái bật/tắt/startup type ban đầu. Session, log và backup nằm ở `data/updates/session-*`, được giữ để kiểm tra/khôi phục. Bộ cài giữ portable mode. Bản source cập nhật vào runtime quản lý `.dgm-app` và tiếp tục dùng nguyên data/log hiện có; launcher cũ tự chuyển sang bản mới. Nâng từ bản 1.0.0 chưa có updater cần dùng bộ cài mới thủ công.
 
 ```powershell
 .\launch-cli.cmd compare 2 --older 1 --changes grown,shrunk,new --limit 100
@@ -239,7 +272,7 @@ Bản cài dùng coordinator ngoài runtime để đóng app an toàn, tắt/d�
 .\launch-cli.cmd app-update check
 .\launch-cli.cmd app-update download
 .\launch-cli.cmd app-update install
-# Bản source: chọn thư mục trống ngoài source
+# Chỉ khi chủ động muốn cài một bản độc lập khác:
 .\launch-cli.cmd app-update install --destination D:\DiskGrowthMonitor-New
 .\launch-cli.cmd app-update status
 # Khi journal báo restore_pending, mở CLI Admin nếu runner cần Admin:

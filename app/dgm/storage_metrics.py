@@ -15,8 +15,9 @@ def _files(operation):
     root = home()
     databases = {
         "scan": ("history.sqlite",),
-        "comparison": ("comparisons.sqlite",),
-        "benchmark": ("history.sqlite", "comparisons.sqlite"),
+        "comparison": ("comparisons.sqlite","normalization.sqlite"),
+        "benchmark": ("history.sqlite", "comparisons.sqlite","normalization.sqlite"),
+        "normalization":("normalization.sqlite",),
     }[operation]
     data = {}
     for database in databases:
@@ -26,6 +27,10 @@ def _files(operation):
                 data[f"data/{path.name}"] = path.stat().st_size
             except FileNotFoundError:
                 data[f"data/{path.name}"] = 0
+    if operation in ('scan','benchmark'):
+        for path in (root/'data/exports/archive').glob('*.csv.gz'):
+            try:data[str(path.relative_to(root))]=path.stat().st_size
+            except FileNotFoundError:pass
 
     logs = {}
     log_root = root / "logs"
@@ -46,7 +51,7 @@ def _snapshot(operation):
 
 
 def begin(operation):
-    if operation not in ("scan", "comparison", "benchmark"):
+    if operation not in ("scan", "comparison", "benchmark","normalization"):
         raise ValueError(f"Unsupported storage measurement: {operation}")
     return {"operation": operation, "before": _snapshot(operation)}
 

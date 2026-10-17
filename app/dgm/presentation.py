@@ -4,17 +4,24 @@ from zoneinfo import ZoneInfo
 
 STATUS = {"running": "Đang xử lý", "complete": "Hoàn tất", "partial": "Hoàn tất • có giới hạn", "cancelled": "Đã dừng", "failed": "Lỗi"}
 CHANGES = {"first_scan": "Mốc ban đầu", "grown": "Tăng", "shrunk": "Giảm", "new": "Thêm mới", "missing": "Mất đi / không còn thấy", "same": "Không đổi", "unknown": "Chưa xác định", "modified": "Đã sửa", "replaced": "Bị thay thế", "moved": "Đổi tên / di chuyển", "moved_from": "Đã chuyển đi"}
+_binary=False
+
+
+def set_units(binary=False):
+    global _binary
+    _binary=bool(binary)
 
 
 def size(value):
     if value is None:
         return "—"
     n = float(value)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(n) < 1000:
+    base=1024 if _binary else 1000
+    for unit in (("B","KiB","MiB","GiB","TiB") if _binary else ("B", "KB", "MB", "GB", "TB")):
+        if abs(n) < base:
             return f"{n:,.2f} {unit}"
-        n /= 1000
-    return f"{n:,.2f} PB"
+        n /= base
+    return f"{n:,.2f} {'PiB' if _binary else 'PB'}"
 
 
 def local_time(value):

@@ -4,7 +4,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor
 from PySide6.QtWidgets import QWidget,QVBoxLayout,QHBoxLayout,QCheckBox,QComboBox,QPlainTextEdit,QLabel
 from .config import home
-from .log_reader import read_tail,parse_lines
+from .log_reader import read_tail,parse_lines,severity
 
 COLORS={"DEBUG":"#137bb7","INFO":"#44556a","WARNING":"#b87909","ERROR":"#cc3434","CRITICAL":"#b21f35"}
 LEVELS=list(COLORS)
@@ -12,8 +12,8 @@ LEVELS=list(COLORS)
 
 class LogColors(QSyntaxHighlighter):
     def highlightBlock(self,text):
-        match=re.search(r"\b(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b",text)
-        state=LEVELS.index(match[1]) if match else self.previousBlockState() if self.previousBlockState()>=0 else LEVELS.index("INFO")
+        level=severity(text)
+        state=LEVELS.index(level) if level else self.previousBlockState() if self.previousBlockState()>=0 else LEVELS.index("INFO")
         self.setCurrentBlockState(state)
         style=QTextCharFormat();style.setForeground(QColor(COLORS[LEVELS[state]]))
         self.setFormat(0,len(text),style)

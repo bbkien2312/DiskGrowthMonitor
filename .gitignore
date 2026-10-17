@@ -1,9 +1,11 @@
 .venv/
 .runtime/
+.dgm-app/
 data/
 logs/
 dist/
 build/
+artifacts/
 *.egg-info/
 __pycache__/
 .pytest_cache/

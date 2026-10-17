@@ -81,9 +81,8 @@ def test_download_cache_hash_failure_cancel_and_no_pip(isolated,release,monkeypa
     assert not list(path.parent.glob('*.part'))
 
 
-def test_downgrade_and_source_install_never_launch(isolated,release):
+def test_downgrade_never_launches(isolated,release):
     _,rel=release
-    with pytest.raises(RuntimeError,match='source'):update.prepare_install(rel,'nonexistent.exe')
     for version in ('1.0.0','1.1.0'):
         candidate={**rel,'version':version,'tag':'v'+version,'url':rel['url'].replace('v99.0.0','v'+version)}
         with pytest.raises(ValueError,match='Không có bản'):update.validate_release(candidate)
@@ -223,13 +222,48 @@ def test_source_installer_uses_empty_other_folder_only(isolated,release,monkeypa
     assert len(calls)==1
 
 
-def test_offline_updater_never_launches_and_source_cli_requires_destination(isolated,monkeypatch):
+def test_offline_updater_never_launches_and_cli_uses_default_target(isolated,monkeypatch):
     from dgm import updates
     def offline(*a):raise OSError('network offline')
     monkeypatch.setattr(updates,'fetch',offline)
     with pytest.raises(OSError,match='offline'):update.check()
     result=CliRunner().invoke(app,['app-update','install','--yes'])
-    assert result.exit_code==2 and 'destination' in result.output
+    assert result.exit_code!=0 and 'network offline' in str(result.exception)
+
+
+def test_source_update_uses_existing_data_and_preserves_source(isolated,release,monkeypatch):
+    from dgm import background
+    data,rel=release
+    monkeypatch.setattr(background,'status',lambda:{'scan':{'running':False},'task':{'installed':False},'service':{'installed':False}})
+    source=home()/'app/keep.py';source.parent.mkdir();source.write_text('source stays')
+    private=home()/'.venv/keep.txt';private.parent.mkdir();private.write_text('venv stays')
+    store=Store();root=isolated/'virtual';a=snapshot(store,root,[entry(root/'f',value=10)]);b=snapshot(store,root,[entry(root/'f',value=20)])
+    cache=Comparisons();cache.prepare(a,b);cache.close();store.close()
+    folder=home()/'data/updates/fixture';folder.mkdir(parents=True);installer=folder/'installer.exe';installer.write_bytes(data)
+    ticket=update.prepare_install(rel,installer);saved=json.loads(Path(ticket['session']).read_text())
+    assert Path(saved['install_root'])==home()/'.dgm-app' and Path(saved['root'])==home()
+    assert saved['source_conversion'] and saved['portable']
+    result=update.stage(ticket['session'])
+    assert (Path(result['backup'])/'history.sqlite').exists() and (Path(result['backup'])/'comparisons.sqlite').exists()
+    assert source.read_text()=='source stays' and private.read_text()=='venv stays'
+    assert not (home()/'.dgm-app').exists()
+
+
+def test_source_update_refuses_unrecognized_managed_folder(isolated,release):
+    target=home()/'.dgm-app';target.mkdir();sentinel=target/'keep.txt';sentinel.write_text('user data')
+    with pytest.raises(ValueError,match='không nhận diện'):update.prepare_install(release[1],'unused.exe')
+    assert sentinel.read_text()=='user data'
+
+
+def test_frozen_runtime_finds_marker_when_history_home_is_separate(isolated,monkeypatch):
+    import sys
+    from dgm import runtime
+    target=home()/'.dgm-app';target.mkdir();(target/'installed-app.json').write_text('{"app":"DiskGrowthMonitor"}')
+    (target/'data-home.json').write_text(json.dumps({'home':str(home())}));(target/'dgm.exe').write_bytes(b'fixture')
+    monkeypatch.setattr(sys,'frozen',True,raising=False);monkeypatch.setattr(sys,'executable',str(target/'dgm.exe'))
+    assert update.installation_mode()=='installed'
+    exe,args=runtime.background_command('schedule','tick')
+    assert exe==target/'DiskGrowthMonitor.exe' and args[:2]==['--home',str(home())]
 
 
 def test_unknown_owner_blocks_mutations_not_just_upgrade(isolated,monkeypatch):

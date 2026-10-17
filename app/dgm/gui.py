@@ -10,7 +10,7 @@ from PySide6.QtGui import QAction, QColor, QIcon, QFont, QFontDatabase
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget,
     QPushButton, QComboBox, QLineEdit, QCheckBox, QDoubleSpinBox, QSpinBox, QPlainTextEdit, QTableWidget,
     QTableWidgetItem, QHeaderView, QMessageBox, QFileDialog, QInputDialog, QMenu, QSplitter,
-    QTreeWidget, QTreeWidgetItem, QSystemTrayIcon, QStyle, QGroupBox, QToolButton, QScrollArea, QProgressBar)
+    QTreeWidget, QTreeWidgetItem, QSystemTrayIcon, QStyle, QGroupBox, QToolButton, QScrollArea, QProgressBar, QSizePolicy)
 from .config import ROOT, load, save, profile
 from .store import Store
 from .comparison import Comparisons
@@ -20,14 +20,8 @@ from .platform_ops import ProcessCancelled
 
 
 def size(value):
-    if value is None:
-        return "—"
-    n = float(value)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(n) < 1000:
-            return f"{n:,.2f} {unit}"
-        n /= 1000
-    return f"{n:,.2f} PB"
+    from .presentation import size as format_size
+    return format_size(value)
 
 
 def date(value):
@@ -73,7 +67,9 @@ class Worker(QThread):
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
-        s = Store(); s.close()
+        # Large legacy path indexes are upgraded by cancellable background jobs,
+        # not before the first window can be painted.
+        s = Store(migrate_keys=False); s.close()
         font_path = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Fonts/segoeui.ttf"
         if font_path.exists():
             QFontDatabase.addApplicationFont(str(font_path))
@@ -84,8 +80,11 @@ class Window(QMainWindow):
         self.setMinimumSize(1000, 680)
         self.workers = []
         self.scan_worker = None
+        self.progress_worker=None;self.task_progress_id=None;self._scan_ui_busy=False;self.last_scan_brief=''
         self.admin_busy=False;self.admin_worker=None;self.system_check_buttons=[];self.cleanup_action_buttons=[]
         self.preferences = Preferences()
+        from .presentation import set_units
+        set_units(self.preferences.values.get('units/binary',False))
         self.column_specs = {}
         self.help_boxes = {}
         self.loaded_profile = None
@@ -104,7 +103,7 @@ class Window(QMainWindow):
         self.status.setWordWrap(True)
         self.scan_progress = QProgressBar(); self.scan_progress.setRange(0, 100); self.scan_progress.setValue(0)
         self.scan_progress.setFormat("Sẵn sàng"); self.scan_progress.setTextVisible(True)
-        self.scan_progress.setAccessibleName("Tiến độ quét"); self.scan_progress.setFixedSize(320, 16)
+        self.scan_progress.setAccessibleName("Tiến độ công việc"); self.scan_progress.setMinimumHeight(22)
         from .theme import LIGHT
         self.setStyleSheet(LIGHT)
         outer = QWidget()
@@ -113,11 +112,24 @@ class Window(QMainWindow):
         title.setStyleSheet("font-size:20px;font-weight:700;color:#325572;padding:4px;")
         layout.addWidget(title)
         self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
-        status_row=QHBoxLayout();status_row.addWidget(self.status,1);status_row.addWidget(self.scan_progress)
+        self.workspace_splitter=QSplitter(Qt.Orientation.Vertical)
+        self.workspace_splitter.addWidget(self.tabs);layout.addWidget(self.workspace_splitter,1)
+        status_host=QWidget();status_layout=QVBoxLayout(status_host);status_layout.setContentsMargins(0,0,0,0)
+        status_row=QHBoxLayout();status_row.addWidget(self.status,1)
         self.admin_stop_button=self.button('Dừng tác vụ Admin',self.cancel_admin,status_row)
         self.admin_stop_button.setToolTip('Gửi yêu cầu dừng cho đúng tác vụ này. DISM được chờ kết thúc an toàn; không cưỡng bức tắt.')
-        self.admin_stop_button.hide();layout.addLayout(status_row)
+        self.admin_stop_button.hide();status_layout.addLayout(status_row)
+        status_layout.addWidget(self.scan_progress)
+        self.completed_steps=QLabel();self.completed_steps.setWordWrap(True)
+        self.completed_steps.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.completed_steps.setStyleSheet('color:#325572;background:#edf3f6;padding:6px;border-radius:4px;')
+        self.completed_steps.hide()
+        status_scroll=QScrollArea();status_scroll.setWidgetResizable(True);status_scroll.setMinimumHeight(40)
+        status_scroll.setWidget(self.completed_steps);status_layout.addWidget(status_scroll,1)
+        self.workspace_splitter.addWidget(status_host)
+        self.workspace_splitter.setCollapsible(0,False);self.workspace_splitter.setCollapsible(1,False)
+        self.workspace_splitter.setSizes(self.preferences.values.get('splitter/status-v1',[720,115]))
+        self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.setCentralWidget(outer)
         self.make_scan()
         self.make_system()
@@ -125,17 +137,22 @@ class Window(QMainWindow):
         self.make_schedule()
         self.make_log()
         self.make_history()
+        self.tabs.currentChanged.connect(lambda index: self.history_panel.ensure_loaded()
+                                         if self.tabs.widget(index) is self.history_panel.parentWidget() else None)
+        QTimer.singleShot(0, self.history_panel.ensure_loaded)
         self.refresh_profiles()
         self.refresh_history()
         self.refresh_plans()
         self.refresh_schedules()
         self.tray = QSystemTrayIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon), self)
         menu = QMenu()
-        menu.addAction("Mở app", self.showNormal)
+        menu.addAction("Mở app", self.bring_to_front)
         menu.addAction("Quét profile đang chọn", self.begin_scan)
         menu.addAction("Thoát", self.close)
         self.tray.setContextMenu(menu)
-        self.tray.activated.connect(lambda *_: self.showNormal())
+        self.tray.activated.connect(lambda reason:self.bring_to_front() if reason in
+            (QSystemTrayIcon.ActivationReason.Trigger,QSystemTrayIcon.ActivationReason.DoubleClick) else None)
+        self.tray.messageClicked.connect(self.bring_to_front)
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
         self.poll_timer = QTimer(self)
@@ -148,6 +165,13 @@ class Window(QMainWindow):
         self.last_scan_signature = self.latest_signature()
         self.last_plan_count = 0
         self.refresh_background()
+
+    def bring_to_front(self):
+        # Hidden/maximized windows retain their previous state. One handler is
+        # shared by the tray menu, icon, and desktop notification click.
+        if self.isMinimized():
+            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+        self.show();self.raise_();self.activateWindow()
 
     def add_tab(self, title):
         tab = QWidget()
@@ -168,6 +192,11 @@ class Window(QMainWindow):
         worker = Worker(fn)
         self.workers.append(worker)
         def event_message(event,data):
+            if event=='task-progress':
+                if data.get('task')=='tree':return
+                if self.scan_worker is not None and not scan_job:return
+                if self.progress_worker is not None and self.progress_worker is not worker and self.progress_worker.isRunning() and not scan_job:return
+                self.progress_worker=worker;self.progress(event,data);return
             if event=='uac-state':
                 if data['phase']=='prompt':self.admin_worker=worker
                 elif data['phase']=='done' and self.admin_worker is worker:self.admin_worker=None
@@ -181,6 +210,7 @@ class Window(QMainWindow):
                 self.fail(str(exc))
         worker.result.connect(result)
         def finished():
+            if self.progress_worker is worker:self.progress_worker=None
             if worker in self.workers:
                 self.workers.remove(worker)
             if self.scan_worker is worker:
@@ -199,7 +229,7 @@ class Window(QMainWindow):
         logging.getLogger("dgm").error("GUI %s", message)
         self.status.setText("Lỗi: " + message.splitlines()[0])
         if self.scan_worker is not None:
-            self.scan_progress.setRange(0, 100); self.scan_progress.setValue(0); self.scan_progress.setFormat("Quét thất bại")
+            self.scan_progress.setRange(0, 100); self.scan_progress.setFormat('%p% • Lỗi ở bước hiện tại')
         QMessageBox.warning(self, "Không hoàn tất", message)
 
     def set_scan_busy(self, busy):
@@ -210,10 +240,10 @@ class Window(QMainWindow):
             control.setEnabled(not blocked)
         self.mft.setEnabled(not blocked and not self.strict.isChecked())
         self.stop_button.setEnabled(busy)
-        if busy:
-            self.scan_progress.setRange(0, 0); self.scan_progress.setFormat("Đang khởi tạo lượt quét...")
-        elif self.scan_progress.maximum() == 0:
-            self.scan_progress.setRange(0, 100); self.scan_progress.setValue(0); self.scan_progress.setFormat("Sẵn sàng")
+        if busy and not self._scan_ui_busy:
+            self.task_progress_id=None;self.scan_progress.setRange(0,100);self.scan_progress.setValue(0)
+            self.scan_progress.setFormat('0% • Chuẩn bị lượt quét');self.completed_steps.clear();self.completed_steps.hide();self.last_scan_brief=''
+        self._scan_ui_busy=busy
 
     def set_admin_busy(self,busy):
         self.admin_busy=busy;self.set_scan_busy(self.scan_worker is not None)
@@ -240,6 +270,7 @@ class Window(QMainWindow):
             header = table.header() if isinstance(table, QTreeWidget) else table.horizontalHeader()
             self.preferences.set("columns/" + key, [header.sectionSize(i) for i in range(len(widths))])
         self.preferences.set("splitter/scan-v3", self.scan_splitter.sizes())
+        self.preferences.set('splitter/status-v1',self.workspace_splitter.sizes())
 
     def reset_layout(self):
         for key, (table, widths) in self.column_specs.items():
@@ -257,34 +288,46 @@ class Window(QMainWindow):
         box.exec()
 
     def progress(self, event, data):
+        if event=='task-progress':
+            ident=data.get('id',data.get('task'))
+            if ident!=self.task_progress_id:self.task_progress_id=ident;self.scan_progress.setValue(0)
+            value=max(self.scan_progress.value(),min(100,int(data.get('percent',0))))
+            self.scan_progress.setRange(0,100);self.scan_progress.setValue(value)
+            self.scan_progress.setFormat('%p% • '+data.get('stage',''))
+            self.scan_progress.setToolTip(data.get('basis','')+'\n'+data.get('detail',''))
+            self.status.setText(data.get('stage','')+(' • '+data['detail'] if data.get('detail') else ''))
+            items=data.get('completed',[])
+            prefix=self.last_scan_brief+'\n' if self.last_scan_brief and data.get('task') in ('comparison','details') else ''
+            self.completed_steps.setText(prefix+'Đã xong: '+' • '.join(items));self.completed_steps.setToolTip(self.completed_steps.text());self.completed_steps.setVisible(bool(prefix or items))
+            return
         if event=='uac-state':
             self.set_admin_busy(data['phase']!='done')
             if self.scan_worker is not None and data['phase'] != 'done':
-                self.scan_progress.setRange(0, 0); self.scan_progress.setFormat("Đang chờ xác nhận quyền Admin...")
+                self.scan_progress.setFormat('%p% • Chờ xác nhận quyền Admin')
             return
         if event=='cancelled':
             self.status.setText(data['message'])
             if self.scan_worker is not None:
-                self.scan_progress.setRange(0, 100); self.scan_progress.setValue(0); self.scan_progress.setFormat("Đã yêu cầu dừng")
+                self.scan_progress.setFormat('%p% • Đã yêu cầu dừng')
             return
         if event == "progress":
             if not (self.scan_worker and self.scan_worker.stop.is_set()):
                 self.status.setText(f"{data['count']:,}" + (f"/{data['total']:,}" if data.get('total') else "") + f" mục • {data['path']}")
-                if self.scan_worker is not None:
+                if self.scan_worker is not None and self.task_progress_id is None:
                     total = data.get("total")
                     if total:
-                        self.scan_progress.setRange(0, total); self.scan_progress.setValue(min(data["count"], total))
+                        self.scan_progress.setRange(0,100); self.scan_progress.setValue(min(99,data['count']*100//total))
                         self.scan_progress.setFormat(f"%p% • {data['count']:,}/{total:,} mục")
                     else:
-                        self.scan_progress.setRange(0, 0); self.scan_progress.setFormat(f"Đang xử lý • {data['count']:,} mục")
+                        self.scan_progress.setFormat(f"%p% • Đã đọc {data['count']:,} mục")
         elif event == "info":
             if not (self.scan_worker and self.scan_worker.stop.is_set()):
                 self.status.setText(data["message"])
                 if self.scan_worker is not None:
-                    self.scan_progress.setRange(0, 0); self.scan_progress.setFormat(data["message"])
+                    self.scan_progress.setFormat('%p% • '+data["message"])
         elif event == "started":
             if self.scan_worker is not None:
-                self.scan_progress.setRange(0, 0); self.scan_progress.setFormat("Đã tạo mốc quét; đang chuẩn bị...")
+                self.scan_progress.setFormat('%p% • Đã tạo mốc quét')
             s=Store(readonly=True)
             try:label=scan_name(s.scan(data['scan_id']))
             finally:s.close()
@@ -293,18 +336,24 @@ class Window(QMainWindow):
             self.browser.metrics[1].setText("WIZTREE — TỔNG QUAN ĐÃ CÓ\n"+size(data["logical"])+"\nChi tiết đang nhập nền")
 
     def make_scan(self):
-        outer_layout = self.add_tab("Kiểm tra")
-        configuration = QWidget(); layout = QVBoxLayout(configuration); layout.setContentsMargins(0, 0, 0, 0)
+        host_layout = self.add_tab("Kiểm tra")
+        self.scan_page_scroll=QScrollArea();self.scan_page_scroll.setWidgetResizable(True)
+        self.scan_page_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        canvas=QWidget();outer_layout=QVBoxLayout(canvas);outer_layout.setContentsMargins(0,0,0,0);outer_layout.setSpacing(4)
+        self.scan_page_scroll.setWidget(canvas);host_layout.addWidget(self.scan_page_scroll)
+        configuration = QWidget(); layout = QVBoxLayout(configuration); layout.setContentsMargins(0, 0, 0, 0);layout.setSpacing(4)
+        configuration.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Maximum)
         row = QHBoxLayout()
         self.profile_combo = QComboBox()
+        self.profile_combo.setMinimumWidth(140);self.profile_combo.setMaximumWidth(210)
         self.profile_combo.currentTextChanged.connect(self.load_profile)
-        row.addWidget(QLabel("Cấu hình quét")); row.addWidget(self.profile_combo)
+        row.addWidget(QLabel("Cấu hình")); row.addWidget(self.profile_combo)
         self.profile_combo.setToolTip("Một bộ lựa chọn gồm phạm vi, công cụ, loại trừ và ngưỡng hiển thị.")
-        self.new_profile_button = self.button("Tạo mới", self.new_profile, row)
+        self.new_profile_button = self.button("Tạo", self.new_profile, row)
         self.new_profile_button.setToolTip("Tạo cấu hình có tên mới từ phạm vi đang chọn; công cụ mặc định là WizTree.")
-        self.save_profile_button = self.button("Lưu cấu hình", self.save_profile, row)
+        self.save_profile_button = self.button("Lưu", self.save_profile, row)
         self.save_profile_button.setToolTip("Lưu lựa chọn để dùng lại và cho lịch chạy. Quét ngay không tự ghi đè cấu hình.")
-        self.reload_profile_button = self.button("Nạp lại", self.refresh_profiles, row)
+        self.reload_profile_button = self.button("Nạp", self.refresh_profiles, row)
         self.reload_profile_button.setToolTip("Đọc lại cấu hình đã lưu; hỏi Lưu/Bỏ thay đổi/Hủy nếu bạn đang sửa chưa lưu.")
         layout.addLayout(row)
         profile_help=self.help_box(layout, "profile", "Cấu hình quét là bộ lựa chọn để dùng lại. Tạo mới: đặt tên cho bộ lựa chọn mới. Lưu cấu hình: ghi lựa chọn trên màn hình để các lịch dùng nó. Nạp lại: đọc bản đã lưu. Quét ngay/Quét lại dùng lựa chọn hiện tại nhưng không tự ghi đè cấu hình. Khi đổi cấu hình, app hỏi nếu còn thay đổi chưa lưu.")
@@ -312,8 +361,9 @@ class Window(QMainWindow):
         self.scan_options = QWidget(); options_layout = QVBoxLayout(self.scan_options); options_layout.setContentsMargins(0, 0, 0, 0)
         toolrow = QHBoxLayout()
         self.engine = QComboBox(); self.engine.addItems(["wiztree", "native", "windirstat", "gdu"])
+        self.engine.setFixedWidth(120)
         self.engine.setToolTip("WizTree là mặc định. Native duyệt thư mục và bảo đảm không đọc vùng Chrome/Edge bị loại trừ.")
-        toolrow.addWidget(QLabel("Công cụ quét")); toolrow.addWidget(self.engine)
+        row.addWidget(QLabel("Công cụ")); row.addWidget(self.engine);row.addStretch()
         self.strict = QCheckBox("Không đọc/quét Chrome/Edge"); self.strict.setChecked(True)
         self.strict.setToolTip("Không stat/đọc metadata/đi vào thư mục trình duyệt. Cần chọn native, không chỉ lọc kết quả WizTree.")
         toolrow.addWidget(self.strict)
@@ -322,19 +372,14 @@ class Window(QMainWindow):
         self.strict.toggled.connect(lambda checked: (self.mft.setChecked(False), self.mft.setEnabled(not checked)))
         self.mft.setEnabled(False)
         options_layout.addLayout(toolrow)
-        self.scope_note = QLabel(); self.scope_note.setWordWrap(True); layout.addWidget(self.scope_note)
+        self.scope_note = QLabel(); self.scope_note.setWordWrap(True);self.scope_note.hide()
         for control in (self.engine,):
             control.currentTextChanged.connect(self.update_scope_note)
         self.strict.toggled.connect(self.update_scope_note); self.mft.toggled.connect(self.update_scope_note)
-        root_row = QHBoxLayout()
+        root_row = toolrow
         self.roots = QLineEdit(); self.roots.setPlaceholderText("Nhiều ổ/folder, phân cách bằng dấu ;")
-        root_row.addWidget(QLabel("Phạm vi")); root_row.addWidget(self.roots)
-        self.button("Thêm folder", self.pick_root, root_row)
-        self.scan_options_toggle = QToolButton(); self.scan_options_toggle.setCheckable(True)
-        self.scan_options_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.scan_options_toggle.setToolTip("Hiện/ẩn công cụ quét, bảo vệ Chrome/Edge, MFT, loại trừ và ngưỡng hiển thị.")
-        root_row.addWidget(self.scan_options_toggle)
-        layout.addLayout(root_row)
+        root_row.insertWidget(0,QLabel("Phạm vi"));root_row.insertWidget(1,self.roots,1)
+        pick=self.button("Chọn folder",self.pick_root,root_row);root_row.removeWidget(pick);root_row.insertWidget(2,pick)
         row2 = QHBoxLayout()
         self.excludes = QLineEdit(); self.excludes.setPlaceholderText("Đường dẫn/glob loại trừ, phân cách ;")
         row2.addWidget(QLabel("Loại trừ thêm")); row2.addWidget(self.excludes)
@@ -343,30 +388,24 @@ class Window(QMainWindow):
         self.threshold.setToolTip("Chỉ lọc file trong bảng. Vẫn lưu metadata file nhỏ để tính tổng thư mục và phát hiện file tăng vượt ngưỡng.")
         options_layout.addLayout(row2)
         scan_help=self.help_box(options_layout, "scan", "Cấu hình quét lưu phạm vi/công cụ/loại trừ/ngưỡng. Lưu cấu hình để lịch chạy dùng lựa chọn mới; Quét ngay chỉ dùng lựa chọn trên màn hình. WizTree/MFT đọc metadata toàn ổ nên không đáp ứng cấm đọc Chrome/Edge. Giữ bảo vệ thì chọn native. Ngưỡng 10 MB chỉ lọc bảng file, không bỏ dung lượng file nhỏ khỏi tổng thư mục.")
-        toolrow.addWidget(scan_help.toggle)
+        row.addWidget(scan_help.toggle)
+        self.scan_options_toggle=scan_help.toggle
         layout.addWidget(self.scan_options)
-        self.configuration_scroll = QScrollArea(); self.configuration_scroll.setWidgetResizable(True)
-        self.configuration_scroll.setWidget(configuration); self.configuration_scroll.setStyleSheet("QScrollArea{border:0;}")
-        outer_layout.addWidget(self.configuration_scroll)
-        self.scan_options_toggle.toggled.connect(self.toggle_scan_options)
-        self.help_boxes["profile"].toggle.toggled.connect(lambda _: self.toggle_scan_options(self.scan_options_toggle.isChecked()))
-        expanded = bool(self.preferences.values.get("scan/options-v3", True))
-        self.scan_options_toggle.setChecked(expanded); self.toggle_scan_options(expanded)
+        self.configuration_scroll=configuration
+        outer_layout.addWidget(configuration)
         layout = outer_layout
-        actions = QHBoxLayout()
-        actions.addWidget(QLabel("Điều khiển quét"))
+        actions = row
         self.scan_button = self.button("Quét ngay", self.begin_scan, actions)
-        self.stop_button = self.button("Dừng quét", self.cancel_scan, actions); self.stop_button.setEnabled(False)
+        self.stop_button = self.button("Dừng", self.cancel_scan, actions); self.stop_button.setEnabled(False)
         self.stop_button.setToolTip("Hủy lượt quét của app, chờ giải phóng tiến trình/khóa rồi mới Quét lại. Không đóng WizTree mở riêng.")
         self.rescan_button = self.button("Quét lại", self.begin_scan, actions)
-        actions.addStretch(); self.button("Khôi phục bố cục", self.reset_layout, actions)
-        layout.addLayout(actions)
+        self.button("Bố cục", self.reset_layout, actions).setToolTip('Khôi phục kích thước cột và hai khung kết quả mặc định')
         background = QHBoxLayout()
         self.background_summary = QLabel("Bộ chạy nền: đang kiểm tra..."); self.background_summary.setWordWrap(True)
         background.addWidget(self.background_summary, 1)
         self.button("Quản lý lịch chạy nền", lambda: self.tabs.setCurrentIndex(3), background)
         self.background_summary.hide()
-        background_controls=self.make_background_controls(layout)
+        background_controls=self.make_background_controls(layout,compact=True)
         self.button("Lịch chạy",lambda:self.tabs.setCurrentIndex(3),background_controls)
         from .browser_ui import DiskBrowser
         self.browser = DiskBrowser(self); layout.addWidget(self.browser, 1)
@@ -374,17 +413,11 @@ class Window(QMainWindow):
         self.tree, self.table, self.scan_splitter = self.browser.tree, self.browser.table, self.browser.splitter
         self.kind, self.change, self.search = self.browser.kind, self.browser.change, self.browser.search
         self.scan_info, self.page_label = self.browser.info, self.browser.page_label
-        self.button("Lịch sử quét / so sánh", lambda: self.show_history(), actions)
 
     def toggle_scan_options(self, expanded):
-        self.scan_options.setVisible(expanded)
-        self.scan_options_toggle.setText("Tùy chọn quét")
-        self.scan_options_toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
-        height = 185 if expanded else 112
-        if self.help_boxes["profile"].toggle.isChecked():
-            height += 55
-        self.configuration_scroll.setFixedHeight(min(300, height))
-        self.preferences.set("scan/options-v3", expanded)
+        # Only explanations collapse; essential scan controls always stay visible.
+        self.scan_options.setVisible(True)
+        self.help_boxes['scan'].show_transient(expanded)
 
     def refresh_profiles(self):
         current = self.profile_combo.currentText()
@@ -470,6 +503,8 @@ class Window(QMainWindow):
             self.roots.setText(old + (";" if old else "") + path)
 
     def begin_scan(self):
+        if getattr(self,'update_in_progress',False):
+            self.status.setText('Đang cập nhật app; chờ hoàn tất hoặc hủy cập nhật trước khi quét.');return
         if self.scan_worker is not None:
             return
         try:
@@ -521,9 +556,10 @@ class Window(QMainWindow):
             elif result.get("recovered"):
                 status += " (phục hồi metadata, không quét mới)"
         if result["status"] in ("complete", "partial"):
-            self.scan_progress.setRange(0, 100); self.scan_progress.setValue(100); self.scan_progress.setFormat(status)
+            self.scan_progress.setRange(0, 100); self.scan_progress.setValue(100)
+            self.scan_progress.setFormat(f"100% • Đã lưu {result['files']:,} file")
         else:
-            self.scan_progress.setRange(0, 100); self.scan_progress.setValue(0); self.scan_progress.setFormat(status)
+            self.scan_progress.setRange(0, 100); self.scan_progress.setFormat('%p% • '+status)
         store=Store(readonly=True)
         try:
             try: label=scan_name(store.scan(result['scan_id']))
@@ -531,14 +567,20 @@ class Window(QMainWindow):
         finally: store.close()
         from .presentation import storage_delta
         storage_text=storage_delta(result.get("storage"))
-        self.status.setText(f"{label}: {status} • {result['files']:,} file • {result['seconds']:.1f}s • Δ data/log {storage_text}")
+        outcome=f"Đã đọc/lưu {result['files']:,} file, {result.get('folders',0):,} thư mục/liên kết" if result['status'] in ('complete','partial') else status
+        if result.get('errors'):outcome+=f" • {result['errors']:,} mục/vùng không đọc được"
+        self.status.setText(f"{label}: {outcome} • {result['seconds']:.1f}s • Δ data/log {storage_text}")
+        self.status.setToolTip(result.get('coverage_note',''))
+        if result.get('completed_steps'):
+            self.last_scan_brief=f"Lượt quét vừa chạy: {outcome} • tổng {size(result.get('logical'))} • đã tổng hợp dung lượng và lưu lịch sử/data/log."
+            self.completed_steps.setText(self.last_scan_brief+'\nĐã xong: '+' • '.join(result['completed_steps']));self.completed_steps.setToolTip(self.completed_steps.text());self.completed_steps.show()
         self.refresh_history()
         if result["status"] in ("complete", "partial"):
             self.newer.setCurrentIndex(self.newer.findData(result["scan_id"]))
             self.compare()
         elif result["status"] == "failed":
             self.fail(result.get("error", "Quét thất bại; xem Nhật ký."))
-        self.tray.showMessage(status, self.status.text())
+        self.tray.showMessage('Đã lưu kết quả quét' if result['status'] in ('complete','partial') else status, self.status.text())
         if result.get("alerts"):
             self.tray.showMessage("Cảnh báo dung lượng", "\n".join(result["alerts"]))
 
@@ -552,6 +594,7 @@ class Window(QMainWindow):
 
     def refresh_history(self):
         self.browser.refresh(self.profile_combo.currentText())
+        if hasattr(self,'history_panel'):self.history_panel.invalidate()
 
     def swap_snapshots(self):
         a, b = self.older.currentData(), self.newer.currentData()
@@ -669,6 +712,12 @@ class Window(QMainWindow):
             settings.addWidget(QLabel(label)); settings.addWidget(box)
         self.button("Lưu giới hạn", self.save_limits, settings)
         layout.addLayout(settings)
+        sources=QHBoxLayout()
+        self.source_limit=QSpinBox();self.source_limit.setRange(0,10000);self.source_limit.setValue(load().get('source_archive_limit_mb',512))
+        self.source_days=QSpinBox();self.source_days.setRange(0,3650);self.source_days.setValue(load().get('source_archive_retention_days',90))
+        sources.addWidget(QLabel('CSV WizTree nén: tối đa MB'));sources.addWidget(self.source_limit)
+        sources.addWidget(QLabel('Giữ tối đa ngày'));sources.addWidget(self.source_days)
+        sources.addWidget(QLabel('0 = không giữ nguồn; lịch sử vẫn lưu.'));sources.addStretch();layout.addLayout(sources)
         self.system_details_toggle = QToolButton(); self.system_details_toggle.setText("> Chẩn đoán chi tiết"); self.system_details_toggle.setCheckable(True)
         layout.addWidget(self.system_details_toggle)
         self.system_output = QPlainTextEdit(); self.system_output.setReadOnly(True); self.system_output.setMaximumHeight(170); self.system_output.hide(); layout.addWidget(self.system_output)
@@ -751,7 +800,8 @@ class Window(QMainWindow):
             cfg = load(); cfg["engines"][self.tool_kind.currentText()] = path; save(cfg); self.tool_path.setText(path); self.doctor()
 
     def save_limits(self):
-        cfg = load(); cfg.update(retention_days=self.retention.value(), max_snapshots=self.max_snapshots.value(), database_limit_mb=self.db_limit.value()); save(cfg)
+        cfg = load(); cfg.update(retention_days=self.retention.value(), max_snapshots=self.max_snapshots.value(), database_limit_mb=self.db_limit.value(),
+            source_archive_limit_mb=self.source_limit.value(),source_archive_retention_days=self.source_days.value()); save(cfg)
         self.status.setText("Đã lưu giới hạn lịch sử/database")
 
     def install_engines(self):
@@ -918,10 +968,14 @@ class Window(QMainWindow):
         self.interval.setEnabled(mode not in ("daily", "weekly"))
         self.times.setEnabled(mode in ("daily", "weekly")); self.weekdays.setEnabled(mode == "weekly")
 
-    def make_background_controls(self, layout):
-        box=QGroupBox('Trạng thái và điều khiển chạy nền'); group=QVBoxLayout(box)
+    def make_background_controls(self, layout,compact=False):
+        box=QWidget() if compact else QGroupBox('Trạng thái và điều khiển chạy nền'); group=QVBoxLayout(box)
+        if compact:
+            group.setContentsMargins(0,0,0,0);group.setSpacing(2)
+            box.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Maximum)
         row = QHBoxLayout()
         choice = QComboBox(); choice.addItem("Task Scheduler", "task"); choice.addItem("Windows Service (Admin)", "service")
+        if compact:choice.setMaximumWidth(175)
         choice.setCurrentIndex(1 if self.preferences.values.get("background/kind") == "service" else 0)
         row.addWidget(QLabel("Bộ chạy nền")); row.addWidget(choice)
         label = QLabel("Chưa kiểm tra"); label.setWordWrap(True)
@@ -933,9 +987,9 @@ class Window(QMainWindow):
         buttons["disable"].setToolTip("Ngừng chạy lịch nhưng giữ đăng ký/cấu hình. Khác với Gỡ.")
         buttons["remove"].setToolTip("Bỏ đăng ký bộ chạy nền. Không xóa lịch, snapshot, cấu hình hay dữ liệu đã quét.")
         self.button("Trạng thái", self.refresh_background, row)
-        manager=self.button('Mở quản lý Windows',lambda c=choice:self.open_background_manager(c.currentData()),row)
+        manager=self.button('Mở Windows' if compact else 'Mở quản lý Windows',lambda c=choice:self.open_background_manager(c.currentData()),row)
         manager.setToolTip('Mở Task Scheduler (DiskGrowthMonitor-Local) hoặc Services (DiskGrowthMonitor). Không cài/bật/chạy dịch vụ.')
-        realtime=QCheckBox('Realtime trạng thái'); realtime.setChecked(self.preferences.values.get('background/realtime',True))
+        realtime=QCheckBox('Realtime' if compact else 'Realtime trạng thái'); realtime.setChecked(self.preferences.values.get('background/realtime',True))
         realtime.setToolTip('Tự kiểm tra trạng thái Task/Service mỗi 3 giây khi hiện cửa sổ; không quét file/ổ đĩa.')
         realtime.toggled.connect(self.set_realtime);self.realtime_boxes.append(realtime);row.addWidget(realtime)
         group.addLayout(row);group.addWidget(label);layout.addWidget(box)
@@ -1125,7 +1179,7 @@ class Window(QMainWindow):
         layout=self.add_tab("Lịch sử"); self.history_panel=HistoryPanel(self); layout.addWidget(self.history_panel)
 
     def show_history(self):
-        self.history_panel.refresh(); self.tabs.setCurrentIndex(5)
+        self.history_panel.ensure_loaded(); self.tabs.setCurrentIndex(5)
 
     def poll_background(self):
         if self.preferences.values.get('background/realtime',True): self.refresh_background()

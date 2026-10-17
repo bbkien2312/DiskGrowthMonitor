@@ -44,6 +44,13 @@ class HelpBox(QWidget):
         self.body.setVisible(expanded)
         self.preferences.set("help/" + self.key, expanded)
 
+    def show_transient(self, expanded=True):
+        """Result-driven expansion must not overwrite the user's saved default."""
+        self.toggle.blockSignals(True)
+        self.toggle.setChecked(expanded)
+        self.toggle.blockSignals(False)
+        self.body.setVisible(expanded)
+
 
 class StatusMenu(QMenu):
     def mouseReleaseEvent(self,event):
@@ -91,8 +98,8 @@ class MetricCard(QWidget):
     def __init__(self, tone):
         super().__init__(); self.setObjectName('metricCard'); self.setProperty('tone', tone)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground,True)
-        self.setMinimumHeight(105)
-        layout = QVBoxLayout(self); layout.setContentsMargins(12, 10, 12, 10)
+        self.setMinimumHeight(76)
+        layout = QVBoxLayout(self); layout.setContentsMargins(10, 6, 10, 6); layout.setSpacing(2)
         self.caption = QLabel('—'); self.caption.setObjectName('metricCaption'); self.caption.setWordWrap(True)
         self.value = QLabel('—'); self.value.setObjectName('metricValue'); self.value.setWordWrap(True)
         self.note = QLabel(); self.note.setObjectName('metricNote'); self.note.setWordWrap(True)

@@ -86,7 +86,7 @@ def test_help_and_packages_and_no_config_write(gui):
     before = (home() / "data/config.json").read_bytes()
     assert w.engine.currentText() == "wiztree"
     box = w.help_boxes["scan"]
-    w.scan_options_toggle.setChecked(True)
+    w.scan_options_toggle.setChecked(False)
     assert not box.toggle.icon().isNull() and not box.body.isVisible()
     QTest.mouseClick(box.toggle, Qt.MouseButton.LeftButton)
     assert box.body.isVisible() and box.toggle.isChecked()

@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.1.1"
+  #define AppVersion "1.2.0"
 #endif
 #define SourceRoot AddBackslash(SourcePath) + ".."
 #ifndef InstallerOutputDir
@@ -16,7 +16,7 @@ AppPublisherURL=https://github.com/bbkien2312/DiskGrowthMonitor
 AppSupportURL=https://github.com/bbkien2312/DiskGrowthMonitor/issues
 DefaultDirName={code:DefaultDirectory}
 DefaultGroupName=Disk Growth Monitor
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
@@ -53,7 +53,7 @@ Name: "{group}\Uninstall Disk Growth Monitor"; Filename: "{uninstallexe}"; Check
 Name: "{autodesktop}\Disk Growth Monitor"; Filename: "{app}\DiskGrowthMonitor.exe"; WorkingDir: "{app}"; Tasks: desktopicon; Check: not PortableMode
 
 [Run]
-Filename: "{app}\DiskGrowthMonitor.exe"; Description: "Launch Disk Growth Monitor"; Flags: nowait postinstall skipifsilent; Check: not PortableMode
+Filename: "{app}\DiskGrowthMonitor.exe"; Description: "Launch Disk Growth Monitor"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: not PortableMode
 
 [Code]
 function PortableMode: Boolean;
@@ -98,7 +98,7 @@ begin
     Guard := 'uninstall-check';
     if LoadStringFromFile(AddBackslash(Target) + 'installed-app.json', Marker) then
       if (Pos('"update_protocol":1', String(Marker)) > 0) or (Pos('"update_protocol": 1', String(Marker)) > 0) then Guard := 'upgrade-check';
-    if not Exec(AddBackslash(Target) + 'dgm.exe', '--home "' + Target + '" ' + Guard,
+    if not Exec(AddBackslash(Target) + 'dgm.exe', Guard,
       Target, SW_HIDE, ewWaitUntilTerminated, ExitCode) then
       Result := 'Cannot check the previous installation. No update was started.'
     else if ExitCode <> 0 then
@@ -121,7 +121,7 @@ function InitializeUninstall: Boolean;
 var ExitCode: Integer;
 begin
   Result := False;
-  if not Exec(ExpandConstant('{app}\dgm.exe'), '--home "' + ExpandConstant('{app}') + '" uninstall-check',
+  if not Exec(ExpandConstant('{app}\dgm.exe'), 'uninstall-check',
     ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ExitCode) then begin
     SuppressibleMsgBox('Cannot verify application/background status. Close the app before trying again.', mbError, MB_OK, IDOK);
     Exit;

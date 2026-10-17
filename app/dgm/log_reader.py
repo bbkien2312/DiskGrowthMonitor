@@ -2,6 +2,12 @@
 import json
 import re
 LEVELS=['DEBUG','INFO','WARNING','ERROR','CRITICAL']
+LEVEL_PATTERN=re.compile(r'^(?:(?:\d{4}-\d{2}-\d{2}[ T]\S+(?:\s+[\d:,\.]+)?(?:\s+UTC)?|\d{2}:\d{2}:\d{2}|\d{4})\s+)?(?:\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]|(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b)')
+
+
+def severity(line):
+    match=LEVEL_PATTERN.match(line)
+    return next((x for x in match.groups() if x),None) if match else None
 
 def read_tail(path,max_bytes=500_000):
     with path.open('rb') as file:
@@ -14,10 +20,10 @@ def parse_lines(text,level=None,audit=False,current='INFO'):
     for line in text.splitlines():
         if audit:
             try:
-                item=json.loads(line);severity=item.get('level','INFO')
-                line=f"{item.get('time','')} {severity} AUDIT {item.get('action','')} {json.dumps(item,ensure_ascii=False)}"
+                item=json.loads(line);audit_level=item.get('level','INFO')
+                line=f"{item.get('time','')} [{audit_level}] AUDIT {item.get('action','')} {json.dumps(item,ensure_ascii=False)}"
             except ValueError:pass
-        match=re.search(r'\b(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b',line)
-        if match:current=match[1]
+        found=severity(line)
+        if found:current=found
         if level is None or current==level:lines.append((current,line))
     return lines,current

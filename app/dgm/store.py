@@ -4,8 +4,11 @@ import sqlite3
 import hashlib
 import logging
 import time
+import threading
 from datetime import datetime, timezone
-from .config import home, load
+from .config import home, load, comparison_path_key
+
+_path_key_lock=threading.RLock()
 
 
 def now():
@@ -13,7 +16,7 @@ def now():
 
 
 class Store:
-    def __init__(self, path=None, readonly=False):
+    def __init__(self, path=None, readonly=False, *, migrate_keys=True, stop=None, notify=None):
         self.path = path or home() / "data/history.sqlite"
         self.db = sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro" if readonly else self.path, timeout=30, uri=readonly)
         self.db.row_factory = sqlite3.Row
@@ -21,6 +24,7 @@ class Store:
             self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.create_function("dgm_hash", -1, lambda *args: hashlib.sha256(json.dumps(args, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest(), deterministic=True)
+        self.db.create_function("dgm_path_key", 1, comparison_path_key, deterministic=True)
         if readonly:
             return
         self.db.executescript("""
@@ -33,6 +37,9 @@ class Store:
         CREATE TABLE IF NOT EXISTS jobs(schedule_id TEXT PRIMARY KEY, last_run TEXT, next_run TEXT, result TEXT);
         """)
         self._normalized_entries()
+        if migrate_keys:
+            try:self._path_keys(stop,notify)
+            except BaseException:self.db.close();raise
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS scan_numbers(scan_id INTEGER PRIMARY KEY,profile TEXT,ordinal INTEGER,
           UNIQUE(profile,ordinal));
@@ -102,6 +109,43 @@ class Store:
     def close(self):
         self.db.close()
 
+    def _path_keys(self, stop=None, notify=None):
+        # A restartable one-time migration. Read-only browsing never recalculates
+        # a path key for every row of every new comparison.
+        from .platform_ops import ProcessCancelled
+        notify=notify or (lambda *a:None)
+        def ready():
+            return self.db.execute("SELECT 1 FROM sqlite_master WHERE name='store_schema'").fetchone() and self.db.execute("SELECT 1 FROM store_schema WHERE key='path-keys-v1'").fetchone()
+        if ready():return
+        last=[time.monotonic()]
+        def progress():
+            if stop is not None and stop.is_set():return 1
+            if time.monotonic()-last[0]>2:
+                notify('info',{'message':'Đang tạo chỉ mục đường dẫn lịch sử lần đầu; không quét lại ổ đĩa'});last[0]=time.monotonic()
+            return 0
+        with _path_key_lock:
+            if ready():return
+            if stop is not None and stop.is_set():raise ProcessCancelled('Đã dừng nâng cấp chỉ mục; lịch sử gốc được giữ')
+            notify('info',{'message':'Chuẩn bị chỉ mục đường dẫn lịch sử một lần; có thể dừng và thử lại'})
+            self.db.set_progress_handler(progress,4000)
+            try:
+                self.db.execute('BEGIN IMMEDIATE')
+                columns={r[1] for r in self.db.execute('PRAGMA table_info(paths)')}
+                if 'path_key' not in columns:self.db.execute('ALTER TABLE paths ADD COLUMN path_key TEXT')
+                if 'parent_key' not in columns:self.db.execute('ALTER TABLE paths ADD COLUMN parent_key TEXT')
+                self.db.execute('CREATE TABLE IF NOT EXISTS store_schema(key TEXT PRIMARY KEY,value INTEGER)')
+                self.db.execute("""CREATE TRIGGER IF NOT EXISTS paths_keys_insert AFTER INSERT ON paths BEGIN
+                  UPDATE paths SET path_key=dgm_path_key(NEW.path),parent_key=dgm_path_key(NEW.parent) WHERE id=NEW.id; END""")
+                self.db.execute('UPDATE paths SET path_key=dgm_path_key(path),parent_key=dgm_path_key(parent) WHERE path_key IS NULL OR parent_key IS NULL')
+                self.db.execute('CREATE INDEX IF NOT EXISTS paths_key ON paths(path_key)')
+                self.db.execute("INSERT OR IGNORE INTO store_schema VALUES('path-keys-v1',1)")
+                self.db.commit()
+            except BaseException as exc:
+                self.db.set_progress_handler(None,0);self.db.rollback()
+                if stop is not None and stop.is_set():raise ProcessCancelled('Đã dừng nâng cấp chỉ mục; lịch sử gốc được giữ') from exc
+                raise
+            finally:self.db.set_progress_handler(None,0)
+
     def begin_scan(self, name, scope, engine, profile):
         self.db.execute('BEGIN IMMEDIATE')
         try:
@@ -147,15 +191,18 @@ class Store:
                 raise ProcessCancelled()
         check()
         self.db.execute("DROP TABLE IF EXISTS temp.owners")
-        self.db.execute("""CREATE TEMP TABLE owners AS SELECT r.identity,MIN(p.path) AS path
+        self.db.execute("""CREATE TEMP TABLE owners AS SELECT r.identity,
+        MIN(p.path_key || CHAR(0) || PRINTF('%020d',p.id)) AS owner_key,
+        CASE WHEN SUM(r.allocated IS NULL)>0 THEN NULL ELSE MAX(r.allocated) END AS allocated
         FROM members m JOIN revisions r ON r.id=m.revision_id JOIN paths p ON p.id=m.path_id
         WHERE m.scan_id=? AND r.kind='file' AND r.identity<>'' GROUP BY r.identity""", (scan_id,))
         self.db.execute("CREATE UNIQUE INDEX temp.owner_identity ON owners(identity)")
-        duplicates = self.db.execute("""SELECT p.path,p.parent,r.* FROM members m JOIN revisions r ON r.id=m.revision_id
+        duplicates = self.db.execute("""SELECT p.path,p.parent,r.*,CASE WHEN p.path_key || CHAR(0) || PRINTF('%020d',p.id)=o.owner_key THEN o.allocated ELSE 0 END AS canonical_allocated
+        FROM members m JOIN revisions r ON r.id=m.revision_id
         JOIN paths p ON p.id=m.path_id JOIN owners o ON o.identity=r.identity
-        WHERE m.scan_id=? AND r.kind='file' AND p.path<>o.path AND r.allocated<>0""", (scan_id,)).fetchall()
+        WHERE m.scan_id=? AND r.kind='file' AND r.allocated IS NOT (CASE WHEN p.path_key || CHAR(0) || PRINTF('%020d',p.id)=o.owner_key THEN o.allocated ELSE 0 END)""", (scan_id,)).fetchall()
         for start in range(0, len(duplicates), 2000):
-            check(); batch = [{**dict(r), "allocated": 0} for r in duplicates[start:start + 2000]]
+            check(); batch = [{**dict(r), "allocated": r['canonical_allocated']} for r in duplicates[start:start + 2000]]
             self.put(scan_id, batch)
         check()
 
@@ -170,23 +217,30 @@ class Store:
         # Direct file totals computed once. No SUM over a million members for
         # each directory. Folder records alone are held in memory.
         self.db.execute("DROP TABLE IF EXISTS temp.direct_totals")
-        self.db.execute("""CREATE TEMP TABLE direct_totals AS SELECT p.parent,SUM(r.logical) AS logical,SUM(r.allocated) AS allocated
+        self.db.execute("""CREATE TEMP TABLE direct_totals AS SELECT p.parent_key AS parent,SUM(r.logical) AS logical,
+        CASE WHEN SUM(r.allocated IS NULL)>0 THEN NULL ELSE SUM(r.allocated) END AS allocated
         FROM members m JOIN paths p ON p.id=m.path_id JOIN revisions r ON r.id=m.revision_id
-        WHERE m.scan_id=? AND r.kind='file' GROUP BY p.parent""", (scan_id,))
+        WHERE m.scan_id=? AND r.kind='file' GROUP BY p.parent_key""", (scan_id,))
         self.db.execute("CREATE UNIQUE INDEX temp.direct_parent ON direct_totals(parent)")
-        folders = self.db.execute("""SELECT p.id AS path_id,pp.id AS parent_id,p.path,p.parent,r.*,
-        COALESCE(t.logical,0) AS direct_logical,COALESCE(t.allocated,0) AS direct_allocated
+        folders = self.db.execute("""SELECT p.id AS path_id,p.path,p.parent,p.path_key,p.parent_key,r.*,
+        COALESCE(t.logical,0) AS direct_logical,CASE WHEN t.parent IS NULL THEN 0 ELSE t.allocated END AS direct_allocated
         FROM members m JOIN paths p ON p.id=m.path_id JOIN revisions r ON r.id=m.revision_id
-        LEFT JOIN paths pp ON pp.path=p.parent LEFT JOIN direct_totals t ON t.parent=p.path
+        LEFT JOIN direct_totals t ON t.parent=p.path_key
         WHERE m.scan_id=? AND r.kind='folder' ORDER BY LENGTH(p.path) DESC""", (scan_id,)).fetchall()
         totals = {r["path_id"]: [r["direct_logical"], r["direct_allocated"]] for r in folders}
+        by_key = {}
+        for row in folders:
+            by_key.setdefault(row['path_key'], []).append(row['path_id'])
         last = time.monotonic()
         for index, r in enumerate(folders):
-            check(); parent = r["parent_id"]
+            check(); candidates = by_key.get(r['parent_key'], [])
+            parent = candidates[0] if len(candidates) == 1 else None
             if parent in totals and parent != r["path_id"]:
-                totals[parent][0] += totals[r["path_id"]][0]; totals[parent][1] += totals[r["path_id"]][1]
+                totals[parent][0] += totals[r["path_id"]][0]
+                a, b = totals[parent][1], totals[r["path_id"]][1]
+                totals[parent][1] = None if a is None or b is None else a + b
             if time.monotonic() - last > 0.5:
-                notify("progress", {"count": index + 1, "total": len(folders), "path": "Tổng hợp thư mục"}); last = time.monotonic()
+                notify("progress", {"count": index + 1, "total": len(folders)*2, "path": "Tổng hợp thư mục"}); last = time.monotonic()
         batch = []
         for index, r in enumerate(folders):
             check(); logical, allocated = totals[r["path_id"]]
@@ -194,14 +248,14 @@ class Store:
                 batch.append({**dict(r), "logical": logical, "allocated": allocated})
             if len(batch) >= 2000:
                 self.put(scan_id, batch); batch.clear()
-                notify("progress", {"count": index + 1, "total": len(folders), "path": "Ghi tổng thư mục"})
+                notify("progress", {"count": len(folders)+index + 1, "total": len(folders)*2, "path": "Ghi tổng thư mục"})
         if batch:
             self.put(scan_id, batch)
         self.db.commit()
 
     def totals(self, scan_id):
         return dict(self.db.execute("""SELECT COALESCE(SUM(CASE WHEN r.kind='file' THEN r.logical ELSE 0 END),0) AS logical,
-        COALESCE(SUM(CASE WHEN r.kind='file' THEN r.allocated ELSE 0 END),0) AS allocated,
+        CASE WHEN SUM(r.kind='file' AND r.allocated IS NULL)>0 THEN NULL ELSE COALESCE(SUM(CASE WHEN r.kind='file' THEN r.allocated ELSE 0 END),0) END AS allocated,
         COALESCE(SUM(r.kind='file'),0) AS files,COALESCE(SUM(r.kind='folder'),0) AS folders,COALESCE(SUM(r.kind='link'),0) AS links
         FROM members m JOIN revisions r ON r.id=m.revision_id WHERE m.scan_id=?""", (scan_id,)).fetchone())
 
@@ -238,6 +292,7 @@ class Store:
                 self.db.execute(f'DELETE FROM scan_numbers WHERE scan_id IN ({marks})',batch)
             self.db.commit()
             self.gc()
+            self._delete_normalizations(scan_ids)
             return len(scan_ids)
         except BaseException:
             self.db.rollback();raise
@@ -245,22 +300,40 @@ class Store:
     def clear_scans(self):
         if self.db.execute("SELECT 1 FROM scans WHERE status='running' LIMIT 1").fetchone():
             raise ValueError('Dừng lượt quét đang chạy trước khi xóa lịch sử.')
+        ids=[r[0] for r in self.db.execute('SELECT id FROM scans')]
         self.db.execute('BEGIN IMMEDIATE')
         try:
             self.db.execute('DELETE FROM scans');self.db.execute('DELETE FROM scan_numbers');self.db.commit();self.gc()
             self.db.execute('VACUUM');self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            self._delete_normalizations(ids)
         except BaseException:
             self.db.rollback();raise
 
-    def scans(self, profile=None):
-        where, args = ("WHERE s.profile=?", (profile,)) if profile else ("", ())
-        return [dict(x) for x in self.db.execute(f"SELECT s.*,n.ordinal FROM scans s LEFT JOIN scan_numbers n ON n.scan_id=s.id {where} ORDER BY s.id DESC", args)]
+    def _delete_normalizations(self,scan_ids):
+        # Only the overlay beside this database belongs to its snapshots.
+        if self.path.parent!=(home()/'data') or not (self.path.parent/'normalization.sqlite').exists():return
+        from .normalization import Normalizations
+        norm=Normalizations()
+        try:norm.delete_for_scans(scan_ids)
+        finally:norm.close()
 
-    def scan(self, scan_id):
+    def scans(self, profile=None, *, effective=True):
+        where, args = ("WHERE s.profile=?", (profile,)) if profile else ("", ())
+        rows=[dict(x) for x in self.db.execute(f"SELECT s.*,n.ordinal FROM scans s LEFT JOIN scan_numbers n ON n.scan_id=s.id {where} ORDER BY s.id DESC", args)]
+        if effective:
+            from .normalization import effective_rows
+            rows=effective_rows(rows,self.path)
+        return rows
+
+    def scan(self, scan_id, *, effective=True):
         row = self.db.execute("SELECT s.*,n.ordinal FROM scans s LEFT JOIN scan_numbers n ON n.scan_id=s.id WHERE s.id=?", (scan_id,)).fetchone()
         if row is None:
             raise ValueError("Không tìm thấy snapshot")
-        return dict(row)
+        result=dict(row)
+        if effective:
+            from .normalization import effective_rows
+            result=effective_rows([result],self.path)[0]
+        return result
 
     def previous(self, scan_id):
         curr = self.scan(scan_id)
@@ -359,6 +432,7 @@ class Store:
         cfg = load()
         cutoff = datetime.now(timezone.utc).timestamp() - cfg["retention_days"] * 86400
         rows = self.scans()
+        removed=[]
         kept = {}
         total = {}
         for index, row in enumerate(rows):
@@ -371,7 +445,9 @@ class Store:
             protected = valid and count < 2
             if not protected and row["status"] != "running" and (age or total[row["scope"]] > cfg["max_snapshots"]):
                 self.db.execute("DELETE FROM scans WHERE id=?", (row["id"],))
+                removed.append(row['id'])
         self.db.commit()
+        if removed:self._delete_normalizations(removed)
         self.gc(notify=notify)
         self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 

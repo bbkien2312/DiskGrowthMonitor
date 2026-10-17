@@ -1,4 +1,4 @@
-Disk Growth Monitor 1.1.1 - Windows x64
+Disk Growth Monitor 1.2.0 - Windows x64
 
 Private Python/Qt runtime is bundled under .venv.
 No global Python, pip, System PATH, Task Scheduler job or Windows Service is installed.
@@ -7,7 +7,9 @@ The editable source folder must not be overwritten by this installer.
 
 GUI: DiskGrowthMonitor.exe
 CLI: dgm.exe --help
-Admin operations request Windows UAC individually; GUI normally stays unelevated.
+The GUI requests Windows UAC administrator approval at every unelevated launch.
+This installer also requires UAC administrator approval.
+Headless CLI/background jobs retain explicit per-operation privilege checks.
 
 WizTree is proprietary and NOT included. Select your installed WizTree executable
 in the System tab. WinDirStat/gdu can be downloaded explicitly into .venv/tools.
@@ -17,8 +19,12 @@ Upgrades preserve data and logs. Close the application before upgrading.
 For app-assisted updates, the app downloads the official Release, checks SHA-256,
 backs up config/history and temporarily disables/stops only its own runner.
 The runner registration is retained and its original state is restored afterward.
+One Update button runs the full download/install workflow. An observer started
+before elevation reopens the app in the original user session after verification.
 Manual upgrades require a disabled/stopped runner; legacy builds may need it removed.
-Editable source runs can install only into a separate empty directory.
+Updates started from source use a managed .dgm-app runtime inside the current app
+folder and keep the existing data/log home. The same launcher opens the new app.
+Source code and its development .venv are retained.
 Before uninstalling, stop scans and remove any Task/Service using the application.
 Uninstall preserves scan history, logs and tools downloaded after installation.
 Review retained files yourself; the uninstaller does not erase the whole folder.

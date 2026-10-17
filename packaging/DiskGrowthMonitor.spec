@@ -9,7 +9,7 @@ version=importlib.metadata.version('disk-growth-monitor')
 names=['disk-growth-monitor','PySide6-Essentials','shiboken6','typer','psutil','Send2Trash','APScheduler',
     'pywin32','python-dateutil','tzdata','ijson','tzlocal','six','rich','shellingham','annotated-doc',
     'markdown-it-py','mdurl','Pygments','colorama']
-datas=[(str(root/'build/licenses'),'licenses'),(str(root/'THIRD_PARTY.md'),'.'),(str(root/'app/dgm/update_helper.ps1'),'dgm')]
+datas=[(str(root/'build/licenses'),'licenses'),(str(root/'THIRD_PARTY.md'),'.'),(str(root/'app/dgm/update_helper.ps1'),'dgm'),(str(root/'app/dgm/update_watch.ps1'),'dgm')]
 for name in names:datas+=copy_metadata(name)
 a=Analysis([str(root/'app/packaged_entry.py')],pathex=[str(root/'app')],binaries=[],datas=datas,
     hiddenimports=collect_submodules('dgm')+['win32timezone','win32com.shell.shell','win32com.shell.shellcon','ijson.backends.yajl2_c'],
@@ -22,6 +22,6 @@ numbers=tuple(map(int,version.split('.')))+(0,)
 resource=VSVersionInfo(ffi=FixedFileInfo(filevers=numbers,prodvers=numbers,mask=0x3f,flags=0,OS=0x40004,fileType=1,subtype=0,date=(0,0)),
     kids=[StringFileInfo([StringTable('040904B0',[StringStruct('FileDescription','Disk Growth Monitor'),StringStruct('FileVersion',version),
        StringStruct('ProductName','Disk Growth Monitor'),StringStruct('ProductVersion',version)])]),VarFileInfo([VarStruct('Translation',[1033,1200])])])
-gui=EXE(pyz,a.scripts,[],exclude_binaries=True,name='DiskGrowthMonitor',console=False,upx=False,version=resource,contents_directory='.venv')
+gui=EXE(pyz,a.scripts,[],exclude_binaries=True,name='DiskGrowthMonitor',console=False,uac_admin=True,upx=False,version=resource,contents_directory='.venv')
 cli=EXE(pyz,a.scripts,[],exclude_binaries=True,name='dgm',console=True,upx=False,version=resource,contents_directory='.venv')
 bundle=COLLECT(gui,cli,a.binaries,a.datas,strip=False,upx=False,name='DiskGrowthMonitor')

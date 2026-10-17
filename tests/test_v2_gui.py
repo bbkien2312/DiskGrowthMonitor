@@ -196,7 +196,7 @@ def test_cancel_loading_preparation_then_restart(gui,isolated,monkeypatch):
     assert w.browser.model.rowCount()==0 and not w.browser.cancel_button.isEnabled()
     monkeypatch.setattr(Comparisons,'prepare',original)
     w.compare();pump(app,lambda:not w.workers)
-    assert w.browser.model.rowCount()==1 and 'Đã sẵn sàng' in w.status.text()
+    assert w.browser.model.rowCount()==1 and 'Đã tải 1/1 dòng' in w.status.text()
     s.close()
 
 
@@ -230,17 +230,22 @@ def test_admin_phase_locks_mutations_not_browsing(gui):
     assert w.scan_button.isEnabled() and all(b.isEnabled() for b in w.system_check_buttons+w.cleanup_action_buttons)
 
 
-def test_scan_progress_bar_switches_between_stage_and_known_fraction(gui):
+def test_scan_progress_bar_stays_determinate_and_keeps_completed_steps(gui):
     from types import SimpleNamespace
     import threading
     app,w=gui
     assert w.engine.currentText()=='wiztree' and w.mft.isChecked() and not w.strict.isChecked()
     w.scan_worker=SimpleNamespace(stop=threading.Event())
     w.progress('info',{'message':'Đang dọn lịch sử không còn liên kết...'})
-    assert w.scan_progress.minimum()==0 and w.scan_progress.maximum()==0
+    assert w.scan_progress.minimum()==0 and w.scan_progress.maximum()==100
     w.progress('progress',{'count':25,'total':100,'path':'Tổng hợp thư mục'})
     assert w.scan_progress.maximum()==100 and w.scan_progress.value()==25
     assert '25/100' in w.scan_progress.format() and 'Tổng hợp thư mục' in w.status.text()
+    w.progress('task-progress',{'id':'fixture','percent':60,'stage':'Tổng hợp thư mục','completed':['Đã nhập 100 file']})
+    w.progress('task-progress',{'id':'fixture','percent':20,'stage':'Tổng hợp thư mục','completed':['Đã nhập 100 file']})
+    w.progress('info',{'message':'Đang ghi kết quả'})
+    assert w.scan_progress.maximum()==100 and w.scan_progress.value()==60
+    assert 'Đã nhập 100 file' in w.completed_steps.text()
     w.scan_worker=None
 
 

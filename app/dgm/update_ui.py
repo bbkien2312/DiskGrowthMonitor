@@ -1,84 +1,97 @@
-"""Explicit app-update controls, separate from read-only dependency checks."""
-from pathlib import Path
+"""One explicit update action, using the same transaction as the CLI."""
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QGroupBox,QVBoxLayout,QHBoxLayout,QLabel,QPlainTextEdit,QMessageBox,QFileDialog
-from . import __version__
-from .config import home
-from . import app_update
+from PySide6.QtWidgets import QWidget,QGroupBox,QVBoxLayout,QHBoxLayout,QLabel,QPlainTextEdit,QProgressBar
+from . import __version__, app_update
 
 
 class AppUpdatePanel(QGroupBox):
     def __init__(self,owner):
-        super().__init__('Cập nhật Disk Growth Monitor'); self.owner=owner; self.release=None; self.installer=None; self.worker=None
-        layout=QVBoxLayout(self); row=QHBoxLayout()
+        super().__init__('Cập nhật Disk Growth Monitor')
+        self.owner=owner;self.release=None;self.worker=None;self.phase='';self.handed_off=False
+        layout=QVBoxLayout(self);row=QHBoxLayout()
         self.check_button=owner.button('Kiểm tra bản mới',self.check,row)
-        self.download_button=owner.button('Tải cập nhật',self.download,row)
-        self.install_button=owner.button('Cài cập nhật',self.install,row)
-        self.cancel_button=owner.button('Hủy tải',self.cancel,row)
+        self.update_button=owner.button('Cập nhật',self.update,row)
+        self.update_button.setToolTip('Tự kiểm tra, tải, xác minh và cập nhật đúng bản app hiện có. Giữ nguyên lịch sử; xác nhận Yes khi Windows hiện UAC.')
+        self.cancel_button=owner.button('Hủy trước khi cài',self.cancel,row)
         owner.button('Xem Release',lambda:owner.open_source(f'https://github.com/{app_update.REPO}/releases'),row)
         row.addStretch();layout.addLayout(row)
-        self.label=QLabel(f'Đang dùng {__version__} • Chỉ kiểm tra/cài khi bạn bấm nút. Không cập nhật Python/pip hệ thống.');self.label.setWordWrap(True);layout.addWidget(self.label)
+        self.label=QLabel(f'Đang dùng {__version__} • Cập nhật bằng một nút; giữ nguyên lịch sử, cấu hình và log. Installer yêu cầu UAC.')
+        self.label.setWordWrap(True);layout.addWidget(self.label)
+        self.progress_bar=QProgressBar();self.progress_bar.setRange(0,100);self.progress_bar.setValue(0);layout.addWidget(self.progress_bar)
         self.notes=QPlainTextEdit();self.notes.setReadOnly(True);self.notes.setMaximumHeight(90)
-        self.notes.setPlaceholderText('Ghi chú phát hành sẽ hiện sau khi kiểm tra. SHA-256 không thay thế chữ ký nhà phát hành.');layout.addWidget(self.notes)
+        self.notes.setPlaceholderText('Bộ cài chưa ký số; SHA-256 kiểm tra toàn vẹn, không thay thế chữ ký nhà phát hành.');layout.addWidget(self.notes)
         self.set_busy(False)
 
     def set_busy(self,busy):
         self.check_button.setEnabled(not busy)
-        available=bool(self.release and self.release['available'])
-        self.download_button.setEnabled(not busy and available)
-        self.install_button.setEnabled(not busy and available and bool(self.installer))
-        self.cancel_button.setEnabled(busy and getattr(self,'phase','')=='download')
+        self.update_button.setEnabled(not busy)
+        self.cancel_button.setEnabled(busy and self.phase=='update' and not self.handed_off)
 
     def run(self,phase,function,done):
         if self.worker is not None:return
-        self.phase=phase;self.set_busy(True)
+        self.phase=phase;self.set_busy(True);self.progress_bar.setValue(0)
         self.worker=self.owner.job(function,done)
         self.worker.error.connect(lambda message:self.label.setText('Không hoàn tất: '+message.splitlines()[0]))
-        self.worker.event.connect(lambda event,data:self.label.setText(data.get('message','')) if event=='cancelled' or (phase=='download' and event=='info') else None)
-        def finished():self.worker=None;self.set_busy(False)
+        self.worker.event.connect(self.progress)
+        def finished():
+            self.worker=None;self.set_busy(False)
+            if phase=='update' and not self.handed_off:self.pause_other_actions(False)
         self.worker.finished.connect(finished)
 
+    def progress(self,event,data):
+        if event=='update-release':
+            self.release=data;self.notes.setPlainText(data['notes'])
+        elif event=='update-handoff':self.cancel_button.setEnabled(False)
+        elif event=='cancelled':self.label.setText(data.get('message','Đã hủy cập nhật'))
+        elif event=='task-progress':
+            value=max(self.progress_bar.value(),min(100,int(data.get('percent',0))))
+            self.progress_bar.setValue(value);self.progress_bar.setFormat('%p% • '+data.get('stage',''))
+            self.label.setText(data.get('stage','')+'\nĐã xong: '+'; '.join(data.get('completed',[])))
+
     def check(self):
-        self.release=None;self.installer=None;self.label.setText('Đang kiểm tra Release chính thức…')
+        if self.worker is not None:return
+        self.label.setText('Đang kiểm tra Release chính thức…')
         def done(release):
-            self.release=release;self.notes.setPlainText(release['notes'])
-            mode='Bản source: bộ cài chỉ được cài vào thư mục khác.' if release['mode']=='source' else 'Bản cài: giữ cấu hình, lịch và lịch sử.'
-            self.label.setText(f"Đang dùng {__version__} | Release ổn định {release['version']} • "+('Có bản mới' if release['available'] else 'Không có bản mới hơn; không hạ phiên bản')+f" • {release['size']/1_000_000:.1f} MB\n"+mode)
-            self.install_button.setText('Cài vào thư mục khác' if release['mode']=='source' else 'Cài cập nhật')
+            self.release=release;self.notes.setPlainText(release['notes']);self.progress_bar.setValue(100)
+            self.label.setText(f'Đang dùng {__version__} • Release {release["version"]} • '+
+                ('Có bản mới; bấm Cập nhật để tải và cài tại app hiện có, giữ nguyên lịch sử.' if release['available'] else 'Không có bản mới hơn; không hạ phiên bản.'))
         self.run('check',lambda _:app_update.check(),done)
 
-    def download(self):
-        if not self.release:return
-        release=dict(self.release)
-        def done(path):self.installer=path;self.label.setText(f'Đã tải và kiểm tra SHA-256 • {release["version"]}\n{path}')
-        self.run('download',lambda worker:app_update.download(release,worker.stop,worker.event.emit),done)
+    def pause_other_actions(self,busy):
+        owner=self.owner
+        if busy:
+            owner.update_in_progress=True
+            self.previous_tabs=[owner.tabs.isTabEnabled(i) for i in range(owner.tabs.count())]
+            system_tab=self.parentWidget()
+            self.paused_widgets=[(child,child.isEnabled()) for child in system_tab.findChildren(QWidget)
+                if child.parentWidget() is system_tab and child is not self]
+            for widget,_ in self.paused_widgets:widget.setEnabled(False)
+            for i in range(owner.tabs.count()):owner.tabs.setTabEnabled(i,i==owner.tabs.currentIndex())
+            for timer in (owner.poll_timer,owner.realtime_timer,owner.scan_state_timer):timer.stop()
+            owner.scan_button.setEnabled(False);owner.rescan_button.setEnabled(False)
+        else:
+            owner.update_in_progress=False
+            for widget,enabled in getattr(self,'paused_widgets',[]):widget.setEnabled(enabled)
+            for i,enabled in enumerate(getattr(self,'previous_tabs',[])):owner.tabs.setTabEnabled(i,enabled)
+            owner.poll_timer.start(30000);owner.realtime_timer.start(3000);owner.scan_state_timer.start(500)
+            owner.scan_button.setEnabled(not owner.admin_busy);owner.rescan_button.setEnabled(not owner.admin_busy)
 
     def cancel(self):
-        if self.worker is not None and self.phase=='download':self.worker.stop.set();self.cancel_button.setEnabled(False)
+        if self.worker is not None and self.phase=='update' and self.cancel_button.isEnabled():
+            self.worker.stop.set();self.cancel_button.setEnabled(False)
 
-    def install(self):
-        if not self.release or not self.installer:return
-        if self.owner.workers or self.owner.background_action_busy or self.owner.admin_busy:
-            self.owner.status.setText('Chờ các tác vụ hiện tại kết thúc trước khi cài cập nhật.');return
-        text=f'Cài Disk Growth Monitor {self.release["version"]}?\nBộ cài chưa có chữ ký số; SHA-256 chỉ xác minh file tải.\n'
-        if app_update.installation_mode()=='source':
-            if QMessageBox.question(self,'Cài bản đóng gói',text+'Không sửa source/.venv. Hãy chọn một thư mục trống khác.')!=QMessageBox.StandardButton.Yes:return
-            target=QFileDialog.getExistingDirectory(self,'Chọn thư mục trống để cài app')
-            if not target:return
-            destination=Path(target).resolve()
-            try:app_update.install_separately(self.release,self.installer,destination)
-            except Exception as exc:self.owner.fail(str(exc))
-            return
-        if QMessageBox.question(self,'Cài cập nhật',text+'App sẽ đóng sau khi bạn xác nhận UAC (nếu cần). Bộ chạy nền của bản này được tạm dừng rồi khôi phục, không gỡ lịch. Cấu hình/lịch sử được sao lưu; mở lại app từ shortcut sau khi xong.')!=QMessageBox.StandardButton.Yes:return
-        def launch(worker):
-            ticket=app_update.prepare_install(self.release,self.installer)
-            worker.event.emit('info',{'message':'Đang bàn giao bộ cài; xác nhận UAC nếu có. Hủy UAC sẽ giữ app hiện tại.'})
-            return app_update.launch(ticket)
+    def update(self):
+        if self.worker is not None:return
+        if self.owner.workers or self.owner.scan_worker is not None or self.owner.background_action_busy or self.owner.admin_busy:
+            self.owner.status.setText('Chờ tác vụ hiện tại kết thúc trước khi cập nhật.');return
+        self.handed_off=False;self.pause_other_actions(True)
         def done(result):
-            self.owner.poll_timer.stop();self.owner.realtime_timer.stop();self.owner.scan_state_timer.stop()
-            self.owner.status.setText('Đã bàn giao bộ cài. Đang đóng app an toàn…')
+            if not result['launched']:return
+            self.handed_off=True
+            self.label.setText('Đã bàn giao bộ cài; app sẽ mở lại sau khi kiểm tra phiên bản và lịch sử. Chưa kết luận cài thành công.')
+            self.owner.status.setText('Đang đóng app an toàn để cập nhật…')
             def close_when_idle():
                 if self.owner.workers:QTimer.singleShot(100,close_when_idle)
                 else:self.owner.close()
             QTimer.singleShot(100,close_when_idle)
-        self.run('install',launch,done)
+        self.run('update',lambda worker:app_update.start_update(worker.stop,worker.event.emit,reopen=True),done)

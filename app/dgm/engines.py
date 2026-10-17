@@ -11,7 +11,8 @@ def enrich(entry):
     try:
         live = metadata(Path(entry["path"]), entry["kind"])
         # Native attributes/IDs provide consistent physical accounting and Created.
-        if entry["kind"] == "file" and live["logical"] != entry["logical"]:
+        if entry["kind"] == "file" and (live["logical"] != entry["logical"] or
+                (entry.get('modified') and int(live['modified']) != int(entry['modified']))):
             entry["status"] = "changed-during-scan"
         entry.update(allocated=live["allocated"], created=live["created"], identity=live["identity"], attrs=live["attrs"])
     except OSError:
@@ -47,7 +48,7 @@ def windirstat_entries(policy, config, stop, notify):
                 flags = int(row.get("WinDirStat Attributes", "0"), 16)
                 kind = "folder" if flags & 0x00000004 else "file"
                 entry = {"path": str(Path(path)), "parent": str(Path(path).parent), "kind": kind,
-                         "logical": row["Logical Size"], "allocated": row.get("Physical Size", 0),
+                         "logical": row["Logical Size"], "allocated": row.get("Physical Size"),
                          "created": 0, "modified": stamp(row.get("Last Change", "")), "identity": "", "attrs": 0,
                          "note": "WinDirStat + native identity/allocation enrichment; export completeness unverified"}
                 yield enrich(entry)
@@ -86,7 +87,7 @@ def gdu_entries(policy, config, stop, notify):
                 if not policy.in_scope(path):
                     continue
                 entry = {"path": str(path), "parent": str(path.parent), "kind": "folder" if is_dir else "file",
-                         "logical": int(data.get("asize", 0)), "allocated": int(data.get("dsize", 0)), "created": 0,
+                         "logical": int(data["asize"]), "allocated": None, "created": None,
                          "modified": float(data.get("mtime", 0)), "identity": "", "attrs": 0,
                          "note": "gdu + native enrichment; gdu dsize is not Windows physical allocation"}
                 yield enrich(entry)

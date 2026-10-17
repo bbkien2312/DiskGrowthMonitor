@@ -1,3 +1,25 @@
+# Disk Growth Monitor 1.2.0 — 17/10/2026
+
+- Chuẩn hóa lịch sử theo lớp dữ liệu có phiên bản, giữ nguyên bản gốc, xem trước/sau và dùng lại bản gốc; GUI/CLI tương đương. File, thư mục, reparse, ngày thiếu và hardlink cùng được đối soát. Tổng quan/cây/chi tiết dùng cùng dữ liệu; thay lớp chuẩn hóa vô hiệu hóa cache/phạm vi/con trỏ liên quan.
+- Phân biệt Size theo đường dẫn, Allocated hardlink một lần và dung lượng ổ, lựa chọn GB/GiB. Không ép Size bằng sức chứa ổ. Dữ liệu cũ mất số cấp phát phải báo chưa xác định/thiếu nguồn, không tự đoán bằng metadata hiện tại.
+- Giải thích cụ thể khác phạm vi/bộ loại trừ/danh tính ổ; lựa chọn Chỉ phần chung tính lại tổng theo vùng chung và ghi rõ không phải toàn ổ.
+- Sửa đọc CSV WizTree hiện hành: CREATEDDATE/MFTRECNO, cột capacity tùy chọn, ngày dùng dấu cách theo Windows và ngày rỗng. Giữ nguồn nén/SHA-256 có giới hạn 512 MB/90 ngày mặc định; nhật ký đối soát nhập, nút dọn nguồn riêng. Lượt mới tái sử dụng chuẩn hóa lúc nhập, không cộng lại toàn bộ khi so sánh.
+- Trạng thái kéo chỉnh chiều cao, tiến độ riêng toàn chiều rộng, tóm tắt dài cuộn được. Nhãn log có ngoặc vuông/màu, tương thích log cũ/traceback; bấm thông báo khôi phục app.
+- GUI yêu cầu UAC Admin ngay khi mở qua manifest Windows; source/CLI mở GUI cũng xin quyền trước khi ghi dữ liệu. Không tự xin UAC từ lịch nền.
+
+## Cải tiến trước đó nay phát hành cùng 1.2.0
+
+- Snapshot contract v3 và khóa đường dẫn lưu khi nhập; tổng thư mục dùng cùng quy tắc file/hardlink cho các engine. Giữ null khi chưa biết cấp phát, sửa cách lấy size-on-disk Windows; thời gian khác engine dùng độ chính xác chung, không làm mất độ chính xác native trong lịch sử.
+- Bỏ tạo lại chỉ mục/cập nhật scope toàn bảng mỗi lần đọc cache; tải nhánh dùng cặp đã chuẩn bị. Giữ tóm tắt lịch sử của thuật toán cũ, chuẩn hóa tương thích một lần khi cần so sánh chéo engine.
+- Thu gọn cấu hình và thanh điều khiển, tăng chiều cao cây/chi tiết; tùy chọn cần thiết không bị thu gọn, chỉ ghi chú đóng/mở. Ghi chú so sánh tự mở khi có kết quả mới, không tự mở lại khi tải trang/sắp xếp.
+- Lịch sử nạp tự động lúc mở, cập nhật sau tác vụ, giữ lựa chọn/cuộn và có vùng đọc chi tiết; tách kết quả đã lưu khỏi độ đầy đủ dữ liệu.
+- Gộp tải/cài thành một nút Cập nhật; installer yêu cầu admin, khởi động lại trong phiên gốc, kiểm tra phiên bản và số bản ghi/cấu hình sau cài trước khi báo thành công.
+
+- Cập nhật từ app không yêu cầu thư mục mới: bản EXE nâng cấp tại vị trí hiện tại, bản source sử dụng runtime quản lý `.dgm-app` trong thư mục app và tiếp tục dùng cùng data/log. Launcher cũ tự mở bản cập nhật; source và `.venv` phát triển giữ nguyên.
+- Sao lưu cả lịch sử quét/benchmark và database so sánh; giữ nguyên lịch sử, cấu hình, log và trạng thái lịch chạy.
+- Thanh tiến độ 0–100% theo các giai đoạn quét, so sánh, tải chi tiết, benchmark và tải cập nhật. Không dùng thanh chạy qua lại; bước chưa biết tổng giữ ở mốc hiện tại và cập nhật số mục đã đọc.
+- Tóm tắt liệt kê các việc đã xong và số file/thư mục, số tăng/giảm/mới/mất/chưa rõ. Lịch sử hiển thị kết quả đã lưu thay nhãn hoàn tất chung chung.
+
 # Disk Growth Monitor 1.1.1 — phát hành 16/10/2026
 
 - Làm rõ trạng thái “Hoàn tất • có giới hạn”: với WizTree/engine ngoài, app không thể tự xác minh đã bao phủ toàn bộ phạm vi; với native, lịch sử hiển thị số mục/vùng không đọc được. Đây là cảnh báo về độ tin cậy, không phải kết luận chắc chắn đã thiếu dữ liệu. Các thay đổi thêm/mất có thể chuyển thành “chưa xác định” khi phạm vi chưa được xác minh.

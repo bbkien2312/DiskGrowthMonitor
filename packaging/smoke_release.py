@@ -36,6 +36,12 @@ def install():
 
 install()
 assert (target/'DiskGrowthMonitor.exe').is_file() and (target/'dgm.exe').is_file()
+import win32api
+module=win32api.LoadLibraryEx(str(target/'DiskGrowthMonitor.exe'),0,2)
+try:manifest=win32api.LoadResource(module,24,1).decode('utf-8')
+finally:win32api.FreeLibrary(module)
+assert 'requireAdministrator' in manifest
+report['checks'].append('GUI EXE manifest requires administrator before Python/data access')
 assert not (target/'data/config.json').exists() and not (target/'data/history.sqlite').exists()
 assert not list(target.glob('**/WizTree*.exe')) and not list(target.glob('**/WinDirStat.exe'))
 assert (target/'.venv/licenses/Qt/LGPL-3.0-only.txt').is_file()
@@ -55,6 +61,12 @@ first=cli('scan');assert first['status']=='complete' and first['files']==1202
 second=cli('scan');assert second['status']=='complete' and second['files']==1202
 comparison=cli('compare',second['scan_id'],'--older',first['scan_id'],'--limit','20')
 assert any(row.get('delta')==2_000_000 for row in comparison['rows'])
+audit=cli('snapshot-audit','--id',second['scan_id'])
+assert audit[0]['after']['logical']==second['logical'] and not audit[0]['applied']
+normalized=cli('snapshot-normalize','--id',second['scan_id'],'--yes')
+assert normalized['applied'][0]['source_preserved']
+assert (target/'data/normalization.sqlite').is_file()
+report['checks'].append('frozen CLI audits and normalizes history without rewriting the source snapshot')
 report['checks'].append('two native fixture scans and +2000000-byte comparison')
 shared=('compare',second['scan_id'],'--older',first['scan_id'],'--kind','file','--minimum-mb','0','--sort','new','--direction','desc')
 page=cli(*shared,'--limit','20')
@@ -104,6 +116,7 @@ def coordinator(expected_hash,expected_exit):
 outcome,session_folder=coordinator(hashlib.sha256(installer.read_bytes()).hexdigest(),0)
 assert outcome['phase']=='complete' and not outcome['restore_pending']
 assert (session_folder/'backup/history.sqlite').is_file() and (session_folder/'backup/config.json').is_file()
+assert (session_folder/'backup/normalization.sqlite').is_file()
 assert json.loads((target/'installed-app.json').read_text())['portable'] is True
 report['checks'].append('real frozen detached updater: same-version replacement, SQLite backup, portable mode and history preserved; no runner mutation')
 outcome,_=coordinator('0'*64,1)

@@ -19,7 +19,7 @@ def setup(debug=False):
         h.close()
         log.removeHandler(h)
     handler = BridgeHandler(BRIDGE.get()) if BRIDGE.get() else RotatingFileHandler(home() / "logs/app.log", maxBytes=5_000_000, backupCount=5, encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(message)s" if BRIDGE.get() else "%(asctime)s %(levelname)s %(message)s"))
+    handler.setFormatter(logging.Formatter("%(message)s" if BRIDGE.get() else "%(asctime)s [%(levelname)s] %(message)s"))
     log.addHandler(handler)
     return log
 

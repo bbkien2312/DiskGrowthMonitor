@@ -14,7 +14,9 @@ from test_v2_gui import gui,pump
 
 def test_three_columns_fit_default_narrow_resize_drag_and_reset(gui):
     app,w=gui;tree=w.tree
-    assert w.scan_options_toggle.isChecked() and w.scan_options.isVisible()
+    assert w.scan_options.isVisible()
+    w.scan_options_toggle.setChecked(False);app.processEvents()
+    assert w.scan_options.isVisible() and w.engine.isVisible() and w.excludes.isVisible()
     default=tree.default_widths()
     assert tree.columnWidth(0)>=tree.fontMetrics().horizontalAdvance('System Volume Information')+tree.indentation()+10
     assert sum(tree.columnWidth(i) for i in range(3))<=tree.viewport().width()
@@ -87,18 +89,17 @@ def test_installed_runner_other_copy_not_mutable_and_open_is_read_only(gui,monke
     w.open_background_manager('task');assert calls==['task']
 
 
-def test_update_panel_explicit_check_download_no_auto_install(gui,monkeypatch):
+def test_update_panel_check_is_read_only_and_one_update_button(gui,monkeypatch):
     from dgm import app_update
     app,w=gui;panel=w.app_update_panel;calls=[]
     release={'version':'99.0.0','current':'1.1.0','available':True,'notes':'Latest notes','mode':'source','size':100}
     monkeypatch.setattr(app_update,'check',lambda:calls.append('check') or release)
-    assert not calls and not panel.install_button.isEnabled()
+    assert not calls and panel.update_button.isEnabled()
     panel.check();pump(app,lambda:not w.workers)
-    assert calls==['check'] and panel.download_button.isEnabled() and not panel.install_button.isEnabled()
-    assert panel.notes.toPlainText()=='Latest notes' and 'source' in panel.label.text()
-    monkeypatch.setattr(app_update,'download',lambda *args:calls.append('download') or str(home()/'data/test-installer.exe'))
-    panel.download();pump(app,lambda:not w.workers)
-    assert calls==['check','download'] and panel.install_button.isEnabled()
+    assert calls==['check'] and panel.update_button.isEnabled()
+    assert panel.notes.toPlainText()=='Latest notes' and 'giữ nguyên lịch sử' in panel.label.text()
+    assert panel.update_button.text()=='Cập nhật' and panel.progress_bar.value()==100
+    assert not hasattr(panel,'download_button') and not hasattr(panel,'install_button')
 
 
 def test_visual_qa_with_owned_synthetic_data(gui,isolated):
@@ -107,6 +108,7 @@ def test_visual_qa_with_owned_synthetic_data(gui,isolated):
     snapshot(store,root,old,name='daily');snapshot(store,root,[{**r,'logical':r['logical']+1_000_000} if r['kind']=='file' else r for r in old],name='daily')
     w.refresh_history();w.threshold.setValue(0);w.compare();pump(app,lambda:not w.workers)
     w.resize(1440,1000);w.browser.tree.expandItem(w.tree.topLevelItem(0));pump(app,lambda:not w.workers)
+    assert f'Đã tải {w.browser.model.loaded:,}/{w.browser.model.total:,} dòng' in w.status.text()
     artifact=os.environ.get('DGM_QA_IMAGES')
     if artifact:
         folder=Path(artifact);folder.mkdir(parents=True,exist_ok=True)

@@ -177,7 +177,7 @@ def test_cross_engine_case_variants_and_provider_folder_totals_normalize(isolate
     c.close();s.close()
 
 
-def test_current_wiztree_pair_uses_exported_folder_totals_without_normalizing(isolated):
+def test_legacy_wiztree_folder_totals_reconcile_to_file_rows(isolated):
     root=isolated/'virtual';s=Store()
     old=snapshot(s,root,[entry(root/'Dir','folder',900),entry(root/'Dir'/'File.bin',value=100)],
                  engine='wiztree',aggregate=False,root_value=1000)
@@ -187,7 +187,7 @@ def test_current_wiztree_pair_uses_exported_folder_totals_without_normalizing(is
         row=s.scan(scan_id);summary=json.loads(row['summary']);summary['folder_totals_source']='wiztree-mft-v1';s.record_stage(scan_id,summary)
     c=Comparisons();pair=c.prepare(old,new)
     folder=next(row for row in c.page(pair,kind='folder')['rows'] if row['path']==str(root/'Dir'))
-    assert folder['before']==900 and folder['after']==800 and folder['delta']==-100
+    assert folder['before']==100 and folder['after']==100 and folder['delta']==0
     assert c.db.execute('SELECT COUNT(*) FROM normalized_scans').fetchone()[0]==0
     c.close();s.close()
 
@@ -307,7 +307,7 @@ def test_recovery_stop_in_aggregation_then_retry(isolated,monkeypatch):
     assert rebuild(sid,confirmed=True)['status']=='partial';s.close()
 
 
-def test_fast_mft_uses_provider_totals_without_native_stat(isolated,monkeypatch):
+def test_fast_mft_normalizes_once_at_ingestion_without_native_stat(isolated,monkeypatch):
     import dgm.scanner as scanner
     root=isolated/'virtual';p={'roots':[str(root)],'engine':'wiztree','mft':True,'strict_browsers':False}
     monkeypatch.setattr(scanner,'is_admin',lambda:True)
@@ -316,10 +316,16 @@ def test_fast_mft_uses_provider_totals_without_native_stat(isolated,monkeypatch)
         yield entry(root,'folder',200)
         yield entry(root/'f',value=200)
     monkeypatch.setattr(scanner,'wiztree_entries',provider)
-    monkeypatch.setattr(Store,'aggregate',lambda *a,**k:pytest.fail('Must not recompute WizTree folder sums'))
+    aggregate=Store.aggregate;calls=[]
+    def tracked(*a,**k):calls.append(1);return aggregate(*a,**k)
+    monkeypatch.setattr(Store,'aggregate',tracked)
     monkeypatch.setattr(scanner,'metadata',lambda *a:pytest.fail('Must not stat every MFT file'))
     events=[];result=scanner.scan('demo',p,notify=lambda e,d:events.append(e))
     assert result['logical']==200 and result['import_complete'] and 'overview' in events
+    assert calls==[1] and result['folder_totals_source']=='canonical-files-v3'
+    cache=Comparisons();cache.prepare(None,result['scan_id']);cache.prepare(None,result['scan_id'])
+    assert calls==[1] and not cache.db.execute('SELECT 1 FROM normalized_scans').fetchone()
+    cache.close()
 
 
 def test_cli_cursor_and_global_summary(dataset):

@@ -123,7 +123,7 @@ def entries(scan_id: int, minimum_mb: float = 10, kind: str = "all", search: str
 def compare(newer: int, older: Optional[int] = None, kind: str = "all", search: str = "", changes: str = "all",
             limit: int = 20, offset: int = 0, sort: str = "delta", direction: str = "desc",
             minimum_mb: float = 10, root: Optional[str] = None, recursive: bool = True,
-            cursor: Optional[str] = None, baseline: bool = False):
+            cursor: Optional[str] = None, baseline: bool = False,common:bool=typer.Option(False,'--common',help='Chỉ vùng chung; không phải toàn ổ')):
     from .store import Store
     from .comparison import Comparisons
     s = Store(readonly=True)
@@ -133,7 +133,7 @@ def compare(newer: int, older: Optional[int] = None, kind: str = "all", search: 
         raise typer.BadParameter("Offset/ngưỡng >=0; dùng cursor hoặc offset, không đồng thời.")
     cache = Comparisons()
     try:
-        pair = cache.prepare(previous,newer)
+        pair = cache.prepare(previous,newer,common=common)
         position=json.loads(cursor) if cursor else None
         options=dict(sort=sort,direction=direction,minimum=int(minimum_mb*1_000_000),kind=kind,changes=changes,search=search,root=root,recursive=recursive)
         while offset:
@@ -154,14 +154,14 @@ def comparison_history():
 
 
 @app.command("overview")
-def overview(newer: int, older: Optional[int] = None):
+def overview(newer: int, older: Optional[int] = None,common:bool=typer.Option(False,'--common')):
     from .store import Store
     from .comparison import Comparisons
     store=Store(readonly=True)
     try: previous=older if older is not None else store.previous(newer)
     finally: store.close()
     cache=Comparisons()
-    try: output(cache.overview(previous,newer))
+    try: output(cache.summary(cache.prepare(previous,newer,common=common)))
     finally: cache.close()
 
 
@@ -196,6 +196,61 @@ def snapshot_rebuild(scan_id: int, confirmed: bool = False):
     from .recovery import rebuild
     result=rebuild(scan_id,confirmed=confirmed);output(result)
     if result['status']=='cancelled': raise typer.Exit(130)
+
+
+def normalization_ids(scan_ids,all_legacy):
+    from .store import Store
+    from .normalization import VERSION
+    store=Store()
+    try:
+        if all_legacy:
+            return [r['id'] for r in store.scans() if r['status'] in ('complete','partial') and
+                    json.loads(r['summary'] or '{}').get('normalization',{}).get('version')!=VERSION]
+        ids=sorted(set(scan_ids or []))
+        if not ids:raise typer.BadParameter('Chọn --id (lặp lại được) hoặc --all-legacy.')
+        for ident in ids:store.scan(ident)
+        return ids
+    finally:store.close()
+
+
+@app.command('snapshot-audit')
+def snapshot_audit(scan_id:Optional[list[int]]=typer.Option(None,'--id'),all_legacy:bool=False):
+    from .normalization import Normalizations
+    ids=normalization_ids(scan_id,all_legacy);norm=Normalizations()
+    try:output([norm.inspect(ident,force=True) for ident in ids])
+    finally:norm.close()
+
+
+@app.command('snapshot-normalize')
+def snapshot_normalize(scan_id:Optional[list[int]]=typer.Option(None,'--id'),all_legacy:bool=False,
+                       yes:bool=typer.Option(False,'--yes')):
+    from .normalization import Normalizations
+    ids=normalization_ids(scan_id,all_legacy);norm=Normalizations()
+    try:
+        reports=[norm.inspect(ident,force=True) for ident in ids]
+        if not yes:output({'preview':reports})
+        if not yes and not typer.confirm('Áp dụng lớp chuẩn hóa? Bản gốc giữ nguyên; xem giới hạn trong báo cáo trước.'):
+            raise typer.Exit()
+        output({'applied':[norm.inspect(ident,apply=True,force=True) for ident in ids]})
+    finally:norm.close()
+
+
+@app.command('snapshot-original')
+def snapshot_original(scan_id:list[int]=typer.Option(...,'--id'),yes:bool=typer.Option(False,'--yes')):
+    from .normalization import Normalizations
+    ids=normalization_ids(scan_id,False)
+    if not yes and not typer.confirm('Dùng lại bản gốc cho các lượt đã chọn?'):raise typer.Exit()
+    norm=Normalizations()
+    try:output(norm.restore(ids))
+    finally:norm.close()
+
+
+@app.command('source-cache-clear')
+def source_cache_clear(yes:bool=typer.Option(False,'--yes')):
+    from .source_archive import clear
+    if not yes and not typer.confirm('Xóa nguồn CSV nén? Giữ lịch sử, nhưng không thể kiểm chứng lại các nguồn đã xóa.'):
+        raise typer.Exit()
+    output(clear())
 
 
 @app.command("comparison-delete")
@@ -281,7 +336,8 @@ def uninstall_check():
     state=status()
     blocked=bool(state['scan'].get('running') or any(owns_background(kind,state.get(kind,{})) for kind in ('task','service')))
     active=[]
-    targets={str(home()/name).casefold() for name in ('DiskGrowthMonitor.exe','dgm.exe')}
+    from .runtime import binary_root
+    targets={str(root/name).casefold() for root in (home(),binary_root(),home()/'.dgm-app') for name in ('DiskGrowthMonitor.exe','dgm.exe')}
     for process in psutil.process_iter(['pid','name']):
         if process.pid==os.getpid() or (process.info['name'] or '').casefold() not in ('diskgrowthmonitor.exe','dgm.exe'):continue
         try:
@@ -315,12 +371,12 @@ def app_update_download():
 @app_updates.command('install')
 def app_update_install(yes: bool = typer.Option(False,'--yes',help='Xác nhận đóng phiên CLI này và chạy bộ cài'),
                        destination: Optional[Path]=None):
-    from .app_update import check,download,prepare_install,launch,installation_mode,install_separately
-    if installation_mode()=='source' and destination is None:raise typer.BadParameter('Bản source cần --destination trỏ tới thư mục trống khác')
-    release=check()
-    if not yes and not typer.confirm(f'Cài app {release["current"]} → {release["version"]}? Lưu dữ liệu và đóng các cửa sổ app khác trước.'): raise typer.Abort()
-    target=download(release,notify=admin_progress)
-    output(install_separately(release,target,destination) if destination else launch(prepare_install(release,target)))
+    from .app_update import check,download,start_update,install_separately
+    if not yes and not typer.confirm('Cập nhật app tại vị trí hiện có, giữ lịch sử/cấu hình và xác nhận UAC?'): raise typer.Abort()
+    if destination:
+        release=check();target=download(release,notify=admin_progress)
+        output(install_separately(release,target,destination))
+    else:output(start_update(notify=admin_progress))
 
 
 @app_updates.command('status')
@@ -661,6 +717,8 @@ def elevated_worker(ticket:str=typer.Option(...,'--ticket'),digest:str=typer.Opt
 
 def main():
     import sys
+    from .startup_admin import preflight
+    preflight()
     from .elevation import ElevationCancelled
     for stream in (sys.stdout, sys.stderr):
         if stream is not None and hasattr(stream, "reconfigure"):

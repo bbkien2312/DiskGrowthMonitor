@@ -12,6 +12,7 @@ def test_source_and_frozen_background_command(isolated,monkeypatch):
     exe,args=runtime.background_command('schedule','tick')
     assert exe==home()/'.venv/Scripts/pythonw.exe' and args[:2]==['-m','dgm']
     monkeypatch.setattr(sys,'frozen',True)
+    monkeypatch.setattr(sys,'executable',str(home()/'dgm.exe'))
     exe,args=runtime.background_command('schedule','agent')
     assert exe==home()/'DiskGrowthMonitor.exe'
     assert args==['--home',str(home()),'schedule','agent'] and '-m' not in args
@@ -20,6 +21,7 @@ def test_source_and_frozen_background_command(isolated,monkeypatch):
 def test_frozen_task_uses_own_exe_without_registering(isolated,monkeypatch):
     from dgm import schedule,windows_service,platform_ops
     monkeypatch.setattr(sys,'frozen',True,raising=False)
+    monkeypatch.setattr(sys,'executable',str(home()/'dgm.exe'))
     monkeypatch.setattr(windows_service,'status',lambda:{'installed':False})
     monkeypatch.setattr(platform_ops,'is_admin',lambda:True)
     calls=[]
@@ -33,6 +35,7 @@ def test_frozen_service_xml_uses_own_exe_no_download(isolated,monkeypatch):
     from dgm import windows_service
     from xml.etree import ElementTree as ET
     monkeypatch.setattr(sys,'frozen',True,raising=False)
+    monkeypatch.setattr(sys,'executable',str(home()/'dgm.exe'))
     path=windows_service.service_path();path.parent.mkdir(parents=True);path.write_bytes(b'fixture not executable')
     windows_service.prepare()
     tree=ET.parse(path.with_suffix('.xml'))
@@ -55,7 +58,8 @@ def test_uninstall_guard_blocks_registered_background_and_allows_idle(isolated,m
 
 def test_installer_source_never_recursively_deletes_data_or_bundles_private_data():
     text=(Path(__file__).resolve().parents[1]/'packaging/installer.iss').read_text(encoding='utf-8')
-    assert '[UninstallDelete]' not in text and 'PrivilegesRequired=lowest' in text
+    assert '[UninstallDelete]' not in text and 'PrivilegesRequired=admin' in text
+    assert 'runasoriginaluser' in text
     assert 'dist\\DiskGrowthMonitor\\*"' not in text
     assert 'CloseApplications=no' in text and 'CreateUninstallRegKey=not PortableMode' in text
 
