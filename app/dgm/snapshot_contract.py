@@ -17,7 +17,7 @@ def canonical_entry(entry):
         value = row.get(field)
         # Preserve native precision; cross-engine comparisons use the common
         # precision in their indexed map, never discard it from history.
-        row[field] = float(value) if value else None
+        row[field] = float(value) if value and float(value)>0 else None
     row.setdefault("identity", "")
     row.setdefault("attrs", 0)
     row.setdefault("status", "ok")
@@ -25,6 +25,9 @@ def canonical_entry(entry):
     # Reparse points must not be traversed or counted as independent targets.
     if row.get("attrs", 0) & 0x400 or row["kind"] == "link":
         row.update(kind="link", logical=0, allocated=0)
+    elif row['kind']=='file' and row['allocated'] is None and row['status']=='ok':
+        row['status']='metadata-partial'
+        row['note']=row['note'] or 'Chưa đo được cấp phát; vẫn so sánh Size đã biết.'
     return row
 
 

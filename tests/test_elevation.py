@@ -45,7 +45,9 @@ def test_transport_progress_logs_audit_and_cleanup(transport):
     assert any(e=='progress' and d['count']==20 for e,d in events)
     assert [d['phase'] for e,d in events if e=='uac-state']==['prompt','running','done']
     text=(home()/'logs/app.log').read_text(encoding='utf-8')
-    assert '[Admin] fixture DEBUG from worker' in text and '[Admin] fixture INFO from worker' in text
+    assert '[Admin] fixture INFO from worker' in text
+    assert '[Admin] fixture DEBUG from worker' not in text
+    assert '[Admin] fixture DEBUG from worker' in (home()/'logs/debug.log').read_text(encoding='utf-8')
     audit=(home()/'logs/audit.jsonl').read_text(encoding='utf-8');assert 'fixture-worker' in audit
     assert not list((home()/'data/uac').iterdir())
     assert (home()/'data/config.json').read_bytes()==before

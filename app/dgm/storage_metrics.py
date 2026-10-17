@@ -34,7 +34,7 @@ def _files(operation):
 
     logs = {}
     log_root = root / "logs"
-    for pattern in ("app.log*", "audit.jsonl*"):
+    for pattern in ("app.log*", "debug.log*", "audit.jsonl*"):
         for path in log_root.glob(pattern):
             if path.is_file():
                 try:

@@ -1,8 +1,8 @@
 """UI-only preferences remain inside app/data; no registry/global settings."""
 import json
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QToolButton, QLabel, QHeaderView, QSizePolicy, QMenu, QTreeWidget, QStyle
+from PySide6.QtCore import Qt, QSize, QEvent
+from PySide6.QtGui import QAction, QPainter, QPalette, QFontMetrics, QFont
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QToolButton, QLabel, QHeaderView, QSizePolicy, QMenu, QTreeWidget, QStyle, QScrollArea
 from .config import home
 
 
@@ -21,6 +21,58 @@ class Preferences:
         tmp.replace(self.path)
 
 
+class ElidingLabel(QLabel):
+    """A single line never changes the layout when a long path/status arrives."""
+    def __init__(self,text=''):
+        super().__init__(text);self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
+
+    def sizeHint(self):return QSize(140,self.fontMetrics().height()+2)
+    def minimumSizeHint(self):return QSize(0,self.sizeHint().height())
+    def setText(self,text):
+        super().setText(text);self.setToolTip(text)
+    def paintEvent(self,event):
+        painter=QPainter(self);painter.setPen(self.palette().color(QPalette.ColorRole.WindowText))
+        painter.drawText(self.contentsRect(),Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignLeft,
+                         self.fontMetrics().elidedText(self.text().replace('\n',' • '),Qt.TextElideMode.ElideRight,self.contentsRect().width()))
+
+
+class CompactNote(QLabel):
+    """Use the available column width, one line first and at most two lines."""
+    def __init__(self):
+        super().__init__();self.setObjectName('metricNote');self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
+
+    def sizeHint(self):return QSize(0,2*self.fontMetrics().height())
+    def minimumSizeHint(self):return self.sizeHint()
+    def setText(self,text):super().setText(text);self.setToolTip(text)
+
+    def display_lines(self):
+        fm=self.fontMetrics();width=self.contentsRect().width();text=' '.join(self.text().split())
+        if not text:return []
+        if fm.horizontalAdvance(text)<=width:return [text]
+        explicit=self.text().splitlines()
+        if len(explicit)==2 and all(fm.horizontalAdvance(line)<=width for line in explicit):return explicit
+        words=text.split();choices=[]
+        for i in range(1,len(words)):
+            left,right=' '.join(words[:i]),' '.join(words[i:])
+            a,b=fm.horizontalAdvance(left),fm.horizontalAdvance(right)
+            if max(a,b)<=width:choices.append((abs(a-b),left,right))
+        if choices:
+            _,left,right=min(choices);return [left,right]
+        first=[]
+        while words and fm.horizontalAdvance(' '.join(first+[words[0]]))<=width:first.append(words.pop(0))
+        if not first:
+            return [fm.elidedText(text,Qt.TextElideMode.ElideRight,width)]
+        return [' '.join(first),fm.elidedText(' '.join(words),Qt.TextElideMode.ElideRight,width)]
+
+    def paintEvent(self,event):
+        painter=QPainter(self);painter.setPen(self.palette().color(QPalette.ColorRole.WindowText))
+        line_height=self.fontMetrics().height()
+        for i,line in enumerate(self.display_lines()):
+            painter.drawText(0,i*line_height,self.width(),line_height,Qt.AlignmentFlag.AlignHCenter|Qt.AlignmentFlag.AlignVCenter,line)
+
+
 class HelpBox(QWidget):
     def __init__(self, key, text, preferences):
         super().__init__()
@@ -31,17 +83,24 @@ class HelpBox(QWidget):
         self.toggle.setToolTip("Hiện/ẩn hướng dẫn cho nhóm lựa chọn này")
         layout.addWidget(self.toggle)
         self.body = QLabel(text); self.body.setWordWrap(True)
-        self.body.setStyleSheet("background:#eef4f9;border:1px solid #c8d8e6;border-radius:5px;padding:8px;color:#3b5369;")
-        layout.addWidget(self.body)
+        self.body.setStyleSheet("background:#eef4f9;padding:3px 6px;color:#3b5369;")
+        self.body.setMinimumWidth(0);self.body.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred)
+        self.scroll=QScrollArea();self.scroll.setWidgetResizable(True);self.scroll.setWidget(self.body)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setFixedHeight(42 if key=='compare' else 48)
+        self.scroll.setStyleSheet('QScrollArea{background:#eef4f9;border:1px solid #c8d8e6;border-radius:4px;}')
+        layout.addWidget(self.scroll)
         self.toggle.toggled.connect(self.expanded)
         self.toggle.setChecked(bool(preferences.values.get("help/" + key, False)))
         self.body.setVisible(self.toggle.isChecked())
+        self.scroll.setVisible(self.toggle.isChecked())
         self.toggle.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation)); self.toggle.setIconSize(QSize(18,18))
         self.toggle.setAccessibleName("Hiện/ẩn hướng dẫn")
         self.toggle.setObjectName("helpToggle")
 
     def expanded(self, expanded):
         self.body.setVisible(expanded)
+        self.scroll.setVisible(expanded)
         self.preferences.set("help/" + self.key, expanded)
 
     def show_transient(self, expanded=True):
@@ -50,6 +109,7 @@ class HelpBox(QWidget):
         self.toggle.setChecked(expanded)
         self.toggle.blockSignals(False)
         self.body.setVisible(expanded)
+        self.scroll.setVisible(expanded)
 
 
 class StatusMenu(QMenu):
@@ -98,18 +158,78 @@ class MetricCard(QWidget):
     def __init__(self, tone):
         super().__init__(); self.setObjectName('metricCard'); self.setProperty('tone', tone)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground,True)
-        self.setMinimumHeight(76)
-        layout = QVBoxLayout(self); layout.setContentsMargins(10, 6, 10, 6); layout.setSpacing(2)
-        self.caption = QLabel('—'); self.caption.setObjectName('metricCaption'); self.caption.setWordWrap(True)
-        self.value = QLabel('—'); self.value.setObjectName('metricValue'); self.value.setWordWrap(True)
-        self.note = QLabel(); self.note.setObjectName('metricNote'); self.note.setWordWrap(True)
-        layout.addWidget(self.caption); layout.addWidget(self.value); layout.addWidget(self.note)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
+        layout = QVBoxLayout(self); layout.setContentsMargins(8,3,8,3); layout.setSpacing(1)
+        self.caption = QLabel('—'); self.caption.setObjectName('metricCaption');self.caption.setWordWrap(False)
+        self.caption.setMinimumWidth(0);self.caption.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
+        self.caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.value = QLabel('—'); self.value.setObjectName('metricValue');self.value.setWordWrap(False)
+        self.note = CompactNote()
+        layout.addWidget(self.caption)
+        self.parts=QWidget();columns=QHBoxLayout(self.parts);columns.setContentsMargins(0,0,0,0);columns.setSpacing(7)
+        self.common_heading=QLabel('CHUNG');self.common_heading.setObjectName('metricNote')
+        self.private_heading=QLabel('RIÊNG');self.private_heading.setObjectName('metricNote')
+        self.private_value=QLabel('—');self.private_value.setObjectName('metricValue');self.private_value.setWordWrap(False)
+        self.private_note=CompactNote();self.value_boxes=[]
+        for label in (self.value,self.private_value,self.common_heading,self.private_heading):label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        for heading,value,note in ((self.common_heading,self.value,self.note),(self.private_heading,self.private_value,self.private_note)):
+            box=QWidget();column=QVBoxLayout(box);column.setContentsMargins(0,0,0,0);column.setSpacing(1)
+            column.addWidget(heading);column.addWidget(value);column.addWidget(note)
+            self.value_boxes.append(box)
+            columns.addWidget(box,1)
+            if heading is self.common_heading:
+                line=QFrame();line.setFrameShape(QFrame.Shape.VLine);line.setStyleSheet('color:#c8d6e3;');columns.addWidget(line)
+        layout.addWidget(self.parts)
+        self.setMinimumWidth(210 if tone!='summary' else 265)
+        for label in (self.value,self.private_value):
+            label.setMinimumWidth(0);label.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
         self._text = '—'
+        self.refresh_dimensions()
+
+    def refresh_dimensions(self):
+        # One numeric row, even for file/folder counts. Keep every card aligned
+        # without reserving an unused second row above the actual results.
+        for label in (self.caption,self.common_heading,self.value,self.private_value,self.note,self.private_note):label.ensurePolished()
+        capacity_font=QFont(self.value.font());capacity_font.setPixelSize(20)
+        value_height=max(QFontMetrics(capacity_font).height(),self.value.fontMetrics().height(),self.private_value.fontMetrics().height())
+        for value in (self.value,self.private_value):value.setFixedHeight(value_height)
+        for note in (self.note,self.private_note):note.setFixedHeight(2*note.fontMetrics().height())
+        margins=self.layout().contentsMargins()
+        padding=margins.top()+margins.bottom()+self.layout().spacing()+2*self.value_boxes[0].layout().spacing()
+        self.setFixedHeight(self.caption.fontMetrics().height()+self.common_heading.fontMetrics().height()+
+                            value_height+2*self.note.fontMetrics().height()+padding)
+
+    def event(self,event):
+        result=super().event(event)
+        if event.type() in (QEvent.Type.Polish,QEvent.Type.FontChange) and hasattr(self,'private_note'):self.refresh_dimensions()
+        return result
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        self.refresh_notes()
+
+    def refresh_notes(self):
+        numeric_width=max(label.fontMetrics().horizontalAdvance(line) for label in (self.value,self.private_value)
+                          for line in (label.text().splitlines() or ['—']))
+        self.setMinimumWidth(max(265 if self.property('tone')=='summary' else 210,2*numeric_width+34))
+        for value,note in ((self.value,self.note),(self.private_value,self.private_note)):
+            # Fill the already allocated column, but never impose a fixed
+            # minimum width: a long note cannot make the card/window wider.
+            note.setMinimumWidth(0);note.setMaximumWidth(16777215)
+            self.parts.layout().itemAt(0 if value is self.value else 2).widget().layout().setAlignment(note,Qt.AlignmentFlag(0))
 
     def setText(self, text):
         self._text = text; parts = text.split('\n', 2)
         self.caption.setText(parts[0]); self.value.setText(parts[1] if len(parts) > 1 else '—')
         self.note.setText(parts[2] if len(parts) > 2 else ''); self.note.setVisible(len(parts) > 2)
+        self.private_value.setText('—');self.private_note.clear()
+        self.refresh_notes()
+
+    def set_parts(self, caption, common, private, common_note='', private_note=''):
+        self.caption.setText(caption);self.value.setText(common);self.private_value.setText(private)
+        self.note.setText(common_note);self.note.setVisible(bool(common_note));self.private_note.setText(private_note)
+        self.refresh_notes()
+        self._text='\n'.join((caption,'Chung: '+common,common_note,'Riêng: '+private,private_note))
 
     def text(self): return self._text
 

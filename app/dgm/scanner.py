@@ -82,10 +82,14 @@ def metadata(path: Path, kind, st=None):
     ident = f"{st.st_dev}:{st.st_ino}" if st.st_ino else ""
     size = st.st_size if kind == "file" else 0
     alloc = allocated(path, st) if kind == "file" else 0
+    reason=''
+    if alloc is None and os.name=='nt':
+        from .windows_metadata import allocation_failure
+        reason=allocation_failure()
     return {"path": str(path), "parent": str(path.parent), "kind": kind, "logical": size,
             "allocated": alloc, "created": getattr(st, "st_birthtime", st.st_ctime),
             "modified": st.st_mtime, "identity": ident, "attrs": getattr(st, "st_file_attributes", 0),
-            "status": "ok", "note": "allocated unknown" if alloc is None else ""}
+            "status": "metadata-partial" if alloc is None else "ok", "note": ('allocated unknown; '+reason) if alloc is None else ""}
 
 
 def native_entries(policy, store, scan_id, stop, notify):
@@ -332,6 +336,7 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
         summary['effective_scope']={'roots':policy.roots,'excludes':p.get('excludes',[]),
             'strict_browsers':p.get('strict_browsers',False),'implicit_excludes':[str(ROOT)],
             'volumes':sorted({volume_identity(r) for r in policy.roots})}
+        summary['scan_method']={'engine':engine,'mft':bool(engine=='wiztree' and p.get('mft')),'admin':is_admin()}
         last_log = [0.0]
         def notify(event, data):
             if event=='source-audit':
@@ -398,6 +403,8 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
             store.db.set_progress_handler(lambda: int(stop.is_set()), 1000)
             notify("info", {"message": "Đối chiếu tổng thư mục một lần lúc nhập theo chuẩn chung; giữ tổng export gốc để đối chiếu."})
             store.aggregate(scan_id, stop=stop, notify=notify)
+            summary['hardlinks']=store.hardlink_stats
+            if store.orphan_branches:summary.setdefault('data_warnings',[]).append(f'{store.orphan_branches} nhánh thiếu thư mục cha duy nhất; cộng về tổ tiên đã lưu gần nhất.')
             summary["folder_totals_source"] = "canonical-files-v3"
             task.complete('Đã xử lý hardlink và tổng dung lượng thư mục')
             error_count = store.db.execute("SELECT COUNT(*) FROM errors WHERE scan_id=?", (scan_id,)).fetchone()[0]
@@ -426,6 +433,8 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
                 except OSError:
                     pass
             summary.update(store.totals(scan_id))
+            summary['identity_unique_logical_estimate']=None if summary['logical'] is None else summary['logical']-summary['hardlinks']['repeated_logical']
+            summary['identity_unknown_files']=summary['files']-summary['hardlinks']['identified_paths']
             if summary.get('ingestion_audit'):
                 audits=summary['ingestion_audit']
                 expected=sum(x['included_logical']-x['reparse_logical_removed'] for x in audits)
@@ -464,7 +473,8 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
         summary["alerts"] = []
         for volume, values in summary["volumes"].items():
             if values["free"] < cfg.get("alerts", {}).get("free_gb", 10) * 1_000_000_000:
-                summary["alerts"].append(f"{volume} chỉ còn {values['free']/1e9:.2f} GB trống")
+                from .presentation import size
+                summary["alerts"].append(f"{volume}: dung lượng trống thấp (≈ {size(values['free'])})")
         store.finish(scan_id, status, summary)
         previous = store.previous(scan_id)
         summary["first_scan"] = previous is None

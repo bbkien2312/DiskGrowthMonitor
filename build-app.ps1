@@ -8,6 +8,8 @@ $env:TEMP=Join-Path $taskRoot 'data\tmp'
 $env:TMP=$env:TEMP
 $env:PYTHONUTF8='1'
 $taskPython=Join-Path $taskRoot '.venv\Scripts\python.exe'
+& $taskPython (Join-Path $taskRoot 'packaging\generate_icons.py')
+if($LASTEXITCODE -ne 0){throw 'Application icon generation failed'}
 & $taskPython (Join-Path $taskRoot 'packaging\collect_licenses.py')
 if($LASTEXITCODE -ne 0){throw 'License collection failed'}
 $taskOriginalPath=$env:PATH

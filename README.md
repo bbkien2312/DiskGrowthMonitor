@@ -1,10 +1,34 @@
 # Disk Growth Monitor
 
-[Tải bộ cài Windows x64 v1.2.0](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.2.0) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
+[Tải bộ cài Windows x64 v1.3.0](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.3.0) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
 
-**Bản mới nhất: 1.2.0.** Tải `installer.exe` và đối chiếu `SHA256SUMS.txt` trong GitHub Release. GUI yêu cầu UAC Admin ngay khi mở, không chỉ khi cài; hủy UAC thì app không mở dữ liệu.
+**Bản mới nhất: 1.3.0.** Tải `installer.exe` và đối chiếu `SHA256SUMS.txt` trong GitHub Release. GUI yêu cầu UAC Admin ngay khi mở, không chỉ khi cài; hủy UAC thì app không mở dữ liệu.
 
-## Bản 1.2.0
+## Bản 1.3.0
+
+### So sánh theo mốc và giao diện gọn hơn
+
+- **Chung = có bản ghi ở cả hai mốc; Riêng = chỉ một mốc.** Hiện diện tách độc lập khỏi bằng chứng so sánh: phần Riêng có thể là thêm/mất thật, không quét, hoặc chưa rõ. Bản ghi có ở cả hai vẫn so được khi dữ liệu hợp lệ, kể cả lựa chọn loại trừ khác nhau. Danh tính ổ thực sự khác vẫn bị chặn.
+- Bốn thẻ Cũ, Mới, Chênh lệch, Toàn phạm vi chia Chung / Riêng. Thẻ Cũ/Mới ghi số đo từng nhóm; chênh lệch chỉ cộng byte file đủ bằng chứng của **cả hai nhóm**, không lấy hiệu các số đã làm tròn. Phần thiếu bằng chứng có nhãn Chưa rõ/≈, không coi là 0 hoặc đã xóa. Cây ghi tổng quan sát và chênh lệch đã xác định cùng cặp mốc; không cộng chồng cha/con, file↔folder hay đường dẫn di chuyển.
+- Chi tiết có trạng thái đầu tiên: ký hiệu +/−/↑/↓/↔/»/?/≈ (» = không quét, dùng ký tự tương thích font Windows), nhãn Chỉ Cũ/Chỉ Mới/Cũ+Mới, màu chữ/nền phân biệt. Chỉ đường dẫn Không còn có gạch ngang xám; Không quét/Chưa rõ không gạch. Cột **Trạng thái / Đường dẫn / Cũ / Mới / ± / Loại / Trên đĩa / Tạo / Sửa**; Cũ xanh lam, Mới xanh ngọc. Lọc theo trạng thái, mốc hiện diện, lý do và thư mục **trước phân trang**. Thứ tự Chung/Riêng được lập chỉ mục một lần khi cần, trang rỗng không duyệt lại nhóm khác.
+- Chuẩn hóa **v2** lưu lớp riêng, không ghi đè lịch sử gốc; lớp v1 được nâng cấp khi so sánh hoặc chọn **Lịch sử → Chọn lượt chưa chuẩn hóa → Kiểm tra & chuẩn hóa**. Lượt mới chuẩn hóa khi nhập; cache hợp lệ không lập bản đồ lại. Thiếu riêng Allocated vẫn so sánh được Size; hiển thị cấp phát đã biết và số file chưa đo được. Hardlink giữ chủ sở hữu cấp phát toàn cục, không đếm hai lần giữa Chung/Riêng.
+- Nhãn mốc ghi Chrome/Edge và phương thức MFT thực tế; native không được ghi là MFT chỉ vì cấu hình cũ có check MFT. Phạm vi và loại trừ thêm trên cùng hàng, nút thư mục dạng icon, loại trừ có editor nhiều dòng.
+- `app.log` giữ INFO/WARNING/ERROR, `debug.log` chỉ ghi DEBUG khi bật Debug; Nhật ký chọn được cả hai. Data/log footprint tính cả file debug mới.
+- Bố cục gọn: tiêu đề thẻ nằm giữa, phủ cả hai cột Chung/Riêng; dung lượng 20 px đậm; số file/thư mục chung một hàng. Ghi chú nhỏ hơn, tận dụng hết chiều ngang sẵn có của mỗi bên, ưu tiên một dòng nếu đủ chỗ, tối đa hai dòng; không tăng chiều rộng thẻ vì ghi chú. Tooltip chỉ hiện phần chữ thực sự bị cắt; nút chỉ có icon giữ tên chức năng. Chuột phải **Xem dữ liệu hai mốc** đọc byte gốc, lý do từng mốc và đường dẫn đổi tên từ lịch sử, không đọc file hiện tại. Thẻ chỉ chừa một hàng số liệu để dành chiều cao cho cây/chi tiết. Phần cấu hình có ba hàng, cấu hình/công cụ/phạm vi cùng hàng. Kích thước mở app theo màn hình; cửa sổ nhỏ có cuộn ngang/dọc thay vì mất nút. Ghi chú mở rộng cuộn riêng, cây/chi tiết nhận phần chiều cao còn lại; các tab khác cũng có vùng cuộn dự phòng. Kiểm tra hình học trước/sau so sánh và ở DPI 100/125/150%.
+- Số đo hiển thị làm tròn số nguyên (.5 làm tròn lên theo trị tuyệt đối), áp dụng cả dung lượng GB/GiB, chênh lệch, thời gian và báo cáo chẩn đoán trên GUI. Byte gốc, độ chính xác dữ liệu lưu, log kỹ thuật và JSON/CSV xuất ra không bị làm tròn. Ngày giờ và chuỗi phiên bản giữ nguyên.
+- Icon ổ đĩa/mũi tên riêng, cùng một mẫu trên taskbar, cửa sổ, khay hệ thống, shortcut và bộ cài; ICO gồm 9 kích thước 16–256 px. ID taskbar cố định qua các phiên bản. Quét ngay xanh dương nổi bật, So sánh xanh ngọc, Dừng/Xóa đỏ nhẹ; nút chức năng đậm, trạng thái vô hiệu hóa xám. Vùng cấu hình/chọn mốc và tiêu đề cây/chi tiết có điểm nhấn màu riêng, không thêm hàng tiêu đề chiếm chiều cao.
+
+CLI dùng cùng mô hình:
+
+```powershell
+dgm.exe compare 16 --older 15 --section common
+dgm.exe compare 16 --older 15 --section private --reason browser
+dgm.exe compare 16 --older 15 --section private --presence old --changes missing
+dgm.exe compare 16 --older 15 --section all
+dgm.exe snapshot-normalize --all-legacy --yes
+```
+
+`--common` cũ vẫn nhận để tương thích, không còn bắt buộc. Không thể khôi phục số liệu chưa từng được lưu; dữ liệu thiếu vẫn có cảnh báo, không được biến thành 0 hoặc coi là đầy đủ.
 
 - **Lịch sử → Kiểm tra & chuẩn hóa**: chọn một/nhiều lượt hoặc chọn các lượt chuẩn cũ, xem trước/sau rồi áp dụng. Lớp chuẩn hóa có phiên bản trong `data/normalization.sqlite`, không sửa snapshot gốc, có nút dùng lại bản gốc. Tổng quan, cây và chi tiết cùng dùng lớp đã chọn; cache phụ thuộc được xây lại khi dữ liệu chuẩn hóa đổi.
 - File/thư mục/reparse/hardlink và metadata thiếu dùng cùng quy tắc. Size là tổng logic theo đường dẫn (có thể lớn hơn sức chứa ổ do hardlink/nén/sparse); Allocated đếm hardlink một lần. Có GB/GiB. Nếu bản cũ đã mất số cấp phát, app cảnh báo thiếu nguồn và giữ chưa xác định, không đoán lại bằng file hiện tại.
@@ -128,7 +152,7 @@ Profile thư mục khác:
 .\launch-cli.cmd scan --profile projects
 ```
 
-GUI gọi profile là **Cấu hình quét**. Quét ngay/Quét lại dùng lựa chọn hiện tại, không tự ghi đè cấu hình; Lưu cấu hình để lịch dùng lựa chọn mới. Tùy chọn quét thu gọn, hướng dẫn `>` ẩn/hiện và tooltip giúp phân biệt các nút. Mốc Cũ phải trước Mới, cùng phạm vi; chênh lệch Mới − Cũ, giờ Việt Nam UTC+07. Lượt bị hủy/lỗi/đang chạy không đưa vào danh sách so sánh. Snapshot là quan sát trong khoảng quét, không phải backup hay filesystem snapshot nguyên tử.
+GUI gọi profile là **Cấu hình quét**. Quét ngay/Quét lại dùng lựa chọn hiện tại, không tự ghi đè cấu hình; Lưu cấu hình để lịch dùng lựa chọn mới. Các lựa chọn luôn hiện, chỉ ghi chú ẩn/hiện. Mốc Cũ phải trước Mới, cùng danh tính ổ; khác phạm vi được ghi rõ ở từng dòng, không chặn toàn bộ so sánh. Chênh lệch chỉ tính phần đủ bằng chứng, giờ Việt Nam UTC+07. Lượt bị hủy/lỗi/đang chạy không đưa vào danh sách so sánh. Snapshot là quan sát trong khoảng quét, không phải backup hay filesystem snapshot nguyên tử.
 
 ### Giao diện và phân trang 1.1
 
@@ -255,7 +279,7 @@ Hệ thống hiển thị gói/công cụ có icon, phiên bản và đường d
 
 ## Giao diện và cập nhật app (1.1.0)
 
-Cây mặc định đủ tên `System Volume Information` ở cấp đầu và luôn giữ cả ba cột trong chiều ngang đang có. Thu hẹp cửa sổ thì cắt tên bằng `…`; tooltip giữ đường dẫn đầy đủ. Cột chi tiết: Đường dẫn / Mức thay đổi / Dung lượng cũ / Dung lượng mới / Loại / ... . Cấu hình chiều rộng mới dùng khóa riêng để không áp nhầm bố cục cũ sau khi đổi cột.
+Cây mặc định đủ tên `System Volume Information` ở cấp đầu và luôn giữ cả ba cột trong chiều ngang đang có. Thu hẹp cửa sổ thì cắt tên bằng `…`; tooltip chỉ hiện khi chữ bị cắt. Chế độ cây: **Cặp Cũ–Mới / 2 lượt mới nhất**, chiều cao theo font/DPI. Cột chi tiết trạng thái đứng đầu; các cột còn lại đo tối đa 20 dòng trong RAM, không đo toàn ổ; kéo tay vẫn được giữ. Bố cục mới dùng `details-v4`, không áp nhầm cột v3.
 
 Trạng thái lọc chọn nhiều mục cùng lúc, có chọn tất cả/bỏ chọn/chỉ có thay đổi; bấm Lọc để áp dụng. Bỏ chọn hết cho kết quả rỗng. Lọc toàn bộ phạm vi rồi mới sắp xếp và phân trang; tổng quan Cũ/Mới không đổi theo bộ lọc. Các ô dung lượng có nền nhẹ và nhãn/giá trị riêng; lượt partial vẫn ghi cảnh báo. Tùy chọn quét mở mặc định, nhớ trạng thái riêng; icon thông tin không phụ thuộc font ký hiệu.
 

@@ -18,9 +18,14 @@ def setup(debug=False):
     for h in log.handlers[:]:
         h.close()
         log.removeHandler(h)
-    handler = BridgeHandler(BRIDGE.get()) if BRIDGE.get() else RotatingFileHandler(home() / "logs/app.log", maxBytes=5_000_000, backupCount=5, encoding="utf-8")
+    handler = BridgeHandler(BRIDGE.get()) if BRIDGE.get() else RotatingFileHandler(home() / "logs/app.log", maxBytes=5_000_000, backupCount=10, encoding="utf-8")
+    handler.setLevel(logging.DEBUG if BRIDGE.get() else logging.INFO)
     handler.setFormatter(logging.Formatter("%(message)s" if BRIDGE.get() else "%(asctime)s [%(levelname)s] %(message)s"))
     log.addHandler(handler)
+    if debug and not BRIDGE.get():
+        detail=RotatingFileHandler(home()/'logs/debug.log',maxBytes=5_000_000,backupCount=5,encoding='utf-8')
+        detail.addFilter(lambda record:record.levelno==logging.DEBUG)
+        detail.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'));log.addHandler(detail)
     return log
 
 

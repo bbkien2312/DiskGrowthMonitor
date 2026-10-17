@@ -105,7 +105,8 @@ def test_coverage_is_scoped_not_a_blanket_engine_rule(isolated):
         summary=json.loads(s.scan(sid)['summary']);summary.update(coverage_unverified=True,
             coverage={'version':1,'unknown_roots':[str(root/'unverified')]});s.record_stage(sid,summary)
     c=Comparisons();pair=c.prepare(a,b);rows=c.page(pair,kind='file')['rows']
-    assert next(r for r in rows if 'unverified' in r['path'])['change']=='unknown'
+    private=c.page(pair,kind='file',section='private')['rows']
+    assert next(r for r in private if 'unverified' in r['path'])['change']=='unknown'
     assert next(r for r in rows if '\\verified\\' in r['path'])['change']=='new'
     c.close();s.close()
 

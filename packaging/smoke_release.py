@@ -80,6 +80,15 @@ assert len(page['rows']+thousand['rows'])==1020
 folder=cli('compare',second['scan_id'],'--older',first['scan_id'],'--root',branch,'--kind','file','--minimum-mb','0','--sort','path','--direction','asc','--limit','1000')
 assert folder['total']==1200 and all(Path(r['path']).parent==branch for r in folder['rows'])
 report['checks'].append('frozen CLI global 20+100+1000 paging, stable ties and folder-only name order')
+cli('profile','set','daily','--root',fixture,'--engine','native','--exclude',branch)
+third=cli('scan');assert third['files']==2
+common=cli('compare',third['scan_id'],'--older',second['scan_id'],'--section','common','--minimum-mb','0')
+private=cli('compare',third['scan_id'],'--older',second['scan_id'],'--section','private','--kind','file','--minimum-mb','0','--limit','20')
+assert common['summary']['old_totals']['logical']==common['summary']['new_totals']['logical']
+assert private['total']==1200 and len(private['rows'])==20
+assert all(row['delta'] is None and row['change']=='not_scanned' for row in private['rows'])
+assert private['summary']['private_old_totals']['logical']>0 and private['summary']['private_new_totals']['logical']==0
+report['checks'].append('frozen automatic common/private scope split: 1200 excluded files are not false deletions')
 gui=cli('gui','--smoke-test')
 assert __version__ in gui['title'] and gui['tabs']==6 and gui['image_saved']
 execute([target/'DiskGrowthMonitor.exe','gui','--smoke-test'])

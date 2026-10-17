@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.2.0"
+  #define AppVersion "1.3.0"
 #endif
 #define SourceRoot AddBackslash(SourcePath) + ".."
 #ifndef InstallerOutputDir
@@ -22,6 +22,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 OutputDir={#InstallerOutputDir}
 OutputBaseFilename=installer
+SetupIconFile={#SourceRoot}\build\icons\app.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -48,9 +49,9 @@ Source: "{#SourceRoot}\THIRD_PARTY.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "installed-app.json"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Disk Growth Monitor"; Filename: "{app}\DiskGrowthMonitor.exe"; WorkingDir: "{app}"; Check: not PortableMode
+Name: "{group}\Disk Growth Monitor"; Filename: "{app}\DiskGrowthMonitor.exe"; WorkingDir: "{app}"; IconFilename: "{app}\DiskGrowthMonitor.exe"; AppUserModelID: "bbkien2312.DiskGrowthMonitor"; Check: not PortableMode
 Name: "{group}\Uninstall Disk Growth Monitor"; Filename: "{uninstallexe}"; Check: not PortableMode
-Name: "{autodesktop}\Disk Growth Monitor"; Filename: "{app}\DiskGrowthMonitor.exe"; WorkingDir: "{app}"; Tasks: desktopicon; Check: not PortableMode
+Name: "{autodesktop}\Disk Growth Monitor"; Filename: "{app}\DiskGrowthMonitor.exe"; WorkingDir: "{app}"; IconFilename: "{app}\DiskGrowthMonitor.exe"; AppUserModelID: "bbkien2312.DiskGrowthMonitor"; Tasks: desktopicon; Check: not PortableMode
 
 [Run]
 Filename: "{app}\DiskGrowthMonitor.exe"; Description: "Launch Disk Growth Monitor"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: not PortableMode

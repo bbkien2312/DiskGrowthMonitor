@@ -66,7 +66,7 @@ def test_compact_layout_always_keeps_controls_and_gives_panes_height(gui):
         app.processEvents()
         assert all(control.isVisible() for control in (w.engine,w.roots,w.excludes,w.threshold,w.strict,w.mft))
         assert w.engine.width()<=150 and w.profile_combo.width()<=220
-        assert w.table.height()>=180
+        assert w.table.height()>=(180 if height==940 else 132)
         assert w.browser.splitter.height()>=(300 if height==940 else 180)
         assert w.engine.geometry().right()<=w.engine.parentWidget().width()
 

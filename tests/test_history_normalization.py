@@ -25,7 +25,7 @@ def test_preview_apply_original_and_summary_tree_use_same_data(isolated):
     assert store.scan(sid,effective=False)==original
     assert json.loads(store.scan(sid)['summary'])['logical']==32
     cache=Comparisons();pair=cache.prepare(None,sid);row=next(r for r in cache.page(pair,kind='folder')['rows'] if r['path']==str(root))
-    assert row['after']==cache.summary(pair)['new_totals']['logical']==32
+    assert row['after']==cache.summary(pair)['private_new_totals']['logical']==32
     norm.restore([sid]);assert store.scan(sid)==original
     pair=cache.prepare(None,sid);row=next(r for r in cache.page(pair,kind='folder')['rows'] if r['path']==str(root))
     assert row['after']==9999 and norm.current(sid) is None
@@ -40,7 +40,7 @@ def test_legacy_lost_hardlink_allocation_stays_unknown_not_zero(isolated):
     assert report['after']['logical']==200 and report['after']['allocated'] is None
     assert report['hardlinks']=={'extra_paths':1,'repeated_logical':100}
     cache=Comparisons();pair=cache.prepare(None,sid)
-    assert cache.summary(pair)['new_totals']['allocated'] is None
+    assert cache.summary(pair)['private_new_totals']['allocated'] is None
     assert all(r['allocated_after'] is None for r in cache.page(pair,kind='folder')['rows'])
     cache.close();norm.close();store.close()
 
@@ -102,19 +102,21 @@ def test_clear_comparison_cache_preserves_normalization(isolated):
     cache.close();norm.close();store.close()
 
 
-def test_common_scope_recalculates_folder_totals_and_reassigns_hardlinks(isolated):
+def test_common_scope_recalculates_folder_totals_and_partitions_hardlinks(isolated):
     store=Store();root=isolated/'virtual'
     files=[entry(root/'a',value=30,identity='same'),{**entry(root/'z',value=30,identity='same'),'allocated':0},entry(root/'keep',value=5)]
     a=snapshot(store,root,files);b=snapshot(store,root,files)
     cfg=json.loads(store.scan(a)['config']);cfg.update(excludes=[str(root/'a')]);store.db.execute('UPDATE scans SET config=?,scope=? WHERE id=?',(json.dumps(cfg),'different',b));store.db.commit()
     cache=Comparisons()
-    with pytest.raises(ValueError,match='Khác phạm vi'):cache.prepare(a,b)
-    pair=cache.prepare(a,b,common=True);summary=cache.summary(pair)
-    assert summary['common_scope'] and summary['old_totals']['logical']==summary['new_totals']['logical']==35
+    pair=cache.prepare(a,b);assert cache.prepare(a,b,common=True)==pair
+    summary=cache.summary(pair)
+    assert summary['common_scope'] and summary['old_totals']['logical']==summary['new_totals']['logical']==65
     assert summary['old_totals']['allocated']==35
+    assert summary['private_old_totals']['allocated']==0
+    assert summary['old_totals']['allocated']+summary['private_old_totals']['allocated']==summary['full_old_totals']['allocated']
     folder=next(r for r in cache.page(pair,kind='folder')['rows'] if r['path']==str(root))
-    assert folder['before']==folder['after']==35
-    assert not any(r['path']==str(root/'a') for r in cache.page(pair)['rows'])
+    assert folder['before']==folder['after']==65
+    assert any(r['path']==str(root/'a') for r in cache.page(pair,section='common')['rows'])
     cache.close();store.close()
 
 
@@ -123,10 +125,12 @@ def test_scope_error_identifies_browser_policy_and_common_requires_overlap(isola
     cfg=json.loads(store.scan(b)['config']);cfg['strict_browsers']=False
     store.db.execute('UPDATE scans SET config=? WHERE id=?',(json.dumps(cfg),b));store.db.commit()
     cache=Comparisons()
-    with pytest.raises(ValueError,match='Chrome/Edge'):cache.prepare(a,b)
-    assert cache.prepare(a,b,common=True)
+    pair=cache.prepare(a,b)
+    assert any('Chrome/Edge' in x for x in cache.summary(pair)['scope_differences'])
+    assert cache.prepare(a,b,common=True)==pair
     cfg['roots']=[str(isolated/'different')];store.db.execute('UPDATE scans SET config=? WHERE id=?',(json.dumps(cfg),b));store.db.commit()
-    with pytest.raises(ValueError,match='không có vùng quét chung'):cache.prepare(a,b,common=True)
+    pair=cache.prepare(a,b,common=True)
+    assert cache.summary(pair)['common_scope']['roots']==[]
     cache.close();store.close()
 
 
@@ -164,8 +168,8 @@ def test_bracket_and_legacy_log_levels(prefix,expected):
 def test_units_keep_byte_values_and_distinguish_gib():
     from dgm.presentation import size,set_units
     try:
-        set_units(False);assert size(161290907648)=='161.29 GB'
-        set_units(True);assert size(161290907648)=='150.21 GiB'
+        set_units(False);assert size(161290907648)=='161 GB'
+        set_units(True);assert size(161290907648)=='150 GiB'
     finally:set_units(False)
 
 

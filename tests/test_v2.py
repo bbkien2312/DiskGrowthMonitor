@@ -120,7 +120,8 @@ def test_ordinals_persist_ids_not_reused_same_profile_previous(isolated):
 
 def test_empty_snapshot_totals_are_zero(isolated):
     s=Store();sid=s.begin_scan('empty','scope','native',{'roots':[]})
-    assert s.totals(sid)=={'logical':0,'allocated':0,'files':0,'folders':0,'links':0};s.close()
+    assert s.totals(sid)=={'logical':0,'allocated':0,'files':0,'folders':0,'links':0,
+        'allocated_known':0,'allocated_unknown_files':0,'logical_unknown_files':0};s.close()
 
 
 def test_cache_archive_history_preserved_and_rebuilt(dataset):
@@ -230,8 +231,9 @@ def test_case_collisions_are_unknown_not_arbitrarily_matched(isolated):
     a=snapshot(s,root,[entry(root/'File',value=10)])
     b=snapshot(s,root,[entry(root/'File',value=20),entry(root/'file',value=30)],aggregate=False)
     c=Comparisons();pair=c.prepare(a,b)
-    rows=c.page(pair,kind='file')['rows']
-    assert len(rows)==2 and all(row['change']=='unknown' and row['delta'] is None for row in rows)
+    rows=c.page(pair,kind='file',section='common')['rows']
+    assert len(rows)==2 and all(row['change']=='unknown' and row['delta'] is None and 'collision' in row['reason'] for row in rows)
+    assert c.summary(pair)['verified_delta']==0
     c.close();s.close()
 
 

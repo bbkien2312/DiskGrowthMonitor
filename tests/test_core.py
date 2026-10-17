@@ -115,17 +115,20 @@ def test_partial_missing_is_unknown(isolated, monkeypatch):
     second = scan("demo", prof(root))
     assert second["status"] == "partial"
     s = Store()
-    row = next(x for x in s.compare(first["scan_id"], second["scan_id"]) if x["path"].endswith("file.dat"))
-    assert row["change"] == "unknown" and row["delta"] is None
+    from dgm.comparison import Comparisons
+    c=Comparisons();pair=c.prepare(first['scan_id'],second['scan_id'])
+    row=next(x for x in c.page(pair,section='private')['rows'] if x['path'].endswith('file.dat'))
+    assert row['change']=='unknown' and row['delta'] is None and 'coverage' in row['reason']
+    assert c.summary(pair)['old_totals']['logical']==c.summary(pair)['new_totals']['logical']==0
+    c.close()
     s.close()
 
 
-def test_scope_change_rejected(isolated):
+def test_scope_change_is_partitioned(isolated):
     root = isolated / "documents"; root.mkdir()
     p = prof(root); a = scan("demo", p)
     p["excludes"] = ["*.tmp"]; b = scan("demo", p)
     s = Store()
-    with pytest.raises(ValueError):
-        s.compare(a["scan_id"], b["scan_id"])
+    assert s.compare(a['scan_id'],b['scan_id'])
     s.close()
 

@@ -4,7 +4,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QWidget,QVBoxLayout,QHBoxLayout,QTabWidget,QTableWidget,QTableWidgetItem,QLabel,QMessageBox,QInputDialog,QPlainTextEdit
 from .store import Store
 from .comparison import Comparisons
-from .presentation import scan_label,scan_name,local_time,size,change_text,STATUS,storage_delta,storage_tooltip
+from .presentation import scan_label,scan_name,local_time,size,change_text,STATUS,storage_delta,storage_tooltip,whole
 
 
 class HistoryPanel(QWidget):
@@ -194,7 +194,7 @@ class HistoryPanel(QWidget):
                 norm=summary.get('normalization',{})
                 norm_text=STATES.get(norm.get('state'),'Chuẩn cũ / chưa chuẩn hóa')
                 values=[scan_name(row),local_time(row["started"]),roots,row["engine"],status_text,
-                        f"{summary.get('files',0):,} / {summary.get('folders',0):,}",size(summary.get("logical"))+" / "+size(summary.get("allocated")),f"{summary.get('seconds',0):,.1f} s",storage_delta(summary.get("storage")),coverage,norm_text]
+                        f"{summary.get('files',0):,} / {summary.get('folders',0):,}",size(summary.get("logical"))+" / "+size(summary.get("allocated")),f"{whole(summary.get('seconds',0)):,} s",storage_delta(summary.get("storage")),coverage,norm_text]
                 for j,value in enumerate(values):
                     cell=QTableWidgetItem(value);cell.setToolTip(value+f"\nID nội bộ: {row['id']}\n"+storage_tooltip(summary.get("storage")))
                     if j==4 and (summary.get("coverage_note") or summary.get("note")):cell.setToolTip(status_text+"\n"+(summary.get("coverage_note") or summary.get("note")))
@@ -207,14 +207,18 @@ class HistoryPanel(QWidget):
                     self.scans.model().index(i,0),QItemSelectionModel.SelectionFlag.Select|QItemSelectionModel.SelectionFlag.Rows)
             for i,row in enumerate(self.pair_rows):
                 summary=json.loads(row["summary"] or "{}");a=summary.get("older");b=summary.get("newer")
-                old=summary.get("old_totals") or {};new=summary.get("new_totals") or {};counts=summary.get("counts",[])
+                old=summary.get('full_old_totals',summary.get('old_totals')) or {};new=summary.get('full_new_totals',summary.get('new_totals')) or {};counts=summary.get("counts",[])
                 tally=lambda status:f"{sum(x['count'] for x in counts if x['kind']=='file' and x['change']==status):,} / {sum(x['count'] for x in counts if x['kind']=='folder' and x['change']==status):,}"
                 other=sum(x["count"] for x in counts if x["change"] not in ("same","first_scan","grown","shrunk","new","missing","moved_from"))
                 delta=new['logical']-old['logical'] if a and new.get('logical') is not None and old.get('logical') is not None else None
-                scope_label=' [CHỈ PHẦN CHUNG]' if summary.get('common_scope') else ''
+                if 'verified_delta' in summary:delta=summary['verified_delta']
+                scope_label=' [CHUNG / RIÊNG]' if 'private_counts' in summary else ' [CHỈ PHẦN CHUNG]' if summary.get('common_scope') else ''
                 values=[(scan_name(a) if a else "Mốc ban đầu")+" → "+(scan_name(b) if b else "Đang chuẩn bị")+scope_label,size(old.get("logical")),size(new.get("logical")),change_text(delta),tally("grown"),tally("shrunk"),tally("new"),tally("missing"),f"{other:,} • "+("chi tiết đọc lại khi mở" if row["status"]=="archived" else f"Đã lưu {summary.get('rows',0):,} mục so sánh"),storage_delta(summary.get("storage"))]
                 for j,value in enumerate(values):
                     cell=QTableWidgetItem(value);cell.setToolTip(value+"\n"+storage_tooltip(summary.get("storage")))
+                    if 'private_counts' in summary:
+                        po=summary.get('private_old_totals') or {};pn=summary.get('private_new_totals') or {}
+                        cell.setToolTip(cell.toolTip()+'\nCũ/Mới là toàn bộ số đo; chênh lệch chỉ tính phần đủ bằng chứng của Chung và Riêng. Riêng: cũ '+size(po.get('logical'))+' / mới '+size(pn.get('logical'))+'.')
                     if j==0:cell.setData(Qt.ItemDataRole.UserRole,row['id'])
                     if j==3:cell.setForeground(QColor('#667085' if delta is None else '#138454' if delta>0 else '#d34242'))
                     self.pairs.setItem(i,j,cell)

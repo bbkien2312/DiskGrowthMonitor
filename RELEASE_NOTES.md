@@ -1,3 +1,17 @@
+# Disk Growth Monitor 1.3.0 — 17/10/2026
+
+- Chung là bản ghi có ở cả hai mốc; Riêng là chỉ một mốc. Hiện diện tách khỏi độ tin cậy: thêm/mất thật trong Riêng vẫn được tính vào tổng, không quét/chưa rõ không bị coi là đã xóa. Ghi rõ vấn đề ở Cũ hay Mới; giữ lịch sử gốc, không đọc file hiện tại để giả làm dữ liệu cũ.
+- Chuẩn hóa v2 có lớp dữ liệu riêng; đồng bộ native/WizTree/WinDirStat/gdu, giữ null khi thiếu dữ liệu, hardlink cấp phát một lần. Thư mục thưa, đổi file/thư mục, di chuyển giữa các nhánh và tổng số byte có kiểm thử. Cache so sánh mới tạo lại từ dữ liệu đã lưu khi cần, không phải quét lại ổ.
+- Trạng thái ở cột đầu, ký hiệu và nền/chữ phân biệt. Chỉ đường dẫn Không còn mới gạch ngang xám. Cột Cũ/Mới gọn, màu riêng; lọc trạng thái, mốc có bản ghi và lý do trên toàn bộ dữ liệu trước phân trang. Chuột phải Xem dữ liệu hai mốc đọc byte gốc/lý do/đường dẫn di chuyển từ snapshot.
+- Sắp xếp Chung/Riêng lập chỉ mục một lần khi cần; trang rỗng không duyệt nhóm khác. Giữ tải 20/50/100/200/500/1000 mục, thứ tự toàn phạm vi hoặc nhánh đang chọn, bộ nhớ GUI có giới hạn và kích thước cột kéo tay không bị đặt lại khi tải trang.
+- Gọn phần cấu hình, ưu tiên chiều cao cây/chi tiết; cuộn ngang/dọc dự phòng cho màn hình nhỏ, dropdown chế độ cây rõ và vừa font/DPI. Dung lượng số nguyên, 20 px đậm; ghi chú dùng hết chiều ngang sẵn có, ưu tiên một dòng và tối đa hai dòng, không kéo rộng thẻ. Phép tính, byte gốc và dữ liệu xuất không bị làm tròn.
+- Icon ổ đĩa/mũi tên riêng với 9 cỡ 16–256 px, dùng chung cửa sổ/taskbar/khay hệ thống/shortcut/bộ cài. Nút Quét ngay nổi bật, nút chức năng đậm, màu nhấn phân vùng. Tooltip chỉ xuất hiện khi chữ bị cắt; nút chỉ có icon giữ tên chức năng.
+- Tách app.log INFO/WARNING/ERROR và debug.log DEBUG theo lựa chọn, tính cả footprint data/log; lịch sử và chuẩn hóa vẫn có công cụ dọn riêng với xác nhận.
+- Cập nhật tại vị trí hiện tại, sao lưu/giữ lịch sử quét, so sánh, benchmark, cấu hình và log. Không cài package Python toàn hệ thống, không tự đăng ký Task/Service, không đóng gói WizTree hay dữ liệu cá nhân.
+- Kiểm chứng: 372 bài kiểm thử tự động; giao diện DPI 100/125/150%; bốn công cụ trên fixture riêng ở D:. Bộ cài frozen được kiểm thử cài mới, nâng cấp tại chỗ, chuyển bản source sang runtime quản lý, nâng cấp từ bộ cài cũ, lỗi checksum và gỡ giữ dữ liệu. Task/Service thật và bản đang dùng không bị sửa bởi bài thử.
+
+Giới hạn: nguồn quét không chứng minh độ bao phủ vẫn có cảnh báo, không tự khẳng định mọi mục thiếu là đã xóa. Size theo đường dẫn khác Allocated và dung lượng Windows đã dùng. Bộ cài chưa ký mã; kiểm tra nguồn Release và SHA-256 khi Windows hiện cảnh báo. Windows 11 x64 đã kiểm thử trực tiếp; Windows 10 x64 là nền tảng nhắm tới, chưa có máy riêng kiểm thử.
+
 # Disk Growth Monitor 1.2.0 — 17/10/2026
 
 - Chuẩn hóa lịch sử theo lớp dữ liệu có phiên bản, giữ nguyên bản gốc, xem trước/sau và dùng lại bản gốc; GUI/CLI tương đương. File, thư mục, reparse, ngày thiếu và hardlink cùng được đối soát. Tổng quan/cây/chi tiết dùng cùng dữ liệu; thay lớp chuẩn hóa vô hiệu hóa cache/phạm vi/con trỏ liên quan.

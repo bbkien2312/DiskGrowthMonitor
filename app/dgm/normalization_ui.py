@@ -3,7 +3,7 @@ import json
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog,QVBoxLayout,QHBoxLayout,QLabel,QTableWidget,QTableWidgetItem,QPlainTextEdit,QMessageBox
 from .normalization import Normalizations,STATES
-from .presentation import size
+from .presentation import size,display_json
 
 
 class NormalizationDialog(QDialog):
@@ -30,7 +30,7 @@ class NormalizationDialog(QDialog):
 
     def selected(self):
         index=self.table.currentRow()
-        if 0<=index<len(self.reports):self.details.setPlainText(json.dumps(self.reports[index],ensure_ascii=False,indent=2))
+        if 0<=index<len(self.reports):self.details.setPlainText(display_json(self.reports[index]))
 
     def run(self,apply=False):
         if self.worker:return

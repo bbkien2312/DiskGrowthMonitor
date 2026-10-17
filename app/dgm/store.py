@@ -193,10 +193,13 @@ class Store:
         self.db.execute("DROP TABLE IF EXISTS temp.owners")
         self.db.execute("""CREATE TEMP TABLE owners AS SELECT r.identity,
         MIN(p.path_key || CHAR(0) || PRINTF('%020d',p.id)) AS owner_key,
-        CASE WHEN SUM(r.allocated IS NULL)>0 THEN NULL ELSE MAX(r.allocated) END AS allocated
+        CASE WHEN SUM(r.allocated IS NULL)>0 THEN NULL ELSE MAX(r.allocated) END AS allocated,
+        COUNT(*) AS paths,SUM(r.logical)-MAX(r.logical) AS repeated_logical
         FROM members m JOIN revisions r ON r.id=m.revision_id JOIN paths p ON p.id=m.path_id
         WHERE m.scan_id=? AND r.kind='file' AND r.identity<>'' GROUP BY r.identity""", (scan_id,))
         self.db.execute("CREATE UNIQUE INDEX temp.owner_identity ON owners(identity)")
+        self.hardlink_stats=dict(self.db.execute('''SELECT COALESCE(SUM(paths-1),0) extra_paths,
+          COALESCE(SUM(repeated_logical),0) repeated_logical,COALESCE(SUM(paths),0) identified_paths FROM owners''').fetchone())
         duplicates = self.db.execute("""SELECT p.path,p.parent,r.*,CASE WHEN p.path_key || CHAR(0) || PRINTF('%020d',p.id)=o.owner_key THEN o.allocated ELSE 0 END AS canonical_allocated
         FROM members m JOIN revisions r ON r.id=m.revision_id
         JOIN paths p ON p.id=m.path_id JOIN owners o ON o.identity=r.identity
@@ -217,7 +220,8 @@ class Store:
         # Direct file totals computed once. No SUM over a million members for
         # each directory. Folder records alone are held in memory.
         self.db.execute("DROP TABLE IF EXISTS temp.direct_totals")
-        self.db.execute("""CREATE TEMP TABLE direct_totals AS SELECT p.parent_key AS parent,SUM(r.logical) AS logical,
+        self.db.execute("""CREATE TEMP TABLE direct_totals AS SELECT p.parent_key AS parent,
+        CASE WHEN SUM(r.logical IS NULL)>0 THEN NULL ELSE SUM(r.logical) END AS logical,
         CASE WHEN SUM(r.allocated IS NULL)>0 THEN NULL ELSE SUM(r.allocated) END AS allocated
         FROM members m JOIN paths p ON p.id=m.path_id JOIN revisions r ON r.id=m.revision_id
         WHERE m.scan_id=? AND r.kind='file' GROUP BY p.parent_key""", (scan_id,))
@@ -227,23 +231,13 @@ class Store:
         FROM members m JOIN paths p ON p.id=m.path_id JOIN revisions r ON r.id=m.revision_id
         LEFT JOIN direct_totals t ON t.parent=p.path_key
         WHERE m.scan_id=? AND r.kind='folder' ORDER BY LENGTH(p.path) DESC""", (scan_id,)).fetchall()
-        totals = {r["path_id"]: [r["direct_logical"], r["direct_allocated"]] for r in folders}
-        by_key = {}
-        for row in folders:
-            by_key.setdefault(row['path_key'], []).append(row['path_id'])
-        last = time.monotonic()
-        for index, r in enumerate(folders):
-            check(); candidates = by_key.get(r['parent_key'], [])
-            parent = candidates[0] if len(candidates) == 1 else None
-            if parent in totals and parent != r["path_id"]:
-                totals[parent][0] += totals[r["path_id"]][0]
-                a, b = totals[parent][1], totals[r["path_id"]][1]
-                totals[parent][1] = None if a is None or b is None else a + b
-            if time.monotonic() - last > 0.5:
-                notify("progress", {"count": index + 1, "total": len(folders)*2, "path": "Tổng hợp thư mục"}); last = time.monotonic()
+        from .folder_totals import rollup
+        direct={r['parent']:[r['logical'],r['allocated']] for r in self.db.execute('SELECT * FROM direct_totals')}
+        totals,self.orphan_branches=rollup(folders,direct,stop or threading.Event())
+        notify('progress',{'count':len(folders),'total':len(folders)*2,'path':'Đã tổng hợp thư mục từ file, không cộng trùng cha/con'})
         batch = []
         for index, r in enumerate(folders):
-            check(); logical, allocated = totals[r["path_id"]]
+            check(); logical, allocated = totals[r["path_id"]][:2]
             if logical != r["logical"] or allocated != r["allocated"]:
                 batch.append({**dict(r), "logical": logical, "allocated": allocated})
             if len(batch) >= 2000:
@@ -254,9 +248,12 @@ class Store:
         self.db.commit()
 
     def totals(self, scan_id):
-        return dict(self.db.execute("""SELECT COALESCE(SUM(CASE WHEN r.kind='file' THEN r.logical ELSE 0 END),0) AS logical,
+        return dict(self.db.execute("""SELECT CASE WHEN SUM(r.kind='file' AND r.logical IS NULL)>0 THEN NULL ELSE COALESCE(SUM(CASE WHEN r.kind='file' THEN r.logical ELSE 0 END),0) END AS logical,
         CASE WHEN SUM(r.kind='file' AND r.allocated IS NULL)>0 THEN NULL ELSE COALESCE(SUM(CASE WHEN r.kind='file' THEN r.allocated ELSE 0 END),0) END AS allocated,
-        COALESCE(SUM(r.kind='file'),0) AS files,COALESCE(SUM(r.kind='folder'),0) AS folders,COALESCE(SUM(r.kind='link'),0) AS links
+        COALESCE(SUM(r.kind='file'),0) AS files,COALESCE(SUM(r.kind='folder'),0) AS folders,COALESCE(SUM(r.kind='link'),0) AS links,
+        COALESCE(SUM(CASE WHEN r.kind='file' THEN r.allocated ELSE 0 END),0) AS allocated_known,
+        COALESCE(SUM(r.kind='file' AND r.allocated IS NULL),0) AS allocated_unknown_files,
+        COALESCE(SUM(r.kind='file' AND r.logical IS NULL),0) AS logical_unknown_files
         FROM members m JOIN revisions r ON r.id=m.revision_id WHERE m.scan_id=?""", (scan_id,)).fetchone())
 
     def record_stage(self, scan_id, summary):
@@ -337,8 +334,13 @@ class Store:
 
     def previous(self, scan_id):
         curr = self.scan(scan_id)
-        row = self.db.execute("SELECT id FROM scans WHERE (started<? OR (started=? AND id<?)) AND scope=? AND profile=? AND status IN ('complete','partial') ORDER BY started DESC,id DESC LIMIT 1", (curr["started"],curr["started"],scan_id,curr["scope"],curr["profile"])).fetchone()
-        return row[0] if row else None
+        from .snapshot_scope import common_policy
+        # Scope hashes evolved across releases; compare captured policies.
+        for row in self.db.execute("SELECT * FROM scans WHERE (started<? OR (started=? AND id<?)) AND profile=? AND status IN ('complete','partial') ORDER BY started DESC,id DESC", (curr['started'],curr['started'],scan_id,curr['profile'])):
+            try:
+                if common_policy(dict(row),curr)['roots']:return row['id']
+            except ValueError:continue
+        return None
 
     def entries(self, scan_id, minimum=0, kind="all", search="", limit=1000, offset=0):
         clauses = ["scan_id=?", "(kind='folder' OR logical>=?)", "path LIKE ?"]

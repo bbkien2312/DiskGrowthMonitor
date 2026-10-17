@@ -123,7 +123,9 @@ def entries(scan_id: int, minimum_mb: float = 10, kind: str = "all", search: str
 def compare(newer: int, older: Optional[int] = None, kind: str = "all", search: str = "", changes: str = "all",
             limit: int = 20, offset: int = 0, sort: str = "delta", direction: str = "desc",
             minimum_mb: float = 10, root: Optional[str] = None, recursive: bool = True,
-            cursor: Optional[str] = None, baseline: bool = False,common:bool=typer.Option(False,'--common',help='Chỉ vùng chung; không phải toàn ổ')):
+            cursor: Optional[str] = None, baseline: bool = False,common:bool=typer.Option(False,'--common',help='Tương thích cũ: luôn tự chia Chung/Riêng'),
+            section:str=typer.Option('all',help='all / common (hai mốc) / private (một mốc)'),reason:Optional[str]=None,
+            presence:str=typer.Option('all',help='all / both / old / new: mốc có bản ghi')):
     from .store import Store
     from .comparison import Comparisons
     s = Store(readonly=True)
@@ -135,7 +137,7 @@ def compare(newer: int, older: Optional[int] = None, kind: str = "all", search: 
     try:
         pair = cache.prepare(previous,newer,common=common)
         position=json.loads(cursor) if cursor else None
-        options=dict(sort=sort,direction=direction,minimum=int(minimum_mb*1_000_000),kind=kind,changes=changes,search=search,root=root,recursive=recursive)
+        options=dict(sort=sort,direction=direction,minimum=int(minimum_mb*1_000_000),kind=kind,changes=changes,search=search,root=root,recursive=recursive,section=section,reason=reason,presence=presence)
         while offset:
             page=cache.page(pair,limit=min(1000,offset),cursor=position,**options)
             offset-=len(page["rows"]); position=page["cursor"]
@@ -573,7 +575,8 @@ def cleanup_apply(plan_id: str, confirm: Optional[str] = None):
     from .cleanup import apply, get_plan
     p = get_plan(plan_id)
     if confirm is None:
-        typer.echo(f"{len(p['entries'])} mục; {p['bytes'] / 1e9:.3f} GB. Cache được xóa vĩnh viễn.")
+        from .presentation import size
+        typer.echo(f"{len(p['entries'])} mục; {size(p['bytes'])}. Cache được xóa vĩnh viễn.")
         confirm = typer.prompt(f"Gõ chính xác {p['confirmation']}")
     result=invoke_action(apply,plan_id,confirm,notify=admin_progress);output(result)
     if result.get('cancelled'):raise typer.Exit(130)

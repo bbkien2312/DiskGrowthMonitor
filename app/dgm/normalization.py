@@ -16,7 +16,7 @@ from .config import home, comparison_path_key
 from .platform_ops import ProcessCancelled
 from .store import now
 
-VERSION = 1
+VERSION = 2
 FIELDS = ('kind', 'logical', 'allocated', 'created', 'modified', 'identity', 'attrs', 'status')
 STATES = {'verified': 'Đã kiểm chứng phép tính', 'limited': 'Có giới hạn dữ liệu',
           'needs-source': 'Thiếu nguồn để phục hồi chính xác', 'original': 'Đang dùng bản gốc'}
@@ -117,18 +117,29 @@ class Normalizations:
         original = json.loads(scan['summary'] or '{}'); warnings = []
         from .storage_metrics import begin as begin_storage,finish as finish_storage
         storage_meter=begin_storage('normalization')
-        if not force and original.get('canonical_normalization_version')==VERSION and original.get('import_complete'):
+        if not force and original.get('canonical_normalization_version') in (1,VERSION) and original.get('import_complete'):
             # New scans already used the exact normalization rules on ingestion.
             # Register provenance, don't walk the same million rows a second time.
             totals={k:original.get(k,0) for k in ('logical','allocated','files','folders','links')}
+            for key in ('identity_unique_logical_estimate','identity_unknown_files'):
+                if key in original:totals[key]=original[key]
+            fields=('allocated_known','allocated_unknown_files','logical_unknown_files')
+            if all(k in original for k in fields):totals.update({k:original[k] for k in fields})
+            else:
+                totals.update(dict(self.db.execute('''SELECT COALESCE(SUM(r.allocated),0) allocated_known,
+                  COUNT(CASE WHEN r.allocated IS NULL THEN 1 END) allocated_unknown_files,
+                  COUNT(CASE WHEN r.logical IS NULL THEN 1 END) logical_unknown_files
+                  FROM source.members m JOIN source.revisions r ON r.id=m.revision_id
+                  WHERE m.scan_id=? AND r.kind='file' ''',(scan_id,)).fetchone()))
+            status_upgrades=self.db.execute("SELECT COUNT(*) FROM source.members m JOIN source.revisions r ON r.id=m.revision_id WHERE m.scan_id=? AND r.kind='file' AND r.allocated IS NULL AND r.status='ok'",(scan_id,)).fetchone()[0] if original.get('canonical_normalization_version',0)<2 else 0
             warnings=list(original.get('data_warnings',[]))
             if original.get('coverage_unverified') or original.get('errors'):
                 warnings.append('Phép tính đã thực hiện khi nhập; độ bao phủ vẫn theo giới hạn của lượt quét.')
             if totals['allocated'] is None:warnings.append('Có file chưa biết dung lượng cấp phát; không coi là 0.')
             report={'scan_id':scan_id,'version':VERSION,'fingerprint':fingerprint(scan),'before':totals,'after':totals,
-                'stored_summary':original,'changed_rows':0,'warnings':warnings,'state':'limited' if warnings else 'verified',
+                'stored_summary':original,'changed_rows':status_upgrades,'metadata_status_upgrade':bool(status_upgrades),'warnings':warnings,'state':'limited' if warnings else 'verified',
                 'applied':bool(apply),'source_preserved':True,'seconds':round(time.perf_counter()-started,3),
-                'verified_on_ingestion':True,'estimated_overlay_bytes':0}
+                'verified_on_ingestion':True,'estimated_overlay_bytes':status_upgrades*160}
             if apply:self._publish(scan_id,report,storage_meter,copy_overrides=False)
             task.finish('Đã đọc chuẩn hóa được thực hiện lúc quét; không tính lại file/thư mục')
             return report
@@ -148,6 +159,7 @@ class Normalizations:
         if invalid: raise ValueError(f'{invalid} bản ghi có kích thước/loại không hợp lệ; không tự sửa thành 0.')
         self.db.execute("UPDATE work SET created=NULL WHERE created<=0")
         self.db.execute("UPDATE work SET modified=NULL WHERE modified<=0")
+        self.db.execute("UPDATE work SET status='metadata-partial' WHERE kind='file' AND allocated IS NULL AND status='ok'")
         self.db.execute("UPDATE work SET kind='link',logical=0,allocated=0 WHERE (COALESCE(attrs,0)&1024)<>0 OR kind='link'")
         self.db.execute('CREATE INDEX temp.work_identity ON work(identity,kind,path_key,path_id)')
         self.db.execute('''CREATE TEMP TABLE owners AS SELECT identity,MIN(path_id) AS owner,
@@ -180,24 +192,13 @@ class Normalizations:
           FROM work WHERE kind='file' GROUP BY parent_key''')
         direct = {r['parent_key']: [r['logical'], r['allocated']] for r in self.db.execute('SELECT * FROM direct')}
         folders = self.db.execute("SELECT path_id,path_key,parent_key FROM work WHERE kind='folder' ORDER BY LENGTH(path) DESC,path_id").fetchall()
-        by_key = {}; totals = {}
-        for row in folders:
-            by_key.setdefault(row['path_key'], []).append(row['path_id'])
-            totals[row['path_id']] = list(direct.get(row['path_key'], (0,0)))
-        orphans = 0
-        for index, row in enumerate(folders):
-            if self.stop.is_set(): raise ProcessCancelled()
-            parents = by_key.get(row['parent_key'], [])
-            if len(parents)==1 and parents[0]!=row['path_id']:
-                a,b = totals[parents[0]],totals[row['path_id']]
-                for k in (0,1): a[k] = None if a[k] is None or b[k] is None else a[k]+b[k]
-            if index % 10000 == 0: task.advance(index, len(folders))
-        for parent, values in direct.items():
-            if len(by_key.get(parent, [])) != 1: orphans += 1
-        if orphans: warnings.append(f'{orphans:,} nhánh file thiếu thư mục cha duy nhất; tổng toàn phạm vi vẫn theo file, cây có giới hạn.')
+        from .folder_totals import rollup
+        totals,orphans=rollup(folders,direct,self.stop)
+        if orphans: warnings.append(f'{orphans:,} nhánh thiếu thư mục cha duy nhất; cộng về tổ tiên đã lưu gần nhất, không suy đoán thư mục bị thiếu.')
         self.db.executemany('UPDATE work SET logical=?,allocated=? WHERE path_id=?',
                             ((v[0],v[1],pid) for pid,v in totals.items()))
         after = self._totals()
+        after['identity_unique_logical_estimate']=None if after['logical'] is None else after['logical']-hardlinks['repeated_logical']
         unknown = self.db.execute("SELECT COUNT(*) FROM work WHERE kind='file' AND (allocated IS NULL OR logical IS NULL)").fetchone()[0]
         if unknown: warnings.append(f'{unknown:,} file thiếu dung lượng đã biết; tổng liên quan hiển thị chưa xác định, không coi là 0.')
         if original.get('coverage_unverified') or scan['status']=='partial': warnings.append('Kiểm chứng phép tính không xác minh lại độ bao phủ của lần quét cũ.')
@@ -241,6 +242,10 @@ class Normalizations:
         self.db.execute('DELETE FROM preferences WHERE scan_id=?',(scan_id,))
         ident = self.db.execute('INSERT INTO datasets(scan_id,version,fingerprint,created,active,report) VALUES(?,?,?,?,1,?)',
             (scan_id,VERSION,report['fingerprint'],now(),json.dumps(report,ensure_ascii=False))).lastrowid
+        if report.get('metadata_status_upgrade'):
+            self.db.execute('''INSERT INTO overrides SELECT ?,m.path_id,r.kind,r.logical,r.allocated,r.created,r.modified,r.identity,r.attrs,'metadata-partial'
+              FROM source.members m JOIN source.revisions r ON r.id=m.revision_id
+              WHERE m.scan_id=? AND r.kind='file' AND r.allocated IS NULL AND r.status='ok' ''',(ident,scan_id))
         if copy_overrides:self.db.execute(f'''INSERT INTO overrides SELECT ?,w.path_id,{','.join('w.'+f for f in FIELDS)}
           FROM work w JOIN source.members m ON m.scan_id=? AND m.path_id=w.path_id
           JOIN source.revisions r ON r.id=m.revision_id WHERE '''+' OR '.join(f'w.{f} IS NOT r.{f}' for f in FIELDS), (ident,scan_id))
@@ -260,7 +265,11 @@ class Normalizations:
           ELSE COALESCE(SUM(CASE WHEN kind='file' THEN logical ELSE 0 END),0) END AS logical,
           CASE WHEN SUM(kind='file' AND allocated IS NULL)>0 THEN NULL
           ELSE COALESCE(SUM(CASE WHEN kind='file' THEN allocated ELSE 0 END),0) END AS allocated,
-          COALESCE(SUM(kind='file'),0) AS files,COALESCE(SUM(kind='folder'),0) AS folders,COALESCE(SUM(kind='link'),0) AS links FROM work''').fetchone())
+          COALESCE(SUM(kind='file'),0) AS files,COALESCE(SUM(kind='folder'),0) AS folders,COALESCE(SUM(kind='link'),0) AS links,
+          COALESCE(SUM(CASE WHEN kind='file' THEN allocated ELSE 0 END),0) AS allocated_known,
+          COALESCE(SUM(kind='file' AND allocated IS NULL),0) AS allocated_unknown_files,
+          COALESCE(SUM(kind='file' AND logical IS NULL),0) AS logical_unknown_files,
+          COALESCE(SUM(kind='file' AND identity=''),0) AS identity_unknown_files FROM work''').fetchone())
 
     def restore(self, scan_ids):
         with _lock:

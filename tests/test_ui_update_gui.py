@@ -32,10 +32,10 @@ def test_three_columns_fit_default_narrow_resize_drag_and_reset(gui):
     assert tree.columnWidth(0)<=before-15
     assert sum(tree.columnWidth(i) for i in range(3))==tree.viewport().width()
     w.save_layout();saved=json.loads((home()/'data/ui-settings.json').read_text(encoding='utf-8'))
-    assert 'splitter/scan-v3' in saved and 'columns/details-v3' in saved
+    assert 'splitter/scan-v3' in saved and 'columns/details-v4' in saved
     w.reset_layout();app.processEvents()
     assert tree.columnWidth(0)>=default[0]-5
-    assert SORT_COLUMNS[1]=='delta' and HEADERS[4]=='Loại'
+    assert SORT_COLUMNS[4]=='delta' and HEADERS[5]=='Loại'
     assert not w.table.wordWrap() and w.table.textElideMode()==Qt.TextElideMode.ElideRight
 
 
@@ -50,13 +50,14 @@ def test_status_multi_filter_scope_paging_and_summary_unchanged(gui,isolated):
     assert b.model.total==700 and b.model.loaded==20
     b.page_size.setCurrentIndex(b.page_size.findData(100));b.load_more();pump(app,lambda:not w.workers)
     assert b.model.loaded==120 and all(r['change']=='grown' for rows in b.model.chunks.values() for r in rows)
-    b.sort_clicked(1);pump(app,lambda:not w.workers)
+    b.sort_clicked(4);pump(app,lambda:not w.workers)
     assert b.model.loaded==120 and [m.text() for m in b.metrics]==overview
     b.change.select([]);b.reload();pump(app,lambda:not w.workers)
     assert b.model.total==0 and b.model.loaded==0
     b.change.select(CHANGES);b.reload();pump(app,lambda:not w.workers)
     assert b.model.total==1400
-    assert b.metrics[2].caption.text()=='CHÊNH LỆCH DUNG LƯỢNG QUÉT'
+    assert b.metrics[2].caption.text()=='CHÊNH LỆCH'
+    assert b.metrics[2].private_value.text()=='→ 0 B'
     store.close()
 
 

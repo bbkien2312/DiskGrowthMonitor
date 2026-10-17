@@ -38,7 +38,7 @@ def test_gui_top_bottom_20_plus_100_plus_1000_and_keep_count_on_sort(gui,isolate
     assert browser.model.loaded==120 and browser.model.row_at(0)['after']==1 and browser.model.row_at(119)['after']==120
     browser.page_size.setCurrentIndex(browser.page_size.findData(1000));browser.load_more();pump(app,lambda:not w.workers)
     assert browser.model.loaded==1120 and browser.model.row_at(1119)['after']==1120
-    browser.sort_clicked(0);pump(app,lambda:not w.workers)
+    browser.sort_clicked(1);pump(app,lambda:not w.workers)
     assert browser.direction=='asc' and browser.model.loaded==1120 and browser.model.row_at(0)['path'].endswith('f0000')
     assert sum(map(len,browser.model.chunks.values()))<=2000
     assert json.loads((home()/'data/ui-settings.json').read_text(encoding='utf-8'))['details/page-size']==1000
@@ -59,7 +59,7 @@ def test_gui_50_then_1000_and_folder_only_scope(gui,isolated):
     totals=[x.text() for x in browser.metrics]
     browser.select_scope(str(branch));pump(app,lambda:not w.workers)
     assert browser.model.total==1201 and browser.model.loaded==1000
-    browser.sort_clicked(0);pump(app,lambda:not w.workers)
+    browser.sort_clicked(1);pump(app,lambda:not w.workers)
     assert all(r['path'].startswith(str(branch)) for page in browser.model.chunks.values() for r in page)
     assert [x.text() for x in browser.metrics]==totals
     browser.recursive.setChecked(False);browser.reload();pump(app,lambda:not w.workers)

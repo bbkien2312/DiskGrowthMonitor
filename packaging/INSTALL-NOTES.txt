@@ -1,4 +1,4 @@
-Disk Growth Monitor 1.2.0 - Windows x64
+Disk Growth Monitor 1.3.0 - Windows x64
 
 Private Python/Qt runtime is bundled under .venv.
 No global Python, pip, System PATH, Task Scheduler job or Windows Service is installed.

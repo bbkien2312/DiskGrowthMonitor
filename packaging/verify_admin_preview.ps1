@@ -3,8 +3,8 @@ param([Parameter(Mandatory=$true)][string]$Installer,
 $ErrorActionPreference='Stop'
 $taskRoot=Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $taskInstaller=[System.IO.Path]::GetFullPath($Installer)
-$taskExpected=Join-Path $taskRoot 'dist\release-v1.2.0\installer.exe'
-if($taskInstaller -ne $taskExpected){throw 'Only the app-owned preview installer may be tested.'}
+$taskExpected=@((Join-Path $taskRoot 'dist\release-v1.2.0\installer.exe'),(Join-Path $taskRoot 'dist\preview-chung-rieng\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.3.0\installer.exe'))
+if($taskInstaller -notin $taskExpected){throw 'Only an explicitly allowed app-owned preview installer may be tested.'}
 if((Get-FileHash -LiteralPath $taskInstaller -Algorithm SHA256).Hash -ne $ExpectedSha256){throw 'Preview checksum changed.'}
 $taskOutput=Split-Path -Parent $taskInstaller
 $taskStatus=Join-Path $taskOutput 'admin-smoke-status.json'

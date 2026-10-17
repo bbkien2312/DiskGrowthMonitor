@@ -74,11 +74,11 @@ def test_column_mouse_drag_independent_and_persisted(gui):
     assert header.sectionSize(1) == neighbor
     w.save_layout()
     stored = json.loads((home() / "data/ui-settings.json").read_text(encoding="utf-8"))
-    assert stored["columns/details-v3"][0] == header.sectionSize(0)
+    assert stored["columns/details-v4"][0] == header.sectionSize(0)
     reopened = Window(); pump(app, lambda: not reopened.workers)
     assert reopened.table.horizontalHeader().sectionSize(0) == header.sectionSize(0)
     reopened.close(); app.processEvents()
-    w.reset_layout(); assert header.sectionSize(0) == 300
+    w.reset_layout(); assert header.sectionSize(0) == 185
 
 
 def test_help_and_packages_and_no_config_write(gui):
@@ -114,7 +114,7 @@ def test_async_compare_clear_baseline_and_positive_delta(gui, isolated):
     w.compare(); pump(app, lambda: not w.workers)
     assert "Cũ:" in w.scan_info.text() and "Lần quét 01" in w.scan_info.text() and "Lần quét 02" in w.scan_info.text()
     index = next(i for i, row in enumerate(w.rows) if row["kind"] == "file")
-    assert w.table.model().data(w.table.model().index(index,1)).startswith("↑ +")
+    assert w.table.model().data(w.table.model().index(index,4)).startswith("↑ +")
 
 
 def test_background_buttons_and_scope_confirmation(gui, monkeypatch):

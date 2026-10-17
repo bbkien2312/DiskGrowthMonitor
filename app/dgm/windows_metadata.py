@@ -2,6 +2,12 @@
 import ctypes
 from ctypes import wintypes
 from functools import lru_cache
+from threading import local
+_diagnostic=local()
+
+
+def allocation_failure():
+    return getattr(_diagnostic,'reason','')
 
 
 class StandardInfo(ctypes.Structure):
@@ -27,15 +33,20 @@ def api():
 
 
 def allocation(path,attrs=0):
+    _diagnostic.reason=''
     if attrs & 0x400:return 0
     create,info,close=api()
     # Attributes only, share read/write/delete, OPEN_EXISTING, no reparse follow
     # or cloud recall. A failed metadata query stays unknown, not logical bytes.
     handle=create(str(path),0x80,7,None,3,0x00200000|0x02000000|0x00100000,None)
-    if handle==ctypes.c_void_p(-1).value:return None
+    if handle==ctypes.c_void_p(-1).value:
+        code=ctypes.get_last_error();_diagnostic.reason=f'CreateFileW: WinError {code}: {ctypes.FormatError(code).strip()}'
+        return None
     try:
         record=CompressionInfo() if attrs & (0x800|0x200) else StandardInfo()
         kind=8 if attrs & (0x800|0x200) else 1
-        if not info(handle,kind,ctypes.byref(record),ctypes.sizeof(record)):return None
+        if not info(handle,kind,ctypes.byref(record),ctypes.sizeof(record)):
+            code=ctypes.get_last_error();_diagnostic.reason=f'GetFileInformationByHandleEx: WinError {code}: {ctypes.FormatError(code).strip()}'
+            return None
         return max(0,record.allocation)
     finally:close(handle)
