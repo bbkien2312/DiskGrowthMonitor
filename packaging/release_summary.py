@@ -19,6 +19,7 @@ def junit(path):
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('installer',type=Path);parser.add_argument('--junit',required=True,type=Path)
     parser.add_argument('--dpi125',required=True,type=Path);parser.add_argument('--dpi150',required=True,type=Path)
+    parser.add_argument('--resume',type=Path,help='Local frozen checkpoint QA; publish aggregate count only')
     args=parser.parse_args();directory=args.installer.resolve().parent
     with args.installer.open('rb') as stream:sha=hashlib.file_digest(stream,'sha256').hexdigest()
     status=json.loads((directory/'admin-smoke-status.json').read_text(encoding='utf-8-sig'))
@@ -34,6 +35,11 @@ def main():
             'automated':junit(args.junit),'dpi125':junit(args.dpi125),'dpi150':junit(args.dpi150),
             'elevated_binary_checks':reports,'fixture_only':True,
             'scope':'Synthetic/isolated D: fixtures only; no real C: scan/cache deletion or production Task/Service changes. No raw JUnit, username or captured drive history is included.'}
+    if args.resume:
+        resume=json.loads(args.resume.read_text(encoding='utf-8'))
+        if resume.get('version')!=__version__ or resume.get('fixture_only') is not True or not resume.get('checks'):
+            raise RuntimeError('Frozen checkpoint QA is not for this version')
+        result['frozen_checkpoint_checks']=len(resume['checks'])
     destination=directory/'test-summary.json';destination.write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
     print(json.dumps(result,ensure_ascii=False,indent=2))
 

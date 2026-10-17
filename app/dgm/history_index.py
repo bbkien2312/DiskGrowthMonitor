@@ -102,7 +102,10 @@ class Index:
             state['owners']=[o for o in state['owners'] if alive(o)]
             new=not (self.index/'history.sqlite').exists()
             from .store import Store
-            store=Store(path=self.index/'history.sqlite')
+            # Opening the catalog must not upgrade a recovered multi-million
+            # path index on the GUI thread. The requested snapshot/comparison
+            # job performs any necessary path-key upgrade later.
+            store=Store(path=self.index/'history.sqlite',migrate_keys=False)
             try:
                 if new:
                     for table in TABLES:restore_rows(store.db,table,catalog.get('tables',{}).get(table,[]))
@@ -140,12 +143,14 @@ class Index:
     def publish_scan(self,db,ident,*,stop=None,notify=None):
         with mutex(self.root):
             path=self.scan_path(ident)
+            catalog=read_json(self.catalog,{'schema':1,'tables':{}})
             if path.exists():
-                catalog=read_json(self.catalog,{'schema':1,'tables':{}})
                 if str(ident) not in catalog.get('logs',{}):
                     report=logs.verify(path);report.update(bytes=path.stat().st_size,file=path.name)
                     catalog.setdefault('logs',{})[str(ident)]=report;write_json(self.catalog,catalog)
                 return
+            if str(ident) in catalog.get('logs',{}):
+                raise ValueError(f'Thiếu log mốc #{ident}; giữ chỉ mục hiện có, không tạo log rỗng thay lịch sử đã lưu')
             scan=dict(db.execute('SELECT * FROM scans WHERE id=?',(ident,)).fetchone())
             ordinal=db.execute('SELECT ordinal FROM scan_numbers WHERE scan_id=?',(ident,)).fetchone()[0]
             fields=','.join('e.'+key for key in logs.FIELDS)

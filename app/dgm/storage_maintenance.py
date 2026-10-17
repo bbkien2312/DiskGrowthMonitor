@@ -170,6 +170,7 @@ def storage_report():
                 if parts[0]=='logs':group='Log'
                 elif parts[1]=='history':group='Lịch sử JSONL nén / metadata'
                 elif parts[1]=='cleanup':group='Metadata đề xuất dọn nén'
+                elif parts[1]=='tasks':group='Điểm tiếp tục / tệp trung gian tác vụ'
                 elif parts[1]=='tmp' and len(parts)>2 and parts[2]=='cleanup-index':group='Chỉ mục đề xuất dọn tạm'
                 elif parts[1]=='tmp' and len(parts)>2 and parts[2]=='history-index':group='Chỉ mục SQLite tạm'
                 elif len(parts)>2 and parts[1]=='updates':

@@ -6,7 +6,7 @@ def normalization(summary):
     info=summary.get('normalization') or {}
     if info.get('version'):
         state={'verified':'đã kiểm chứng','limited':'có giới hạn','needs-source':'cần nguồn','original':'bản gốc'}.get(info.get('state'),'chưa đối chiếu')
-        return f"v{info['version']} • {state}"
+        return f"v{info['version']} • {state}"+(f" • app {info['app_version']}" if info.get('app_version') else '')
     version=summary.get('canonical_normalization_version')
     if version and summary.get('import_complete'):return f'Chuẩn ngay khi nhập v{version}'
     return 'Chuẩn cũ / cần kiểm tra'

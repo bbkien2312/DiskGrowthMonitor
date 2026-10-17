@@ -15,6 +15,7 @@ from pathlib import Path
 from .config import Policy, home, load, normalize, scope_hash
 from .platform_ops import run, is_admin, ProcessCancelled as Cancelled
 from .store import Store
+from .task_journal import tracked,CURRENT
 
 
 class ScanLock:
@@ -164,7 +165,9 @@ def normalize_export_date(text):
 
 def wiztree_entries(policy, config, stop, notify):
     exe = config["engines"]["wiztree"]
-    if not Path(exe).is_file():
+    checkpoint=CURRENT.get()
+    if checkpoint and checkpoint.row['action']!='scan':checkpoint=None
+    if not (checkpoint and checkpoint.row.get('reusing_sources')) and not Path(exe).is_file():
         raise ValueError("Chưa cấu hình executable WizTree")
     work = home() / "data/exports"
     work.mkdir(exist_ok=True)
@@ -173,6 +176,10 @@ def wiztree_entries(policy, config, stop, notify):
             raise Cancelled()
         output = work / f"wiztree-{os.getpid()}-{index}.csv"
         output.unlink(missing_ok=True)
+        checkpoint=CURRENT.get()
+        if checkpoint and checkpoint.row['action']!='scan':checkpoint=None
+        reused=checkpoint.source(index) if checkpoint and checkpoint.row.get('reusing_sources') else None
+        if reused:output=reused
         args = [exe, root, f"/export={output}", "/exportfolders=1", "/exportfiles=1", "/exportalldates=1", "/exportUTCTime=1", "/exportmftrecno=1", "/exportdrivecapacity=1"]
         if policy.p.get("strict_browsers", False):
             raise ValueError("WizTree raw MFT không đáp ứng profile cấm đọc metadata trình duyệt")
@@ -183,13 +190,18 @@ def wiztree_entries(policy, config, stop, notify):
         archived=False;export_ok=False
         try:
             notify("info", {"message": f"WizTree đang xuất dữ liệu: {root} • có thể Dừng quét"})
-            res = run(args, timeout=1800, stop=stop)
-            if res.returncode != 0 or not output.exists():
-                raise RuntimeError(f"WizTree export thất bại: {res.returncode} {res.stderr}")
+            if not reused:
+                res = run(args, timeout=1800, stop=stop)
+                if res.returncode != 0 or not output.exists():
+                    raise RuntimeError(f"WizTree export thất bại: {res.returncode} {res.stderr}")
+                if checkpoint:
+                    from .config import volume_identity
+                    output=checkpoint.adopt_source(index,output,volume_identity(root))
             export_ok=True
             notify("info", {"message": "Đang nhập kết quả WizTree vào lịch sử..."})
             from .config import volume_identity
-            identity_prefix = f"wiz:{volume_identity(root)}:" if policy.p.get("mft", False) else ""
+            volume_id=checkpoint.row['sources'][str(index)].get('volume_id') if checkpoint else volume_identity(root)
+            identity_prefix = f"wiz:{volume_id}:" if policy.p.get("mft", False) else ""
             with output.open(encoding="utf-8-sig", newline="") as f:
                 total_bytes=output.stat().st_size;read_bytes=0
                 def lines():
@@ -298,9 +310,10 @@ def wiztree_entries(policy, config, stop, notify):
                     notify('source-audit',{'root':root,'parse_failed':True,'source':source})
                 except Exception:
                     logging.getLogger('dgm').warning('Không giữ được nguồn CSV sau lỗi nhập',exc_info=True)
-            output.unlink(missing_ok=True)
+            if not checkpoint or output.parent!=checkpoint.root:output.unlink(missing_ok=True)
 
 
+@tracked('scan', ('name', 'p'))
 def scan(name, p, stop=None, notify=None, *, allow_uac=True):
     from .logging_utils import setup
     cfg = load()
@@ -308,9 +321,14 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
     stop, external_notify = stop or threading.Event(), notify or (lambda *a: None)
     requested = p.get("engine", "native")
     engine = requested
+    saved_task=CURRENT.get()
+    saved_task=saved_task if saved_task and saved_task.row['action']=='scan' else None
+    saved_sources=(saved_task.row.get('sources') or {}) if saved_task else {}
+    reusable_source=bool(saved_task and (saved_task.row.get('capture') or
+        (len(saved_sources)==len(p.get('roots',[])) and all(str(i) in saved_sources for i in range(len(p.get('roots',[])))))))
     if p.get("strict_browsers", False) and engine != "native":
         raise ValueError("Không đọc/quét Chrome/Edge yêu cầu công cụ native. Chọn native rõ ràng; app không tự đổi engine.")
-    if engine == "wiztree" and p.get("mft", False) and not is_admin():
+    if engine == "wiztree" and p.get("mft", False) and not is_admin() and not reusable_source:
         if not allow_uac:raise PermissionError('Quét MFT chạy nền cần quyền Admin; cài/bật Task hoặc Service bằng Admin. Không mở UAC trong lịch nền.')
         from .elevation import request,ElevationCancelled
         try:return request('scan',{'name':name,'profile':p},stop,external_notify)
@@ -319,6 +337,27 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
     if engine not in ("native", "wiztree", "windirstat", "gdu"):
         raise ValueError("Engine không hợp lệ")
     policy = Policy(p)
+    checkpoint=CURRENT.get()
+    if checkpoint and checkpoint.row['action']!='scan':checkpoint=None
+    captured_header=None
+    if checkpoint and checkpoint.row.get('capture'):
+        from . import history_logs
+        path=checkpoint.artifact('capture.jsonl.gz')
+        import hashlib
+        with path.open('rb') as stream:
+            if hashlib.file_digest(stream,'sha256').hexdigest()!=checkpoint.row['capture'].get('artifact_sha256'):
+                raise ValueError('Checksum tệp checkpoint không khớp; không dùng dữ liệu hỏng.')
+        verified=history_logs.verify(path,stop=stop)
+        if any(verified[k]!=checkpoint.row['capture'][k] for k in ('sha256','records')):
+            raise ValueError('Checkpoint metadata không khớp; giữ lịch sử, không dùng dữ liệu hỏng.')
+        captured_header=next(history_logs.read(path,stop=stop))[1]
+        if captured_header['profile']!=p or captured_header['name']!=name:
+            raise ValueError('Phạm vi checkpoint đã đổi; chọn Quét mới.')
+    elif checkpoint:
+        sources=checkpoint.row.get('sources',{})
+        ready=engine=='wiztree' and len(sources)==len(policy.roots) and all(str(i) in sources for i in range(len(policy.roots)))
+        if sources and not ready:checkpoint.remove_sources()
+        checkpoint.save(reusing_sources=ready)
     from .storage_safety import SpaceGuard
     disk_guard=SpaceGuard(256_000_000,operation='ghi lịch sử quét')
     from .storage_metrics import begin as begin_storage, finish as finish_storage
@@ -340,6 +379,25 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
             'strict_browsers':p.get('strict_browsers',False),'implicit_excludes':[str(ROOT)],
             'volumes':sorted({volume_identity(r) for r in policy.roots})}
         summary['scan_method']={'engine':engine,'mft':bool(engine=='wiztree' and p.get('mft')),'admin':is_admin()}
+        from . import __version__
+        summary['provenance']={'app_version':__version__,'data_contract':describe(engine)['version'],
+            'normalization_version':__import__('dgm.normalization',fromlist=['VERSION']).VERSION}
+        reused_sources=bool(checkpoint and checkpoint.row.get('reusing_sources'))
+        if reused_sources:
+            context=checkpoint.row.get('scan_context')
+            if not context:raise ValueError('Tệp xuất thiếu thời điểm/phạm vi nguồn; chọn Quét mới.')
+            summary.update(context['summary'])
+            summary.update(files=0,folders=0,phase='preparing',source_scan=context['source_scan'],
+                captured_at=context['started'],resumed=True,processed_by_app=__version__)
+            store.db.execute('UPDATE scans SET started=? WHERE id=?',(context['started'],scan_id));store.db.commit()
+        elif checkpoint and not captured_header:
+            checkpoint.save(scan_context={'started':store.db.execute('SELECT started FROM scans WHERE id=?',(scan_id,)).fetchone()[0],
+                'source_scan':scan_id,'summary':json.loads(json.dumps(summary))})
+        if captured_header:
+            summary.update(captured_header['summary'])
+            summary.update(files=0,folders=0,phase='preparing',source_scan=captured_header['scan_id'],
+                captured_at=captured_header['captured_at'],resumed=True,processed_by_app=__version__)
+            store.db.execute('UPDATE scans SET started=? WHERE id=?',(captured_header['captured_at'],scan_id));store.db.commit()
         last_log = [0.0]
         def notify(event, data):
             if event=='source-audit':
@@ -353,6 +411,8 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
             elif event == "progress" and time.monotonic() - last_log[0] > 2:
                 logging.getLogger("dgm").debug("SCAN %s progress %s", scan_id, data); last_log[0] = time.monotonic()
             external_notify(event, data)
+            if event=='metadata-progress' and summary['phase']=='checkpoint':
+                task.advance(data['records'],summary['files']+summary['folders'],f"Đã lưu {data['records']:,} bản ghi để tiếp tục")
             if event=='progress':
                 detail=f"{data.get('count',0):,}"+(f"/{data['total']:,}" if data.get('total') else '')+' mục • '+str(data.get('path',''))
                 if summary['phase']=='importing':
@@ -360,7 +420,8 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
                 elif summary['phase']=='aggregating':task.advance(data.get('count',0),data.get('total'),detail)
         from .progress import TaskProgress
         task=TaskProgress('scan',external_notify,[('prepare','Chuẩn bị lịch sử quét',10),
-            ('collect','Đọc và nhập file/thư mục',65),('totals','Tổng hợp dung lượng thư mục',92),('save','Lưu snapshot và số đo data/log',100)])
+            ('collect','Đọc và nhập file/thư mục',60),('checkpoint','Lưu và kiểm tra điểm tiếp tục',70),
+            ('totals','Tổng hợp dung lượng thư mục',92),('save','Lưu snapshot và số đo data/log',100)])
         notify("started", {"scan_id": scan_id, "engine": engine})
         logging.getLogger("dgm").info("SCAN %s %s %s", scan_id, name, engine)
         status = "complete"
@@ -379,7 +440,16 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
             factories = {"wiztree": wiztree_entries, "windirstat": windirstat_entries, "gdu": gdu_entries}
             summary["phase"] = "importing"
             task.stage('collect',f'Công cụ: {engine}; đang đọc danh sách mục')
-            iterator = native_entries(policy, store, scan_id, stop, notify) if engine == "native" else factories[engine](policy, cfg, stop, notify)
+            if captured_header:
+                def captured_entries():
+                    for record_kind,value in history_logs.read(path,stop=stop):
+                        if record_kind!='record':continue
+                        if isinstance(value,dict) and 'error' in value:store.error(scan_id,*value['error'])
+                        elif isinstance(value,list):yield dict(zip(captured_header['columns'],value))
+                iterator=captured_entries()
+                notify('info',{'message':'Tiếp tục xử lý metadata đã chụp; không quét lại ổ, giữ thời điểm mốc nguồn.'})
+            else:
+                iterator = native_entries(policy, store, scan_id, stop, notify) if engine == "native" else factories[engine](policy, cfg, stop, notify)
             for entry in iterator:
                 if stop.is_set():
                     raise Cancelled()
@@ -401,8 +471,25 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
             task.complete(f"Đã nhập {summary['files']:,} file và {summary['folders']:,} thư mục/liên kết")
             summary['timings']['collect_import_seconds']=round(time.perf_counter()-collect_started,4)
             totals_started=time.perf_counter()
-            summary["import_complete"] = True; summary["phase"] = "aggregating"
+            summary["import_complete"] = True; summary["phase"] = "checkpoint"
             store.record_stage(scan_id, summary)
+            task.stage('checkpoint')
+            if not captured_header:
+                for root in policy.roots:
+                    if reused_sources:
+                        overview=summary.get('root_overview',{}).get(root,{})
+                        if all(overview.get(k) is not None for k in ('export_capacity','export_free','export_used')):
+                            summary['volumes'][Path(root).anchor or root]={'total':overview['export_capacity'],
+                                'free':overview['export_free'],'used':overview['export_used']}
+                        continue
+                    try:
+                        d=shutil.disk_usage(root)
+                        summary['volumes'][Path(root).anchor or root]={'total':d.total,'free':d.free,'used':d.used}
+                    except OSError:pass
+                summary['captured_at']=store.db.execute('SELECT started FROM scans WHERE id=?',(scan_id,)).fetchone()[0]
+                if checkpoint:checkpoint.capture(store,scan_id,summary,name,p,stop,notify)
+            task.complete('Đã lưu và kiểm tra metadata để tiếp tục; không sao lưu nội dung file')
+            summary['phase']='aggregating';store.record_stage(scan_id,summary)
             task.stage('totals')
             store.db.set_progress_handler(lambda: int(stop.is_set()) or disk_guard.progress(), 1000)
             notify("info", {"message": "Đối chiếu tổng thư mục một lần lúc nhập theo chuẩn chung; giữ tổng export gốc để đối chiếu."})
@@ -430,13 +517,17 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
                 )
             if coverage_reasons:
                 summary["coverage_note"] = " ".join(coverage_reasons)
-            for root in policy.roots:
+            for root in ([] if captured_header or reused_sources else policy.roots):
                 try:
                     d = shutil.disk_usage(root)
                     summary["volumes"][Path(root).anchor or root] = {"total": d.total, "free": d.free, "used": d.used}
                 except OSError:
                     pass
             summary.update(store.totals(scan_id))
+            from .measurements import reconciliation
+            summary['disk_reconciliation']=reconciliation(summary,p['roots'])
+            for item in summary['disk_reconciliation']:
+                if item['warning']:summary.setdefault('data_warnings',[]).append(item['warning'])
             summary['identity_unique_logical_estimate']=None if summary['logical'] is None else summary['logical']-summary['hardlinks']['repeated_logical']
             summary['identity_unknown_files']=summary['files']-summary['hardlinks']['identified_paths']
             if summary.get('ingestion_audit'):

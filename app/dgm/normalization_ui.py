@@ -9,6 +9,7 @@ from .presentation import size,display_json
 class NormalizationDialog(QDialog):
     def __init__(self,panel,scan_ids):
         super().__init__(panel);self.panel=panel;self.owner=panel.owner;self.ids=list(scan_ids);self.reports=[];self.worker=None
+        self.closing_after_stop=False
         self.setWindowTitle('Kiểm tra & chuẩn hóa lịch sử — giữ nguyên bản gốc');self.resize(1120,650)
         layout=QVBoxLayout(self)
         label=QLabel(f'{len(self.ids)} lượt đã chọn. Kiểm tra trước → xem trước/sau → Áp dụng. Không đọc lại file trên ổ.\n'
@@ -65,6 +66,7 @@ class NormalizationDialog(QDialog):
     def job_finished(self):
         self.worker=None;self.preview_button.setEnabled(True);self.restore_button.setEnabled(True);self.stop_button.setEnabled(False)
         self.apply_button.setEnabled(len(self.reports)==len(self.ids) and bool(self.reports) and not any(r['applied'] for r in self.reports))
+        if self.closing_after_stop:self.accept()
 
     def preview(self):self.run(False)
 
@@ -89,5 +91,8 @@ class NormalizationDialog(QDialog):
 
     def closeEvent(self,event):
         if self.worker:
-            self.stop();event.ignore()
+            event.ignore()
+            if self.closing_after_stop:return
+            if QMessageBox.question(self,'Đang chuẩn hóa','Dừng an toàn, lưu điểm tiếp tục vào Nhật ký rồi đóng cửa sổ này? App vẫn mở; lượt hoàn thành được giữ, bước đang dở hoàn tác.')==QMessageBox.StandardButton.Yes:
+                self.closing_after_stop=True;self.stop()
         else:super().closeEvent(event)

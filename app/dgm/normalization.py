@@ -15,6 +15,7 @@ from pathlib import Path
 from .config import home, comparison_path_key
 from .platform_ops import ProcessCancelled
 from .store import now
+from .task_journal import tracked
 
 VERSION = 2
 FIELDS = ('kind', 'logical', 'allocated', 'created', 'modified', 'identity', 'attrs', 'status')
@@ -48,7 +49,8 @@ def effective_rows(rows, history_path=None):
                 totals = json.loads(original or '{}')
                 totals.update(report['after'])
                 totals['normalization'] = {'version': VERSION, 'dataset_id': item[3], 'state': report['state'],
-                                           'warnings': report['warnings']}
+                                           'warnings': report['warnings'],
+                                           'app_version':report.get('processing_provenance',{}).get('app_version')}
                 row['raw_summary'] = original
                 row['summary'] = json.dumps(totals, ensure_ascii=False)
         return rows
@@ -104,6 +106,7 @@ class Normalizations:
         if result and log_mode():manager().load_normalization(self.db,result['id'])
         return result
 
+    @tracked('normalization', ('scan_id', 'apply', 'force'))
     def inspect(self, scan_id, *, apply=False, force=False):
         from .history_backend import snapshots
         with snapshots([scan_id],stop=self.stop,notify=self.notify):return self._inspect_loaded(scan_id,apply=apply,force=force)
@@ -142,12 +145,16 @@ class Normalizations:
             totals={k:original.get(k,0) for k in ('logical','allocated','files','folders','links')}
             for key in ('identity_unique_logical_estimate','identity_unknown_files'):
                 if key in original:totals[key]=original[key]
-            fields=('allocated_known','allocated_unknown_files','logical_unknown_files')
+            fields=('allocated_known','allocated_unknown_files','logical_unknown_files','small_files','small_logical','small_allocated')
             if all(k in original for k in fields):totals.update({k:original[k] for k in fields})
             else:
                 totals.update(dict(self.db.execute('''SELECT COALESCE(SUM(r.allocated),0) allocated_known,
                   COUNT(CASE WHEN r.allocated IS NULL THEN 1 END) allocated_unknown_files,
-                  COUNT(CASE WHEN r.logical IS NULL THEN 1 END) logical_unknown_files
+                  COUNT(CASE WHEN r.logical IS NULL THEN 1 END) logical_unknown_files,
+                  COALESCE(SUM(r.logical<=10000000),0) small_files,
+                  COALESCE(SUM(CASE WHEN r.logical<=10000000 THEN r.logical ELSE 0 END),0) small_logical,
+                  CASE WHEN SUM(r.logical<=10000000 AND r.allocated IS NULL)>0 THEN NULL ELSE
+                    COALESCE(SUM(CASE WHEN r.logical<=10000000 THEN r.allocated ELSE 0 END),0) END small_allocated
                   FROM source.members m JOIN source.revisions r ON r.id=m.revision_id
                   WHERE m.scan_id=? AND r.kind='file' ''',(scan_id,)).fetchone()))
             status_upgrades=self.db.execute("SELECT COUNT(*) FROM source.members m JOIN source.revisions r ON r.id=m.revision_id WHERE m.scan_id=? AND r.kind='file' AND r.allocated IS NULL AND r.status='ok'",(scan_id,)).fetchone()[0] if original.get('canonical_normalization_version',0)<2 else 0
@@ -159,6 +166,7 @@ class Normalizations:
                 'stored_summary':original,'changed_rows':status_upgrades,'metadata_status_upgrade':bool(status_upgrades),'warnings':warnings,'state':'limited' if warnings else 'verified',
                 'applied':bool(apply),'source_preserved':True,'seconds':round(time.perf_counter()-started,3),
                 'verified_on_ingestion':True,'estimated_overlay_bytes':status_upgrades*160}
+            self.report_metadata(report,scan)
             if apply:self._publish(scan_id,report,storage_meter,copy_overrides=False)
             task.finish('Đã đọc chuẩn hóa được thực hiện lúc quét; không tính lại file/thư mục')
             return report
@@ -253,9 +261,17 @@ class Normalizations:
         # Preview stays in TEMP only. Applying publishes a complete overlay in a
         # single transaction; interruption cannot leave half-normalized history.
         self.db.commit()
+        self.report_metadata(report,scan)
         if apply:self._publish(scan_id,report,storage_meter)
         task.finish(f"{'Đã lưu lớp chuẩn hóa' if apply else 'Đã kiểm tra, chưa thay đổi lớp đang dùng'} • {changed:,} mục khác bản gốc")
         return report
+
+    @staticmethod
+    def report_metadata(report,scan):
+        from . import __version__
+        from .measurements import reconciliation
+        report['processing_provenance']={'app_version':__version__,'normalization_version':VERSION}
+        report['disk_reconciliation']=reconciliation({**report['stored_summary'],**report['after']},json.loads(scan['config'])['roots'])
 
     def _publish(self,scan_id,report,storage_meter,*,copy_overrides=True):
         from .storage_metrics import finish as finish_storage
@@ -293,7 +309,12 @@ class Normalizations:
           COALESCE(SUM(CASE WHEN kind='file' THEN allocated ELSE 0 END),0) AS allocated_known,
           COALESCE(SUM(kind='file' AND allocated IS NULL),0) AS allocated_unknown_files,
           COALESCE(SUM(kind='file' AND logical IS NULL),0) AS logical_unknown_files,
-          COALESCE(SUM(kind='file' AND identity=''),0) AS identity_unknown_files FROM work''').fetchone())
+          COALESCE(SUM(kind='file' AND identity=''),0) AS identity_unknown_files,
+          COALESCE(SUM(kind='file' AND logical<=10000000),0) AS small_files,
+          COALESCE(SUM(CASE WHEN kind='file' AND logical<=10000000 THEN logical ELSE 0 END),0) AS small_logical,
+          CASE WHEN SUM(kind='file' AND logical<=10000000 AND allocated IS NULL)>0 THEN NULL
+          ELSE COALESCE(SUM(CASE WHEN kind='file' AND logical<=10000000 THEN allocated ELSE 0 END),0) END small_allocated
+          FROM work''').fetchone())
 
     def restore(self, scan_ids):
         with _lock:

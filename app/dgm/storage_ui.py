@@ -126,26 +126,34 @@ class StoragePanel(QGroupBox):
             QMessageBox.StandardButton.Cancel)!=QMessageBox.StandardButton.Yes:return
         def done(result):
             self.owner.status.setText(f"Đã thu hồi SQLite cũ {size(result['removed_bytes'])}; log giữ nguyên.");self.refresh()
-        self.run(lambda _:retire_legacy(),done)
+        self.run(lambda worker:retire_legacy(stop=worker.stop,notify=worker.event.emit),done)
 
     def cancel_migration(self):
         if self.worker:self.worker.stop.set();self.cancel_migration_button.setEnabled(False)
 
-    def migrate(self):
+    def migrate(self,automatic=False):
         if not self.idle():return
         from .history_migration import migrate
-        if QMessageBox.question(self,'Chuyển lịch sử metadata sang JSONL',
+        if not automatic and QMessageBox.question(self,'Chuyển lịch sử metadata sang JSONL',
             'Ghi log JSONL nén chứa đường dẫn/dung lượng/thời gian/trạng thái, không chứa nội dung file. '
-            'Đọc lại và xác minh số bản ghi/checksum trước khi bỏ SQLite cũ, CSV nguồn và backup cập nhật đã hoàn tất (lượt lỗi được giữ). '
+            'Đọc lại và xác minh số bản ghi/checksum trước khi bỏ đúng SQLite nguồn cũ. CSV và backup không bị xóa trong bước này. '
             'Giữ mốc quét và tóm tắt so sánh, không xóa file đã quét; '
             'có thể mất thời gian với hàng triệu mục. Tiếp tục chuyển và thu hồi SQLite cũ?',
             QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.Cancel,QMessageBox.StandardButton.Cancel)!=QMessageBox.StandardButton.Yes:return
+        if automatic:
+            self.owner.tabs.setCurrentIndex(1);self.owner.system_tabs.setCurrentIndex(2)
         self.owner.app_update_panel.pause_other_actions(True)
         self.setEnabled(True);self.cancel_migration_button.show();self.cancel_migration_button.setEnabled(True)
         def done(result):
             self.owner.browser.cache_cleared()
-            self.owner.status.setText(f"Đã chuyển {result['scans']} mốc sang JSONL, xác minh {result['records']:,} bản ghi; "
-                f"log {size(result['log_bytes'])}, thu hồi SQLite {size(result['legacy_removed_bytes'])}.")
+            prefix='Đã là JSONL, không chuyển lại' if result.get('already_converted') else f"Đã chuyển và xác minh {result['scans']} mốc / {result['records']:,} bản ghi"
+            pending=result.get('legacy_cleanup',{}).get('pending')
+            self.owner.status.setText(prefix+f"; log {size(result['log_bytes'])}, thu hồi SQLite {size(result['legacy_removed_bytes'])}."+
+                (' SQLite chưa thu hồi được vẫn giữ nguyên; xem Dung lượng app.' if pending else ''))
+            self.owner.starting_up=True
+            try:
+                self.owner.refresh_history();self.owner.browser.show_saved_overview()
+            finally:self.owner.starting_up=False
             self.owner.history_panel.refresh();self.refresh()
         self.run(lambda worker:migrate(remove_old=True,stop=worker.stop,notify=worker.event.emit),done)
         def restored():

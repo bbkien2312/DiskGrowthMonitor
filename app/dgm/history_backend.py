@@ -5,10 +5,45 @@ from .config import home,load
 
 def log_mode():
     if (home()/'data/history/catalog.json').exists():return True
-    choice=load().get('history_format')
-    if choice=='sqlite':return False
-    if choice=='jsonl':return True
-    return not (home()/'data/history.sqlite').exists()
+    # Selecting JSONL is a request to convert, not permission to hide existing
+    # SQLite history behind a newly created empty catalog.
+    if (home()/'data/history.sqlite').exists():return False
+    return load().get('history_format')!='sqlite'
+
+
+def comparison_history():
+    """Read summaries only; never migrate schemas or load snapshot records."""
+    if log_mode():
+        from .history_index import read_json
+        records=read_json(home()/'data/history/catalog.json',{}).get('comparisons',[])
+        # Catalog summaries survive exit, detailed rows do not. Do not claim
+        # that a released temporary index is still ready to serve pages.
+        import sqlite3
+        path=home()/'data/tmp/history-index/comparisons.sqlite';states={}
+        if path.exists():
+            db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=1)
+            try:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='pairs' AND type='table'").fetchone():
+                    states=dict(db.execute('SELECT id,status FROM pairs'))
+            except sqlite3.OperationalError:
+                pass  # An unavailable disposable cache does not hide summaries.
+            finally:db.close()
+        records=[{**row,'status':states.get(row['id'],'archived') if row.get('status')=='ready' else row.get('status')} for row in records]
+    else:
+        import sqlite3
+        path=home()/'data/comparisons.sqlite'
+        if not path.exists():return []
+        db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=30)
+        db.row_factory=sqlite3.Row
+        try:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='pairs' AND type='table'").fetchone():return []
+            records=[dict(row) for row in db.execute('SELECT * FROM pairs')]
+        finally:db.close()
+    latest={}
+    for row in records:
+        key=(row.get('older') or 0,row['newer'])
+        if key not in latest or row['id']>latest[key]['id']:latest[key]=row
+    return sorted(latest.values(),key=lambda row:row['id'],reverse=True)
 
 
 def database_path(name,*,create=True):

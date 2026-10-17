@@ -37,7 +37,9 @@ def test_run_cancels_only_owned_process_tree(isolated):
         stop.set(); worker.join(timeout=4)
         assert not worker.is_alive()
         assert len(errors) == 1 and isinstance(errors[0], ProcessCancelled)
-        assert not process.is_running() or process.status() == psutil.STATUS_ZOMBIE
+        # The process can exit between is_running() and status() on Windows.
+        gone,alive=psutil.wait_procs([process],timeout=2)
+        assert not alive
         assert sentinel.poll() is None
     finally:
         stop.set(); worker.join(timeout=4)

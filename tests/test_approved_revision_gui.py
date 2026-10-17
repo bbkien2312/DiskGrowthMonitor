@@ -27,7 +27,9 @@ def test_legacy_index_upgrade_never_blocks_gui_construction(isolated,monkeypatch
     try:
         pump(app,lambda:not w.workers)
         assert not errors,errors
-        assert threads and w.history_panel.loaded
+        assert not threads and w.history_panel.loaded  # Metadata-only startup.
+        w.compare();pump(app,lambda:not w.workers)
+        assert threads and not errors  # Requested upgrade is still off the UI thread.
     finally:
         for worker in w.workers:worker.stop.set()
         pump(app,lambda:not w.workers);w.close();app.processEvents()

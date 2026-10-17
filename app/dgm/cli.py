@@ -13,6 +13,7 @@ files = typer.Typer(help="Thao tác file/thư mục")
 ai = typer.Typer(help="Tạo câu hỏi và mở AI web")
 app_updates = typer.Typer(help='Kiểm tra/tải/cài bản app chính thức; không dùng pip hoặc ghi đè source')
 storage_app=typer.Typer(help='Dung lượng riêng của app: xem trước, dọn backup/installer, thu gọn cache; không tự xóa lịch sử')
+tasks_app=typer.Typer(help='Điểm tiếp tục tác vụ; không tự phát lại thao tác xóa')
 app.add_typer(profiles, name="profile")
 app.add_typer(cleanup_app, name="cleanup")
 app.add_typer(schedules, name="schedule")
@@ -20,6 +21,40 @@ app.add_typer(files, name="file")
 app.add_typer(ai, name="ai")
 app.add_typer(app_updates, name='app-update')
 app.add_typer(storage_app,name='storage')
+app.add_typer(tasks_app,name='tasks')
+
+
+@tasks_app.command('list')
+def tasks_list(all:bool=False):
+    from .task_journal import list_tasks
+    output(list_tasks(all))
+
+
+@tasks_app.command('limit')
+def tasks_limit(megabytes:int):
+    if not 1<=megabytes<=100000:raise typer.BadParameter('Giới hạn từ 1 đến 100000 MB')
+    from .config import load,save
+    cfg=load();cfg['resume_limit_mb']=megabytes;save(cfg);output({'resume_limit_mb':megabytes})
+
+
+@tasks_app.command('show')
+def tasks_show(ident:str):
+    from .task_journal import read
+    output(read(ident))
+
+
+@tasks_app.command('resume')
+def tasks_resume(ident:str):
+    from .task_journal import resume
+    output(resume(ident,notify=admin_progress))
+
+
+@tasks_app.command('discard')
+def tasks_discard(ident:str,yes:bool=typer.Option(False,'--yes')):
+    from .task_journal import discard
+    if not yes and not typer.confirm('Bỏ điểm tiếp tục và tệp trung gian riêng của tác vụ? Không xóa lịch sử hay file đã quét.'):
+        raise typer.Exit()
+    discard(ident);output({'discarded':ident,'history_preserved':True})
 
 
 @storage_app.command('report')
@@ -57,10 +92,13 @@ def storage_clear_index(yes:bool=typer.Option(False,'--yes')):
 
 
 @storage_app.command('migrate-history')
-def storage_migrate_history(yes:bool=typer.Option(False,'--yes'),retire_old:bool=typer.Option(False,'--retire-old',help='Sau xác minh, dọn SQLite cũ, CSV nguồn và backup cập nhật hoàn tất; giữ log metadata.')):
+def storage_migrate_history(yes:bool=typer.Option(False,'--yes'),retire_old:bool=typer.Option(False,'--retire-old',help='Sau xác minh, chỉ thu hồi SQLite nguồn cũ; giữ JSONL, CSV và backup.')):
     from .history_migration import preview,migrate
+    from .config import home
     plan=preview()
-    if not plan['needed']:output(plan);return
+    if not plan['needed'] and not retire_old:output(plan);return
+    if not plan['needed'] and not (home()/'data/history/catalog.json').exists():
+        output(plan);return
     if not yes:output(plan)
     if not yes and not typer.confirm('Chuyển lịch sử metadata sang JSONL nén, xác minh trước khi bỏ nguồn SQLite cũ?'):
         raise typer.Exit()
@@ -72,7 +110,7 @@ def storage_retire_legacy(yes:bool=typer.Option(False,'--yes')):
     from .history_migration import retire_legacy
     if not yes and not typer.confirm('Xác minh lại các log và bỏ đúng SQLite cũ không thay đổi?'):
         raise typer.Exit()
-    output(retire_legacy())
+    output(retire_legacy(notify=admin_progress))
 
 
 def output(data):

@@ -98,7 +98,8 @@ def scan_label(row):
     import json
     summary = json.loads(row.get("summary") or "{}")
     from .snapshot_scope import option_label
-    return f"{scan_name(row)} • {option_label(row)} • {local_time(row['started'])} • {row['engine']}" + (" • phục hồi" if summary.get("recovered") else "")
+    from .measurements import provenance
+    return f"{scan_name(row)} • {option_label(row)} • {local_time(row['started'])} • {row['engine']} • {provenance(summary)}" + (" • phục hồi" if summary.get("recovered") else "")
 
 
 def change_text(delta):

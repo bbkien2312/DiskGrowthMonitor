@@ -138,6 +138,19 @@ class Presence:
             overview['verified_'+group+'_delta']=totals[0] if self.has_older else None
             overview['unverified_'+group+'_files']=totals[1] or 0
         overview['verified_delta']=overview['verified_all_delta']
+        self.db.execute('DROP TABLE IF EXISTS temp.allocation_unknown')
+        self.db.execute('CREATE TEMP TABLE allocation_unknown AS SELECT DISTINCT path_key FROM measured_changes WHERE allocated IS NULL')
+        self.db.execute('CREATE UNIQUE INDEX temp.allocation_unknown_key ON allocation_unknown(path_key)')
+        for group,condition in (('common','shared'),('private','NOT shared'),('all','1')):
+            values=self.db.execute(f'''SELECT
+              COALESCE(SUM(CASE WHEN known AND u.path_key IS NULL THEN allocated ELSE 0 END),0),
+              COUNT(DISTINCT CASE WHEN NOT known OR u.path_key IS NOT NULL THEN m.path_key END),
+              COUNT(DISTINCT m.path_key) FROM measured_changes m LEFT JOIN allocation_unknown u ON u.path_key=m.path_key WHERE {condition}''').fetchone()
+            overview['verified_'+group+'_allocated_delta']=None if not self.has_older or (values[2] and values[1]>=values[2]) else values[0]
+            overview['unverified_'+group+'_allocated_files']=values[1]
+        from .measurements import partition_checks,reconciliation
+        overview['measurement_checks']=partition_checks(overview)
+        overview['disk_reconciliation']=reconciliation(overview['full_new_totals'],json.loads(overview['newer']['config'])['roots'])
         overview['counts']=overview['all_counts'];overview['rows']=overview['all_rows']
         overview['private_reasons']=[dict(r) for r in self.db.execute("SELECT reason,COUNT(*) count FROM diff_rows WHERE pair_id=? AND presence<>'both' AND kind='file' GROUP BY reason",(pair,))]
 

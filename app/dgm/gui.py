@@ -65,10 +65,12 @@ class Worker(QThread):
 
 
 class Window(QMainWindow):
+    closed=Signal()
     def __init__(self):
         from .branding import application_icon, set_taskbar_identity
         set_taskbar_identity()
         super().__init__()
+        self.starting_up=True
         icon=application_icon();QApplication.instance().setWindowIcon(icon);self.setWindowIcon(icon)
         # Large legacy path indexes are upgraded by cancellable background jobs,
         # not before the first window can be painted.
@@ -85,6 +87,7 @@ class Window(QMainWindow):
         self.setMinimumSize(min(640,max(320,screen.width()-24)),min(480,max(240,screen.height()-48)))
         self.resize(min(1440,screen.width()-24),min(940,screen.height()-48))
         self.workers = []
+        self.closing_after_stop=False
         self.scan_worker = None
         self.progress_worker=None;self.task_progress_id=None;self._scan_ui_busy=False;self.last_scan_brief=''
         self.admin_busy=False;self.admin_worker=None;self.system_check_buttons=[];self.cleanup_action_buttons=[]
@@ -174,6 +177,16 @@ class Window(QMainWindow):
         self.refresh_background()
         from .conditional_tooltips import install_tooltips
         self.conditional_tooltips=install_tooltips(self)
+        self.starting_up=False
+        self.startup_history_timer=QTimer(self);self.startup_history_timer.setSingleShot(True)
+        self.startup_history_timer.timeout.connect(self.startup_history_maintenance);self.startup_history_timer.start(0)
+
+    def startup_history_maintenance(self):
+        from .history_migration import automatic_needed
+        if self.closing_after_stop or not automatic_needed():return
+        if self.workers or self.admin_busy or self.background_action_busy:
+            self.startup_history_timer.start(100);return
+        self.storage_panel.migrate(automatic=True)
 
     def bring_to_front(self):
         # Hidden/maximized windows retain their previous state. One handler is
@@ -235,6 +248,7 @@ class Window(QMainWindow):
         worker.event.connect(event_message)
         worker.error.connect(lambda msg: self.fail(msg))
         def result(value):
+            if self.closing_after_stop:return
             try:
                 (done or (lambda v: self.show_text(v)))(value)
             except Exception as exc:
@@ -248,6 +262,8 @@ class Window(QMainWindow):
                 self.scan_worker = None
                 self.set_scan_busy(False)
             worker.deleteLater()
+            if self.closing_after_stop and not any(w.isRunning() for w in self.workers):
+                QTimer.singleShot(0,self.close)
         worker.finished.connect(finished)
         if scan_job:
             self.scan_worker = worker
@@ -261,7 +277,7 @@ class Window(QMainWindow):
         self.status.setText("Lỗi: " + message.splitlines()[0])
         if self.scan_worker is not None:
             self.scan_progress.setRange(0, 100); self.scan_progress.setFormat('%p% • Lỗi ở bước hiện tại')
-        QMessageBox.warning(self, "Không hoàn tất", message)
+        if not self.closing_after_stop:QMessageBox.warning(self, "Không hoàn tất", message)
 
     def set_scan_busy(self, busy):
         blocked=busy or self.admin_busy
@@ -425,7 +441,7 @@ class Window(QMainWindow):
         self.threshold = QDoubleSpinBox(); self.threshold.setRange(0, 1000000); self.threshold.setValue(10); self.threshold.setSuffix(" MB")
         self.threshold.setDecimals(0)
         self.threshold.setFixedWidth(90);toolrow.setSpacing(6)
-        toolrow.addWidget(QLabel("File >")); toolrow.addWidget(self.threshold)
+        toolrow.addWidget(QLabel("Hiện file >")); toolrow.addWidget(self.threshold)
         toolrow.addWidget(QLabel("Loại trừ thêm"));toolrow.addWidget(self.excludes,1)
         expand=self.button('',self.edit_excludes,toolrow);expand.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown));expand.setToolTip('Mở rộng danh sách loại trừ, mỗi dòng một đường dẫn / glob')
         self.threshold.setToolTip("Chỉ lọc file trong bảng. Vẫn lưu metadata file nhỏ để tính tổng thư mục và phát hiện file tăng vượt ngưỡng.")
@@ -496,7 +512,8 @@ class Window(QMainWindow):
         self.loaded_profile = name; self.loaded_values = self.edited_profile()
         self.update_scope_note()
         self.refresh_history()
-        self.compare()
+        if self.starting_up:self.browser.show_saved_overview()
+        else:self.compare()
 
     def profile_dirty(self):
         try:
@@ -651,8 +668,8 @@ class Window(QMainWindow):
         row = s.db.execute("SELECT id,status FROM scans ORDER BY id DESC LIMIT 1").fetchone(); s.close()
         return (row[0], row[1]) if row else (0, "")
 
-    def refresh_history(self):
-        self.browser.refresh(self.profile_combo.currentText())
+    def refresh_history(self, *, load_tree=True):
+        self.browser.refresh(self.profile_combo.currentText(),load_tree=load_tree and not self.starting_up)
         if hasattr(self,'history_panel'):self.history_panel.invalidate()
 
     def swap_snapshots(self):
@@ -1281,8 +1298,17 @@ class Window(QMainWindow):
 
     def closeEvent(self, event):
         if any(w.isRunning() for w in self.workers):
-            self.status.setText("Đang có tác vụ; dừng quét và chờ hoàn tất trước khi thoát.")
             event.ignore()
+            if self.closing_after_stop:return
+            choice=self.ask_close_tasks()
+            if choice=='tray':
+                self.hide();self.tray.showMessage('App vẫn đang chạy','Tác vụ tiếp tục; nhấp biểu tượng khay để mở app.')
+            elif choice=='stop':
+                self.closing_after_stop=True
+                self.centralWidget().setEnabled(False)
+                for timer in self.findChildren(QTimer):timer.stop()
+                for worker in list(self.workers):worker.stop.set()
+                self.status.setText('Đang dừng an toàn và lưu điểm tiếp tục; app sẽ tự thoát khi xong. DISM/bước cài không bị cưỡng bức ngắt.')
             return
         self.tray.hide()
         for timer in self.findChildren(QTimer):timer.stop()
@@ -1290,10 +1316,16 @@ class Window(QMainWindow):
         from .history_backend import close_indexes
         close_indexes()
         event.accept()
+        self.closed.emit()
+
+    def ask_close_tasks(self):
+        from .task_ui import CloseTasksDialog
+        dialog=CloseTasksDialog(self);dialog.exec();return dialog.choice
 
 
 def start(tray=False,smoke_test=False):
     app = QApplication.instance() or QApplication([])
+    app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("Disk Growth Monitor")
     app.setStyle("Fusion")
     if not smoke_test:
@@ -1304,6 +1336,7 @@ def start(tray=False,smoke_test=False):
             cleanup_updates()
         except (OSError,ValueError,RuntimeError):pass
     window = Window()
+    window.closed.connect(app.quit)
     if not tray:
         window.show()
     report={}

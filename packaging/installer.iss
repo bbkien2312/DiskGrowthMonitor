@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.4.0"
+  #define AppVersion "1.5.0"
 #endif
 #define SourceRoot AddBackslash(SourcePath) + ".."
 #ifndef InstallerOutputDir

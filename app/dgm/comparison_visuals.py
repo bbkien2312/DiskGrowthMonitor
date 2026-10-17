@@ -50,7 +50,15 @@ def gui_change_text(value):return '= 0 B' if value==0 else change_text(value)
 
 
 def gui_change_color(value):
-    return visual('grown' if value and value>0 else 'shrunk' if value and value<0 else 'same')[2]
+    return '#1264b0' if value is not None and value>0 else '#c62828' if value is not None and value<0 else visual('same')[2]
+
+
+def row_palette(row, private=False):
+    _,_,ink,paper=visual(row.get('change','unknown'))
+    if private:
+        presence=row.get('presence') or ('old' if row.get('old_revision') and not row.get('new_revision') else 'new')
+        paper='#eff0f2' if presence=='old' else '#e9f7e9' if presence=='new' else paper
+    return ink,paper
 
 
 def gui_scan_label(row,profile=None):
@@ -61,7 +69,9 @@ def gui_scan_label(row,profile=None):
     engine={'wiztree':'WizTree','native':'Native','gdu':'gdu','windirstat':'WinDirStat'}.get(row['engine'],row['engine'])
     options=option_label(row).replace(': ',' ').replace('Chưa ghi nhận','?').replace(' • ',' · ')
     prefix=(row['profile']+' · ') if profile and row['profile']!=profile else ''
-    return f"{prefix}Lần {row.get('ordinal',row['id'])} · {moment} · {engine} · {options}"+(' · !' if row['status']=='partial' else '')
+    import json
+    app_version=json.loads(row.get('summary') or '{}').get('provenance',{}).get('app_version') or '?'
+    return f"{prefix}Lần {row.get('ordinal',row['id'])} · {moment} · {engine} · app {app_version} · {options}"+(' · !' if row['status']=='partial' else '')
 
 
 def make_legend(parent):
@@ -81,6 +91,8 @@ def make_legend(parent):
     note=QLabel('Ô Cũ / Mới:  × không có  ·  ∅ không quét  ·  ? chưa rõ  ·  — chưa có mốc đối chiếu. '
         'Không quét / chưa rõ không được tính thành 0 B.')
     note.setWordWrap(True);note.setObjectName('legendNote');outer.addWidget(note)
+    color_note=QLabel('Riêng: chỉ Cũ nền xám · chỉ Mới nền xanh lá nhạt. Chung: ± và ± Đĩa tăng chữ xanh nước biển, giảm chữ đỏ; mỗi ô theo giá trị riêng. ± luôn là kích thước file, ± Đĩa là cấp phát.')
+    color_note.setWordWrap(True);color_note.setObjectName('legendNote');outer.addWidget(color_note)
     keys=QLabel('Ctrl+F: lọc đường dẫn   ·   Ctrl+Shift+C: sao chép đường dẫn   ·   Alt+Enter: Properties   ·   F2: đổi tên   ·   Delete: xác nhận xóa')
     keys.setWordWrap(True);keys.setObjectName('legendNote');outer.addWidget(keys)
     panel.hide();return panel

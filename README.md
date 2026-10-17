@@ -1,8 +1,32 @@
 # Disk Growth Monitor
 
-[Tải bộ cài Windows x64 v1.4.0](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.4.0) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
+## Bản 1.5.0 — tiếp tục tác vụ, đối soát và mở lịch sử nhẹ
 
-**Bản mới nhất: 1.4.0.** Tải `installer.exe` và đối chiếu `SHA256SUMS.txt` trong GitHub Release. GUI yêu cầu UAC Admin ngay khi mở, không chỉ khi cài; hủy UAC thì app không mở dữ liệu.
+Thêm dừng–lưu–tiếp tục, đối soát dung lượng vật lý, màu so sánh và khởi động nhẹ từ metadata. GUI/CLI dùng chung dữ liệu; nâng cấp giữ lịch sử, cấu hình và log.
+
+Khởi động chỉ nạp mốc và tóm tắt đã lưu; không tự chạy so sánh, đọc lại toàn bộ JSONL hoặc dựng cây chi tiết. Bấm **So sánh** khi cần chi tiết; lần này vẫn phải đọc log và dựng chỉ mục tạm. Chỉ mục được bỏ khi thoát để tiết kiệm đĩa, không phải chuyển đổi lịch sử lại.
+
+SQLite lịch sử cũ được chuyển **một lần** sang JSONL nén khi khởi động (có thể dừng), sau khi kiểm chứng mới thu hồi đúng SQLite nguồn. Không xóa backup hay CSV trong bước này. Cấu hình `history_format: "sqlite"` hoặc `history_auto_migrate: false` giữ chế độ cũ; bản JSONL đang dùng không chuyển lại. Có thể thực hiện tương đương bằng `dgm storage migrate-history --yes --retire-old`. Không sửa hoặc xóa SQLite trong `data/tmp/history-index` bằng tay khi app đang dùng.
+
+Trong Nhật ký → **Tác vụ đang chạy / dang dở**, chọn **Tiếp tục** để xử lý mốc đã chụp, hoặc **Quét mới** để lấy hiện trạng. Quét chưa đủ sẽ chạy lại từ đầu; tệp xuất/metadata đã hoàn chỉnh được kiểm tra checksum và dùng tiếp, giữ thời điểm chụp. Bước đang dang dở có thể cần tính lại. Không tự tiếp tục xóa, không cưỡng bức ngắt DISM hay bước cài cập nhật. Task/Service đã bật vẫn hoạt động độc lập khi GUI thoát.
+
+CLI dùng chung dữ liệu:
+
+```text
+dgm tasks list
+dgm tasks show <task-id>
+dgm tasks resume <task-id>
+dgm tasks discard <task-id> --yes
+dgm tasks limit 512
+```
+
+Checkpoint nằm trong `data/tasks/<task-id>/`: JSON tiến độ, metadata `.jsonl.gz`, và tệp xuất WizTree hoàn chỉnh chỉ giữ tạm khi cần nhập tiếp. Không chứa bản sao nội dung file; bỏ tệp trung gian sau khi hoàn tất. Mặc định tổng trung gian 512 MB, giữ tối đa 100 tóm tắt hoàn tất, không tự bỏ công việc dang dở. Hệ thống → Dung lượng app hiển thị riêng nhóm điểm tiếp tục.
+
+**Chiếm trên đĩa** là chế độ mặc định cho Cũ/Mới, thống kê và cây. **Kích thước file** cộng theo đường dẫn nên có thể vượt sức chứa vì hardlink; không phải dung lượng thực chiếm. Hai cột ± / ± Đĩa lần lượt luôn là thay đổi kích thước file / cấp phát. Nút **Đối soát** hiển thị byte gốc, Windows cùng thời điểm, phần đã đo và phần chưa quy được vào file. Không gán phần dư cho file ≤10 MB; ngưỡng “Hiện file >” chỉ lọc bảng, file nhỏ vẫn được tính trong tổng. Mốc cũ thiếu cấp phát/phiên bản vẫn ghi chưa biết; chuẩn hóa không khôi phục được dữ liệu đã mất nếu không có nguồn.
+
+[Tải bộ cài Windows x64 v1.5.0](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.5.0) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
+
+**Bản mới nhất: 1.5.0.** Tải `installer.exe` và đối chiếu `SHA256SUMS.txt` trong GitHub Release. GUI yêu cầu UAC Admin ngay khi mở, không chỉ khi cài; hủy UAC thì app không mở dữ liệu.
 
 ## Bản 1.4.0 — giao diện rõ ràng, dọn dẹp có duyệt
 
@@ -38,6 +62,8 @@ dgm.exe log-events --source app.log --level ERROR --anonymize
 Bản cài mới dùng **log metadata JSONL gzip**, không chứa nội dung file đã quét. `data/history/catalog.json` lưu mốc/tóm tắt; `scans/*.jsonl.gz` lưu các chỉ số theo đường dẫn và `normalization/*.jsonl.gz` lưu các sửa chuẩn hóa. SQLite chuyển thành chỉ mục tạm ở `data/tmp/history-index`, dùng chung khi GUI/CLI còn mở và bỏ khi tiến trình cuối đóng. Có thể chủ động bỏ chỉ mục bằng nút **Xóa chỉ mục tạm**, giữ nguyên log. Mở lại cặp sau khi bỏ chỉ mục cần đọc toàn bộ log hai mốc để dựng tổng/sắp xếp; không thể tính toàn ổ chỉ từ 20 dòng. CLI từng lệnh có thể dựng lại nếu không còn tiến trình cùng app giữ phiên.
 
 Lịch sử SQLite cũ không bị xóa ngay khi cài đè. Dùng **Hệ thống → Dung lượng app → Chuyển lịch sử sang JSONL nén** hoặc `dgm.exe storage migrate-history --yes --retire-old`: ghi từng mốc, đọc lại xác minh checksum/số bản ghi, giữ bản gốc nếu dừng/lỗi hoặc nguồn thay đổi. Khi duyệt thu hồi sau chuyển, app dọn đúng SQLite cũ không thay đổi, CSV nguồn và backup cập nhật hoàn tất; bảo vệ lượt lỗi/chưa khôi phục. Không phục hồi được nội dung file từ các log này. Tóm tắt so sánh/benchmark, số thứ tự mốc và lớp chuẩn hóa được giữ.
+
+Từ **1.5.0**, GUI có thể thực hiện chuyển đổi một lần khi mở; chọn giữ SQLite hoặc tắt `history_auto_migrate` để không tự chuyển. Thu hồi chỉ bỏ SQLite nguồn đã kiểm chứng, **không kèm xóa CSV/backup**; các mục này có thao tác dọn riêng. Mở lịch sử đã chuyển không xuất hoặc kiểm toàn bộ log lại; khi yêu cầu so sánh chi tiết vẫn cần dựng chỉ mục tạm.
 
 Mặc định giữ một backup cập nhật thành công gần nhất; dọn backup cũ và installer đã dùng sau kiểm chứng cập nhật hoặc khi khởi động GUI. Phiên lỗi/chờ khôi phục, đường dẫn không rõ và reparse point được bảo vệ. Không xóa lịch sử đang dùng; giữ nhật ký phiên cập nhật. Thay đổi chính sách giữ lịch sử chỉ qua thiết lập sẵn có, không bị tự rút ngắn.
 

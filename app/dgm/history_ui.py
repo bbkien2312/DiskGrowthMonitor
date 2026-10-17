@@ -205,9 +205,8 @@ class HistoryPanel(QWidget):
             store=Store(readonly=True)
             try:scans=store.scans()
             finally:store.close()
-            cache=Comparisons(worker.stop,worker.event.emit)
-            try:pairs=cache.history()
-            finally:cache.close()
+            from .history_backend import comparison_history
+            pairs=comparison_history()
             from .storage_metrics import app_footprint
             return scans,pairs,app_footprint()
         def done(data):
@@ -226,7 +225,8 @@ class HistoryPanel(QWidget):
                     if summary.get('errors'):status_text+=f" • {summary['errors']:,} lỗi đọc"
                 coverage=coverage_text(summary)
                 norm=summary.get('normalization',{})
-                norm_text=normalization(summary)
+                from .measurements import provenance
+                norm_text=normalization(summary)+' · '+provenance(summary)
                 from .snapshot_scope import option_label
                 values=[f"Lần {row.get('ordinal',row['id'])}",local_time(row["started"]).replace(' UTC+07',''),roots,row["engine"],status_text,
                         f"{summary.get('files',0):,} / {summary.get('folders',0):,}",size(summary.get("logical"))+" / "+size(summary.get("allocated")),f"{whole(summary.get('seconds',0)):,} s",storage_delta(summary.get("storage")),coverage,norm_text,option_label(row)]

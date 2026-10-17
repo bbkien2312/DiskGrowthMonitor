@@ -5,8 +5,10 @@ import psutil
 from .scanner import scan
 from .store import Store, now
 from .platform_ops import reset_measurements, measurements
+from .task_journal import tracked,CURRENT
 
 
+@tracked('benchmark', ('name','p','engines','repeats'))
 def benchmark(name, p, engines=("native", "wiztree"), repeats=3, notify=None, cancel=None):
     from .progress import TaskProgress
     external_notify=notify or (lambda *args:None)
@@ -18,13 +20,17 @@ def benchmark(name, p, engines=("native", "wiztree"), repeats=3, notify=None, ca
     from .storage_metrics import begin as begin_storage, finish as finish_storage
     storage_meter = begin_storage("benchmark")
     cancel = cancel or threading.Event()
-    results = []
+    journal=CURRENT.get()
+    results = list(journal.row.get('benchmark_results',[])) if journal and journal.row['action']=='benchmark' else []
+    done={(r.get('engine'),r.get('round')) for r in results if r.get('status') in ('complete','partial')}
     reference = None
     for round_number in range(repeats):
         for engine in list(engines)[round_number % len(engines):] + list(engines)[:round_number % len(engines)]:
             if cancel.is_set():
                 break
             task.stage(str(job_index),f'{engine} • lượt {round_number+1}');job_index+=1
+            if (engine,round_number+1) in done:
+                task.complete(f'Dùng lại kết quả {engine} lượt {round_number+1} đã hoàn tất');continue
             if p.get("strict_browsers", False) and engine != "native":
                 if round_number == 0:
                     results.append({"engine": engine, "status": "skipped", "reason": "Profile cấm đọc browser metadata; không chạy MFT toàn ổ"})
@@ -98,6 +104,13 @@ def benchmark(name, p, engines=("native", "wiztree"), repeats=3, notify=None, ca
                 stop.set()
                 thread.join()
                 if not cancel.is_set():
+                    if journal and journal.row['action']=='benchmark':
+                        compact=json.loads(json.dumps(results))
+                        for item in compact:
+                            for key in ('scan_storage','benchmark_storage'):
+                                for category in ('data','logs'):
+                                    item.get(key,{}).get(category,{}).pop('files',None)
+                        journal.save(benchmark_results=compact)
                     if run_status=='failed':task.complete(f'{engine} lượt {round_number+1}: lỗi, đã ghi nguyên nhân')
                     else:task.complete(f'Đã đo {engine} lượt {round_number+1}: thời gian, RAM, CPU, I/O và dữ liệu quét')
     storage = finish_storage(storage_meter)

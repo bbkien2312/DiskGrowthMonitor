@@ -36,7 +36,7 @@ log=data_home/'logs/keep-log.txt';log.write_text('keep log',encoding='utf-8')
 environment=os.environ.copy()
 for key in ('DGM_HOME','DGM_SOURCE','PYTHONHOME','PYTHONPATH'):environment.pop(key,None)
 environment.update(PYTHONUTF8='1',PYTHONNOUSERSITE='1',QT_QPA_PLATFORM='offscreen',TEMP=str(base),TMP=str(base))
-report={'version':__version__,'installer_sha256':hashlib.sha256(installer.read_bytes()).hexdigest(),'fixture_only':True,'checks':[]}
+report={'version':__version__,'installer_sha256':hashlib.sha256(installer.read_bytes()).hexdigest(),'fixture_only':True,'fixture_dir':str(base),'checks':[]}
 
 def execute(argv,env=None):
     done=subprocess.run([str(x) for x in argv],cwd=project,env=env or environment,capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=240,creationflags=0x08000000)
@@ -107,7 +107,7 @@ for legacy_index,legacy_installer in enumerate(legacy_installers):
     report['checks'].append(f'real upgrade from {legacy_version} using its OLD coordinator replaces same install directory and preserves scan/comparison history')
     converted=json.loads(execute([exe,'storage','migrate-history','--yes','--retire-old']))
     if had_sqlite:assert converted['verified'] and converted['scans']==2 and converted['legacy_removed_bytes']>0,converted
-    else:assert converted['needed'] is False,converted
+    else:assert converted.get('already_converted') or converted.get('needed') is False,converted
     assert not (legacy/'data/history.sqlite').exists()
     after=json.loads(execute([exe,'compare',second['scan_id'],'--older',first['scan_id']]))
     assert after['summary']['verified_delta']==0

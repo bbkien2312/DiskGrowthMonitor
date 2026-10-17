@@ -1,3 +1,15 @@
+# Disk Growth Monitor 1.5.0 — 18/10/2026
+
+- Khởi động không tự so sánh hoặc nạp toàn bộ JSONL; nạp mốc/tóm tắt từ catalog, kể cả khi cây lưu chế độ hai lượt mới nhất. Chi tiết chỉ dựng khi người dùng yêu cầu.
+- Chuyển SQLite nguồn sang JSONL một lần; gọi lại bỏ qua phần đã hoàn thành. Thu hồi sau kiểm chứng, không xóa backup/CSV; sau khi không còn SQLite nguồn thì không đọc lại archive để kiểm tra thu hồi. Không coi chỉ mục SQLite tạm là nguồn cũ có thể bỏ trước khi lịch sử đã lưu.
+- Đóng app khi có tác vụ: hỏi Tiếp tục chạy / Thu nhỏ xuống khay / Dừng an toàn rồi thoát; chờ worker và bảo trì Windows kết thúc an toàn.
+- Nhật ký có hàng đợi tác vụ bền vững và nút Tiếp tục / Quét mới / Xem / Bỏ điểm lưu. CLI tương đương: `tasks list/show/resume/discard/limit`.
+- Checkpoint JSON nhỏ, metadata JSONL gzip có checksum; giữ tạm export WizTree hoàn chỉnh nếu cần tiếp tục nhập. Quét chưa hoàn chỉnh chạy lại từ đầu; metadata hoàn chỉnh giữ thời điểm nguồn, không trộn file hiện tại. Tổng tệp trung gian mặc định tối đa 512 MB; chỉ giữ 100 tóm tắt đã hoàn tất, không tự xóa checkpoint dở hay phát lại xóa file.
+- Mặc định hiển thị cấp phát trên đĩa; chuyển được sang kích thước file. Cũ/Mới, thống kê và cây đồng bộ theo chế độ; ± vẫn là thay đổi kích thước file, ± Đĩa là cấp phát. Sắp xếp Cũ/Mới vẫn toàn tập trước phân trang.
+- Đối soát Windows cùng mốc / cấp phát đã đo / phần chưa quy vào file; không gán phần dư cho file nhỏ, không cắt số cho khớp. File ≤10 MB đã tính trong tổng, thống kê riêng khi có dữ liệu. Chuẩn hóa cũ có thể bổ sung thống kê này từ metadata, không quét lại ổ.
+- Chênh lệch cấp phát đã xác minh không lấy riêng một phía của file thiếu số đo. Giữ unknown, kiểm tra Chung + Riêng = Tổng; metadata bị mất không được suy thành 0.
+- Ghi phiên bản app/chuẩn dữ liệu/chuẩn hóa cho mốc mới; mốc cũ thiếu provenance vẫn ghi chưa biết. Riêng chỉ Cũ nền xám, chỉ Mới xanh lá nhạt; Chung ± / ± Đĩa tăng xanh nước biển, giảm đỏ, độc lập từng ô.
+
 # Disk Growth Monitor 1.4.0 — 18/10/2026
 
 - Chi tiết có icon folder/file, ký hiệu ngắn, màu cả hàng và viền chọn giữ màu trạng thái; tiêu đề/dropdown cây cao hơn, không cắt chữ. Phân trang, sắp xếp và phép tính byte gốc giữ nguyên.

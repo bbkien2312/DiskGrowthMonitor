@@ -12,6 +12,7 @@ from .config import home, load, normalize, comparison_path_key
 from .store import Store, now
 from .platform_ops import ProcessCancelled
 from .presence import Presence, enrich_presence
+from .task_journal import tracked
 
 _build_lock = threading.RLock()
 @contextmanager
@@ -23,7 +24,7 @@ def _locked(stop):
         yield
     finally: _build_lock.release()
 
-VERSION = 8
+VERSION = 9
 SCHEMA_VERSION = 4
 SORTS = {"delta": "COALESCE(delta,-9223372036854775808)", "old": "COALESCE(before,-1)", "new": "COALESCE(after,-1)",
          "created": "created", "modified": "modified", "allocated": "COALESCE(allocated_delta,-9223372036854775808)",
@@ -32,6 +33,8 @@ SCOPE_SORTS = {"delta": "delta_key", "old": "before_key", "new": "after_key", "c
                "modified": "modified", "allocated": "allocated_key", "kind": "kind", "change": "change", "path": "name_rank"}
 SORT_INDEX = {"delta":"diff_signed_delta", "old":"diff_old", "new":"diff_new", "created":"diff_created",
               "modified":"diff_modified", "allocated":"diff_allocated", "kind":"diff_kind", "change":"diff_change", "path":"diff_name"}
+SORTS.update(disk_old='COALESCE(allocated_before,-1)',disk_new='COALESCE(allocated_after,-1)')
+SORT_INDEX.update(disk_old='diff_disk_old',disk_new='diff_disk_new')
 
 
 class Comparisons(Presence):
@@ -293,6 +296,7 @@ class Comparisons(Presence):
         return {**(original or {}),**totals,'scope_note':'Tổng file ghi nhận của nhóm hiện diện; không phải Windows đã dùng',
                 'common_scope':self.common_scope}
 
+    @tracked('comparison', ('older', 'newer', 'common'))
     def prepare(self, older, newer, *, common=False):
         from .history_backend import snapshots,log_mode
         if not log_mode():return self._prepare_loaded(older,newer,common=common)
@@ -609,10 +613,13 @@ class Comparisons(Presence):
             if recursive or sort=='path':
                 scope = self.scope(pair, root_id,recursive=recursive)
                 if sort=='path':self.names(pair,scope)
-                self.sort_index(effective_sort,scoped=True)
-                joins = f"scope_items s INDEXED BY scope_{SCOPE_SORTS[effective_sort]} JOIN diff_rows c ON c.pair_id=? AND c.path_id=s.path_id JOIN source.paths p ON p.id=c.path_id"
+                disk_sort=effective_sort in ('disk_old','disk_new')
+                if not disk_sort:self.sort_index(effective_sort,scoped=True)
+                hint='' if disk_sort else f' INDEXED BY scope_{SCOPE_SORTS[effective_sort]}'
+                joins = f"scope_items s{hint} JOIN diff_rows c ON c.pair_id=? AND c.path_id=s.path_id JOIN source.paths p ON p.id=c.path_id"
                 args = [pair, pair, scope]; clauses.append("s.scope_id=?")
-                column = SCOPE_SORTS["new" if not record["older"] and sort == "delta" else sort]; key = "s." + column
+                if not disk_sort:
+                    column = SCOPE_SORTS["new" if not record["older"] and sort == "delta" else sort]; key = "s." + column
             else:
                 clauses.append("c.parent_id=?"); args.append(root_id)
                 index = "diff_children_new" if folders_only and effective_sort=="new" else "diff_parent"

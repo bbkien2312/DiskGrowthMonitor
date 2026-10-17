@@ -121,7 +121,8 @@ def test_ordinals_persist_ids_not_reused_same_profile_previous(isolated):
 def test_empty_snapshot_totals_are_zero(isolated):
     s=Store();sid=s.begin_scan('empty','scope','native',{'roots':[]})
     assert s.totals(sid)=={'logical':0,'allocated':0,'files':0,'folders':0,'links':0,
-        'allocated_known':0,'allocated_unknown_files':0,'logical_unknown_files':0};s.close()
+        'allocated_known':0,'allocated_unknown_files':0,'logical_unknown_files':0,
+        'small_files':0,'small_logical':0,'small_allocated':0};s.close()
 
 
 def test_cache_archive_history_preserved_and_rebuilt(dataset):

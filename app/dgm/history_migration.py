@@ -13,6 +13,31 @@ from .history_index import TABLES,rows,write_json,mutex
 from .storage_maintenance import safe,maintenance_lock
 from .platform_ops import ProcessCancelled
 
+LEGACY_NAMES=('history.sqlite','comparisons.sqlite','normalization.sqlite')
+
+
+def automatic_needed():
+    """Cheap startup decision; never read archives or instantiate a Store."""
+    root=home();cfg=load()
+    if cfg.get('history_auto_migrate',True) is False or cfg.get('history_format')=='sqlite':return False
+    if not any((root/'data'/name).exists() for name in LEGACY_NAMES):return False
+    catalog=root/'data/history/catalog.json'
+    # Native JSONL history is not proof that an unrelated legacy DB was copied.
+    if not catalog.exists():return (root/'data/history.sqlite').exists()
+    manifest_path=catalog.parent/'migration.json'
+    if not manifest_path.exists():return False
+    try:manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError,ValueError):return False
+    sources=manifest.get('source',{})
+    if manifest.get('verified') is not True:return False
+    for name in LEGACY_NAMES:
+        path=root/'data'/name
+        if not path.exists():continue
+        proof=sources.get(name,{})
+        stat=path.stat()
+        if stat.st_size!=proof.get('bytes') or ('modified_ns' in proof and stat.st_mtime_ns!=proof['modified_ns']):return False
+    return True
+
 
 def discard_staging(folder):
     if not folder.exists():return
@@ -52,14 +77,28 @@ def migrate(*,remove_old=False,stop=None,notify=None):
         ('normal','Giữ lớp chuẩn hóa và tóm tắt',92),('activate','Kích hoạt lịch sử JSONL',96),('retire','Thu hồi dữ liệu cũ đã duyệt',100)])
     task.stage('prepare')
     root=home();data=root/'data';destination=safe(data/'history')
-    if destination.exists():raise ValueError('Đã có thư mục lịch sử log; không ghi đè hoặc chuyển lại')
+    if (destination/'catalog.json').exists():
+        catalog=json.loads((destination/'catalog.json').read_text(encoding='utf-8'))
+        if catalog.get('schema')!=1:raise ValueError('Phiên bản catalog lịch sử chưa hỗ trợ')
+        # Conversion is one-time. The published catalog is sufficient to report
+        # its status; read/verify the payloads only for actual legacy retirement
+        # (or a requested comparison), not on every app launch.
+        result={'migrated':False,'already_converted':True,'scans':len(catalog.get('tables',{}).get('scans',[])),
+            'records':sum(row.get('records',0) for row in catalog.get('logs',{}).values()),
+            'log_bytes':sum(row.get('bytes',0) for row in catalog.get('logs',{}).values()),'legacy_removed_bytes':0}
+        if remove_old:
+            task.stage('retire');result['legacy_cleanup']=retire_legacy(stop=stop,notify=notify)
+            result['legacy_removed_bytes']=result['legacy_cleanup']['removed_bytes']
+        task.finish('Lịch sử đã là JSONL; không chuyển lại hoặc nạp dữ liệu file để mở app')
+        return result
+    if destination.exists():raise ValueError('Thư mục lịch sử chưa có catalog hoàn chỉnh; giữ nguyên SQLite để kiểm tra')
     source=safe(data/'history.sqlite')
     if not source.exists():raise ValueError('Không có lịch sử SQLite cũ để chuyển')
     with maintenance_lock(),ScanLock(stop),mutex(root),ExitStack() as stack:
         ident=uuid.uuid4().hex;staging=safe(data/('history-stage-'+ident));staging.mkdir()
         stack.callback(discard_staging,staging)
         connections={};versions={};originals={}
-        for name in ('history.sqlite','comparisons.sqlite','normalization.sqlite'):
+        for name in LEGACY_NAMES:
             path=safe(data/name)
             if not path.exists():continue
             wal=path.with_name(name+'-wal')
@@ -70,7 +109,8 @@ def migrate(*,remove_old=False,stop=None,notify=None):
                         raise RuntimeError('SQLite cũ đang được sử dụng; đóng các tác vụ khác trước khi chuyển')
                 finally:checkpoint.close()
             notify('info',{'message':'Đang kiểm tra dữ liệu nguồn '+name})
-            originals[name]={'bytes':path.stat().st_size,'sha256':file_hash(path)}
+            stat=path.stat()
+            originals[name]={'bytes':stat.st_size,'modified_ns':stat.st_mtime_ns,'sha256':file_hash(path)}
             db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=5);db.row_factory=sqlite3.Row
             stack.callback(db.close);connections[name]=db
             versions[name]=db.execute('PRAGMA data_version').fetchone()[0];db.execute('BEGIN')
@@ -135,35 +175,35 @@ def migrate(*,remove_old=False,stop=None,notify=None):
     if remove_old:
         task.stage('retire')
         try:
-            result['legacy_cleanup']=retire_legacy();result['legacy_removed_bytes']=result['legacy_cleanup']['removed_bytes']
-            if not result['legacy_cleanup'].get('pending'):
-                from .storage_maintenance import cleanup_updates
-                from .source_archive import clear
-                result['completed_backup_cleanup']=cleanup_updates(keep=0)
-                result['source_csv_cleanup']=clear()
+            result['legacy_cleanup']=retire_legacy(stop=stop,notify=notify);result['legacy_removed_bytes']=result['legacy_cleanup']['removed_bytes']
         except (OSError,RuntimeError,ValueError) as exc:result['legacy_cleanup']={'removed_bytes':0,'pending':True,'error':str(exc)}
     task.finish(f'Đã chuyển {len(scans)} mốc sang JSONL; '+('nguồn cũ còn giữ, xem chi tiết' if result.get('legacy_cleanup',{}).get('pending') else 'checksum/số bản ghi khớp, lịch sử sẵn sàng'))
     return result
 
 
-def retire_legacy():
+def retire_legacy(*,stop=None,notify=None):
     """Retire exact, unchanged originals only after revalidating every new log."""
     from .scanner import ScanLock
     root=home();folder=safe(root/'data/history')
+    notify=notify or (lambda *args:None)
+    def check():
+        if stop is not None and stop.is_set():raise ProcessCancelled('Đã dừng thu hồi; SQLite chưa xóa được giữ nguyên')
+    def empty():return {'removed_bytes':0,'logs_preserved':True,'pending':False,'already_retired':True}
+    # No originals left means no retirement work. Do not reread hundreds of
+    # megabytes of JSONL just to rediscover this on each subsequent launch.
+    if not any((root/'data'/name).exists() for name in LEGACY_NAMES):return empty()
     with maintenance_lock(),ScanLock(),mutex(root):
+        if not any((root/'data'/name).exists() for name in LEGACY_NAMES):return empty()
+        check()
         catalog=json.loads((folder/'catalog.json').read_text(encoding='utf-8'))
         manifest=json.loads((folder/'migration.json').read_text(encoding='utf-8'))
         if manifest.get('verified') is not True:raise ValueError('Chưa có biên bản chuyển đổi đã xác minh')
-        for row in catalog['tables']['scans']:
-            verified=logs.verify(folder/'scans'/f"scan-{row['id']:08d}.jsonl.gz")
-            expected=catalog['logs'][str(row['id'])]
-            if verified['sha256']!=expected['sha256'] or verified['records']!=expected['records']:
-                raise ValueError('Log không khớp biên bản; SQLite gốc được giữ')
-        for dataset in catalog.get('normalization',{}).get('datasets',[]):
-            logs.verify(folder/'normalization'/f"dataset-{dataset['id']:08d}.jsonl.gz")
         targets=[]
+        existing={name for name in LEGACY_NAMES if (root/'data'/name).exists()}
+        if existing-set(manifest['source']):raise ValueError('Có SQLite không thuộc biên bản chuyển đổi; không xóa')
         for name,proof in manifest['source'].items():
-            if name not in ('history.sqlite','comparisons.sqlite','normalization.sqlite'):raise ValueError('Tên file nguồn không hợp lệ')
+            check()
+            if name not in LEGACY_NAMES:raise ValueError('Tên file nguồn không hợp lệ')
             path=safe(root/'data'/name)
             if not path.exists():continue
             wal=path.with_name(name+'-wal')
@@ -171,8 +211,25 @@ def retire_legacy():
             if path.stat().st_size!=proof['bytes'] or file_hash(path)!=proof['sha256']:
                 raise RuntimeError('SQLite cũ đã thay đổi; không xóa tự động')
             targets.append(path)
+        check()
+        for row in catalog['tables']['scans']:
+            notify('info',{'message':f"Kiểm chứng JSONL mốc #{row['id']} trước khi thu hồi SQLite nguồn"})
+            verified=logs.verify(folder/'scans'/f"scan-{row['id']:08d}.jsonl.gz",stop=stop)
+            expected=catalog['logs'][str(row['id'])]
+            if verified['sha256']!=expected['sha256'] or verified['records']!=expected['records']:
+                raise ValueError('Log không khớp biên bản; SQLite gốc được giữ')
+        for dataset in catalog.get('normalization',{}).get('datasets',[]):
+            logs.verify(folder/'normalization'/f"dataset-{dataset['id']:08d}.jsonl.gz",stop=stop)
         removed=0;retained=[]
+        # Archives may take a while to verify. Detect legacy writes made during
+        # verification before removing *any* of the approved source databases.
         for path in targets:
+            check();proof=manifest['source'][path.name]
+            wal=path.with_name(path.name+'-wal')
+            if (wal.exists() and wal.stat().st_size) or path.stat().st_size!=proof['bytes'] or file_hash(path)!=proof['sha256']:
+                raise RuntimeError('SQLite cũ vừa thay đổi khi kiểm chứng; không xóa nguồn')
+        for path in targets:
+            check()
             size=path.stat().st_size
             try:path.unlink();removed+=size
             except PermissionError:retained.append(str(path));continue
@@ -180,4 +237,7 @@ def retire_legacy():
                 sidecar=safe(path.with_name(path.name+suffix))
                 try:sidecar.unlink(missing_ok=True)
                 except PermissionError:pass
+        from datetime import datetime,timezone
+        manifest['retirement']={'at':datetime.now(timezone.utc).isoformat(),'removed_bytes':removed,'pending':bool(retained)}
+        write_json(folder/'migration.json',manifest)
         return {'removed_bytes':removed,'logs_preserved':True,'pending':bool(retained),'retained':retained}

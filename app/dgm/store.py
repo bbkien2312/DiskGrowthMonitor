@@ -280,6 +280,10 @@ class Store:
         COALESCE(SUM(CASE WHEN r.kind='file' THEN r.allocated ELSE 0 END),0) AS allocated_known,
         COALESCE(SUM(r.kind='file' AND r.allocated IS NULL),0) AS allocated_unknown_files,
         COALESCE(SUM(r.kind='file' AND r.logical IS NULL),0) AS logical_unknown_files
+        ,COALESCE(SUM(r.kind='file' AND r.logical<=10000000),0) AS small_files,
+        COALESCE(SUM(CASE WHEN r.kind='file' AND r.logical<=10000000 THEN r.logical ELSE 0 END),0) AS small_logical,
+        CASE WHEN SUM(r.kind='file' AND r.logical<=10000000 AND r.allocated IS NULL)>0 THEN NULL
+        ELSE COALESCE(SUM(CASE WHEN r.kind='file' AND r.logical<=10000000 THEN r.allocated ELSE 0 END),0) END AS small_allocated
         FROM members m JOIN revisions r ON r.id=m.revision_id WHERE m.scan_id=?""", (scan_id,)).fetchone())
 
     def record_stage(self, scan_id, summary):

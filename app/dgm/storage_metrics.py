@@ -70,7 +70,7 @@ def app_footprint(max_seconds=1,max_files=10000):
                     if entry.is_symlink() or getattr(st,'st_file_attributes',0)&0x400:complete=False;continue
                     if entry.is_dir(follow_symlinks=False):stack.append(Path(entry.path));continue
                     count+=1;parts=Path(entry.path).relative_to(root).parts
-                    group='logs' if parts[0]=='logs' else 'update_backups' if parts[1]=='updates' and 'backup' in parts else 'updates' if parts[1]=='updates' else 'history' if parts[1]=='history' else 'temporary_indexes' if parts[1]=='tmp' else 'cleanup_plans' if parts[1]=='cleanup' else 'legacy_or_other'
+                    group='logs' if parts[0]=='logs' else 'update_backups' if parts[1]=='updates' and 'backup' in parts else 'updates' if parts[1]=='updates' else 'history' if parts[1]=='history' else 'temporary_indexes' if parts[1]=='tmp' else 'cleanup_plans' if parts[1]=='cleanup' else 'task_checkpoints' if parts[1]=='tasks' else 'legacy_or_other'
                     groups[group]=groups.get(group,0)+st.st_size
         except OSError as exc:
             complete=False

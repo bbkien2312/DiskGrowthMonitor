@@ -24,7 +24,7 @@ env=os.environ.copy()
 for name in ('DGM_HOME','PYTHONPATH','PYTHONHOME'):env.pop(name,None)
 env.update(TEMP=str(base),TMP=str(base),PYTHONUTF8='1',QT_QPA_PLATFORM='offscreen',PYTHONNOUSERSITE='1')
 env['LOCALAPPDATA']=str(base/'UserLocal');env['APPDATA']=str(base/'UserRoaming')
-report={'version':__version__,'installer_sha256':hashlib.sha256(installer.read_bytes()).hexdigest(),'checks':[],'fixture_only':True}
+report={'version':__version__,'installer_sha256':hashlib.sha256(installer.read_bytes()).hexdigest(),'checks':[],'fixture_only':True,'fixture_dir':str(base)}
 
 def execute(argv,expected=0):
     result=subprocess.run([str(x) for x in argv],env=env,cwd=base,capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=120,
@@ -117,9 +117,10 @@ assert edited['name']=='Fixture renamed'
 assert 'events' in cli('log-events','--anonymize')
 report['checks'].append('1.4 frozen CLI: compressed/paged review plan, exact confirmed deletion of one D: fixture cache, project preserved, protected catalog, bounded read-only inspector, named schedule edit without registering Windows tasks, redacted log events')
 gui=cli('gui','--smoke-test')
-assert __version__ in gui['title'] and gui['tabs']==6 and gui['image_saved']
+assert __version__ in gui['title'] and gui['tabs']==6 and gui['image_saved'] and gui['rows']==0
+assert not (target/'data/tmp/history-index/history.sqlite').exists()
 execute([target/'DiskGrowthMonitor.exe','gui','--smoke-test'])
-report['checks'].append('console and windowed GUI bootloaders render and close normally')
+report['checks'].append('console and windowed GUI bootloaders render/close; metadata-only startup leaves detail rows empty and releases temporary SQLite')
 config=target/'data/config.json';history=target/'data/history/catalog.json'
 config_hash=hashlib.sha256(config.read_bytes()).hexdigest()
 scan_ids=[item['id'] for item in cli('history')]

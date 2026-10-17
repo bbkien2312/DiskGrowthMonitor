@@ -12,7 +12,7 @@ from .comparison import Comparisons
 from .presentation import size, local_time, scan_label, scan_name, change_text, change_color, CHANGES, storage_delta, row_status, status_colors, snapshot_cell
 from .ui_helpers import StatusFilter, MetricCard, FittedTree, ElidingLabel, SectionLabel
 from .comparison_visuals import (visual,status_symbol,status_hint,gui_snapshot_cell,gui_scan_label,make_legend,
-    SEMANTIC_HINT_ROLE,gui_change_text as change_text,gui_change_color as change_color)
+    SEMANTIC_HINT_ROLE,row_palette,gui_change_text as change_text,gui_change_color as change_color)
 
 HEADERS = ["TT", "Đường dẫn", "Cũ", "Mới", "±", "Loại", "± Đĩa", "Tạo", "Sửa"]
 SORT_COLUMNS = ["change", "path", "old", "new", "delta", "kind", "allocated", "created", "modified"]
@@ -45,7 +45,7 @@ class PathDelegate(ComparisonRowDelegate):pass
 class DetailModel(QAbstractTableModel):
     need_page = Signal(int)
     def __init__(self):
-        super().__init__();self.batch_size=20;self.cache_limit=400;self.private=False
+        super().__init__();self.batch_size=20;self.cache_limit=400;self.private=False;self.measurement='allocated'
         self.path_icons=None
         self.chunks=OrderedDict();self.anchors={0:None};self.pending=set();self.starts=[];self.lengths=[]
         self.loaded=0;self.next_cursor=None;self.total=0;self.paused=False
@@ -74,6 +74,7 @@ class DetailModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.DisplayRole:
             return HEADERS[section] if orientation == Qt.Orientation.Horizontal else str(section + 1)
         if orientation==Qt.Orientation.Horizontal and role==Qt.ItemDataRole.ToolTipRole:
+            if section in (2,3):return HEADERS[section]+' · '+('Chiếm trên đĩa' if self.measurement=='allocated' else 'Kích thước file')
             return {0:'Trạng thái • xem Ký hiệu & màu',4:'Chênh lệch dung lượng logic',6:'Chênh lệch dung lượng cấp phát trên đĩa'}.get(section,HEADERS[section])
         if orientation==Qt.Orientation.Horizontal and role==SEMANTIC_HINT_ROLE:
             return {0:'Trạng thái • xem Ký hiệu & màu',6:'Chênh lệch dung lượng cấp phát trên đĩa'}.get(section)
@@ -97,7 +98,8 @@ class DetailModel(QAbstractTableModel):
         row = self.row_at(index.row())
         if row is None:
             return ('Đã dừng tải' if self.paused else 'Đang tải…') if role == Qt.ItemDataRole.DisplayRole and index.column() == 0 else None
-        change=row.get('change','unknown');_,_,foreground,background=visual(change);column=index.column()
+        change=row.get('change','unknown');foreground,background=row_palette(row,self.private);column=index.column()
+        measured=dict(row,before=row.get('allocated_before'),after=row.get('allocated_after')) if self.measurement=='allocated' else row
         if role==Qt.ItemDataRole.DecorationRole and column==1:
             if self.path_icons is None:
                 from PySide6.QtWidgets import QApplication
@@ -109,19 +111,22 @@ class DetailModel(QAbstractTableModel):
             return self.path_icons['folder' if row.get('kind')=='folder' else 'file']
         if role==SEMANTIC_HINT_ROLE:
             if column==0:return status_hint(row)
-            if column in (2,3) and gui_snapshot_cell(row,'old' if column==2 else 'new') in ('∅','?','×','—'):
-                return ('Mốc cũ: ' if column==2 else 'Mốc mới: ')+snapshot_cell(row,'old' if column==2 else 'new')
+            if column in (2,3) and gui_snapshot_cell(measured,'old' if column==2 else 'new') in ('∅','?','×','—'):
+                return ('Mốc cũ: ' if column==2 else 'Mốc mới: ')+snapshot_cell(measured,'old' if column==2 else 'new')
         if role==Qt.ItemDataRole.AccessibleTextRole and column==0:return status_hint(row)
         if role==Qt.ItemDataRole.FontRole:
             if column in (0,4):
                 font=QFont('Segoe UI Symbol') if column==0 else QFont();font.setWeight(QFont.Weight.DemiBold)
                 if column==0:font.setPixelSize(18)
                 return font
-            if column in (2,3) and gui_snapshot_cell(row,'old' if column==2 else 'new') in ('∅','?','×','—'):
+            if column in (2,3) and gui_snapshot_cell(measured,'old' if column==2 else 'new') in ('∅','?','×','—'):
                 return QFont('Segoe UI Symbol')
             if column==1 and change=='missing':
                 font=QFont();font.setStrikeOut(True);return font
         if role==Qt.ItemDataRole.ForegroundRole:
+            if not self.private and column in (4,6):
+                delta=row.get('delta' if column==4 else 'allocated_delta')
+                if delta is not None and delta!=0:return QColor(change_color(delta))
             return QColor(foreground)
         if role==Qt.ItemDataRole.BackgroundRole:
             return QColor(background)
@@ -133,7 +138,7 @@ class DetailModel(QAbstractTableModel):
             from datetime import datetime
             from zoneinfo import ZoneInfo
             stamp = lambda v: datetime.fromtimestamp(v, ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M:%S") if v else "—"
-            values = [status_symbol(row) if role==Qt.ItemDataRole.DisplayRole else status_hint(row),row['path'],gui_snapshot_cell(row,'old'),gui_snapshot_cell(row,'new'),
+            values = [status_symbol(row) if role==Qt.ItemDataRole.DisplayRole else status_hint(row),row['path'],gui_snapshot_cell(measured,'old'),gui_snapshot_cell(measured,'new'),
                       ('≈ ' if row.get('unverified_count') and row.get('delta') is not None else '')+change_text(row.get('delta')),
                       {"file":"File","folder":"Thư mục","link":"Liên kết"}.get(row["kind"],row["kind"]),change_text(row.get('allocated_delta')),
                       stamp(row.get('created')),stamp(row.get('modified'))]
@@ -196,6 +201,11 @@ class DiskBrowser(QWidget):
         self.units.setCurrentIndex(int(bool(owner.preferences.values.get('units/binary',False))))
         self.units.setToolTip('Chỉ đổi cách hiển thị; dữ liệu luôn lưu byte. Windows thường ghi GB nhưng tính theo GiB.')
         filters.addWidget(self.units);self.units.currentIndexChanged.connect(self.units_changed)
+        owner.button('Đối soát',self.show_reconciliation,filters)
+        self.measurement=QComboBox();self.measurement.addItem('Chiếm trên đĩa','allocated');self.measurement.addItem('Kích thước file','logical')
+        self.measurement.setCurrentIndex(max(0,self.measurement.findData(owner.preferences.values.get('measurement/mode','allocated'))))
+        self.measurement.setToolTip('Đổi Cũ/Mới, thống kê và cây. ± luôn là kích thước file; ± Đĩa là cấp phát. Không so sánh Size với Windows đã dùng.')
+        filters.insertWidget(filters.indexOf(self.units),self.measurement)
         owner.button("Lọc",self.reload,filters); owner.button("Toàn phạm vi",lambda:self.select_scope(None),filters)
         self.legend_toggle=owner.button('Ký hiệu & màu',lambda:self.legend.setVisible(self.legend_toggle.isChecked()),filters)
         self.legend_toggle.setCheckable(True);self.legend_toggle.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
@@ -207,6 +217,7 @@ class DiskBrowser(QWidget):
         filters.addWidget(compare_help.toggle)
         self.info=ElidingLabel("Chưa có kết quả")
         self.info.setStyleSheet('color:#526579;font-size:11px;');layout.addWidget(self.info)
+        self.reconciliation_label=self.info
         self.splitter=QSplitter();self.splitter.setMinimumHeight(188)
         self.splitter.setCollapsible(0,False);self.splitter.setCollapsible(1,False)
         left=QWidget(); ll=QVBoxLayout(left); ll.setContentsMargins(0,0,0,0);ll.setSpacing(3)
@@ -250,6 +261,7 @@ class DiskBrowser(QWidget):
         self.reason.setMinimumContentsLength(8);self.reason.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         rl.addLayout(sectionrow)
         self.model=DetailModel(); self.model.need_page.connect(self.fetch_group)
+        self.model.measurement=self.measurement.currentData();self.measurement.currentIndexChanged.connect(self.measurement_changed)
         self.table=QTableView();self.table.setObjectName('comparisonTable'); self.table.setModel(self.model); self.table.setAlternatingRowColors(False); self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.table.setMinimumHeight(132)
         self.table.setWordWrap(False); self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
@@ -286,7 +298,7 @@ class DiskBrowser(QWidget):
         footer.addStretch(); owner.button("Hỏi AI",owner.ai_snapshot,footer); layout.addLayout(footer)
         self.install_shortcuts()
 
-    def refresh(self, profile):
+    def refresh(self, profile, *, load_tree=True):
         tree_ids=None
         store=Store(readonly=True)
         try:
@@ -312,17 +324,46 @@ class DiskBrowser(QWidget):
                 self.latest_tree_ids=None
         finally: store.close()
 
-        if tree_ids and self.tree_ids!=tree_ids and self.tree_mode.currentData()=='latest':self.refresh_tree(*tree_ids)
+        if not load_tree:
+            self.tree_generation+=1;self.tree.clear();self.tree_ids=None;self.tree_pair=None
+            self.tree.addTopLevelItem(QTreeWidgetItem(['Bấm So sánh để nạp cây và chi tiết','','']))
+        elif tree_ids and self.tree_ids!=tree_ids and self.tree_mode.currentData()=='latest':self.refresh_tree(*tree_ids)
         elif not tree_ids:
             self.tree_generation+=1;self.tree.clear();self.tree_ids=None;self.tree_pair=None
             self.tree_label.setText('Cây thư mục')
             self.tree.addTopLevelItem(QTreeWidgetItem(['Chưa có lượt quét hợp lệ','','']))
 
+    def show_saved_overview(self):
+        """Startup preview from small summaries, never from the JSONL payloads."""
+        from .history_backend import comparison_history
+        from .comparison import VERSION
+        selected=self.selected_tree_ids()
+        if not selected:
+            self.info.setText('Chưa có lượt hợp lệ. Xem các lượt đã lưu tại Lịch sử.');return
+        older,newer=selected
+        store=Store(readonly=True)
+        try:
+            current=[store.scan(older) if older else None,store.scan(newer)]
+        finally:store.close()
+        fields=('id','started','finished','status','config','summary')
+        def same(saved,actual):
+            return saved is actual if saved is None or actual is None else all(saved.get(key)==actual.get(key) for key in fields)
+        for row in comparison_history():
+            if (row.get('older') or None,row['newer'])!=(older,newer) or row.get('status') not in ('ready','archived'):continue
+            summary=json.loads(row.get('summary') or '{}')
+            if summary.get('comparison_version')!=VERSION or 'counts' not in summary:continue
+            if not all(same(summary.get(key),actual) for key,actual in zip(('older','newer'),current)):continue
+            self.render_metrics(summary)
+            self.info.setText('Tóm tắt đã lưu • '+self.result_caption+' • Bấm So sánh để nạp cây và chi tiết.')
+            return
+        self.info.setText('Đã nạp các mốc lịch sử • Bấm So sánh để đọc log và nạp cây/chi tiết khi cần.')
+
     def units_changed(self):
         from .presentation import set_units
         binary=self.units.currentData();set_units(binary);self.owner.preferences.set('units/binary',binary)
+        if getattr(self,'current_summary',None):self.render_metrics(self.current_summary)
         if self.pair_id:self.reload(preserve_count=True)
-        self.tree_ids=None;self.owner.refresh_history()
+        self.tree_ids=None;self.owner.refresh_history(load_tree=bool(self.pair_id or self.tree_pair))
         if hasattr(self.owner,'history_panel'):self.owner.history_panel.invalidate()
 
     def selected_tree_ids(self,store=None):
@@ -375,8 +416,11 @@ class DiskBrowser(QWidget):
         self.track(self.owner.job(prepare,done))
 
     def add_node(self,row,parent=None):
-        item=QTreeWidgetItem([row["path"] if parent is None else Path(row["path"]).name,gui_snapshot_cell(row,'new'),
-            ('≈ ' if row.get('unverified_count') and row.get('delta') is not None else '')+change_text(row.get('delta'))])
+        disk=self.measurement.currentData()=='allocated'
+        measured=dict(row,before=row.get('allocated_before'),after=row.get('allocated_after')) if disk else row
+        delta=row.get('allocated_delta' if disk else 'delta')
+        item=QTreeWidgetItem([row["path"] if parent is None else Path(row["path"]).name,gui_snapshot_cell(measured,'new'),
+            ('≈ ' if row.get('unverified_count') and delta is not None else '')+change_text(delta)])
         item.setToolTip(0,row['path'])
         item.setIcon(0,self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
         item.setToolTip(1,'Chung: '+size(row['after'])+'\nRiêng: '+size(row.get('private_after')))
@@ -387,7 +431,7 @@ class DiskBrowser(QWidget):
         if row['change']=='missing':
             font=item.font(0);font.setStrikeOut(True);item.setFont(0,font)
         basis='theo hai lượt mới nhất' if self.tree_mode.currentData()=='latest' else 'theo cặp Cũ/Mới đang chọn'
-        item.setForeground(2,QColor(change_color(row["delta"]))); item.setToolTip(2,CHANGES.get(row["change"],row["change"])+" • "+basis)
+        item.setForeground(2,QColor(change_color(delta))); item.setToolTip(2,CHANGES.get(row["change"],row["change"])+" • "+basis)
         (parent.addChild(item) if parent else self.tree.addTopLevelItem(item)); item.addChild(QTreeWidgetItem(["Mở để tải thư mục con…"]))
 
     def expand(self,item):
@@ -397,11 +441,12 @@ class DiskBrowser(QWidget):
 
     def children(self,parent,cursor,replace=False):
         data=parent.data(0,Qt.ItemDataRole.UserRole); generation=self.tree_generation
+        sort='disk_new' if self.measurement.currentData()=='allocated' else 'new'
         def fetch(worker):
             cache=Comparisons(worker.stop)
             try:
                 pair=data['pair']
-                return cache.page(pair,root=data["path"],recursive=False,folders_only=True,limit=20,cursor=cursor,sort="new")
+                return cache.page(pair,root=data["path"],recursive=False,folders_only=True,limit=20,cursor=cursor,sort=sort)
             finally:cache.close()
         def done(page):
             if generation!=self.tree_generation:return
@@ -429,8 +474,9 @@ class DiskBrowser(QWidget):
         self.reload()
 
     def options(self):
+        sort={'old':'disk_old','new':'disk_new'}.get(self.sort,self.sort) if self.measurement.currentData()=='allocated' else self.sort
         return dict(root=self.root,recursive=self.recursive.isChecked(),minimum=self.owner.threshold.value()*1_000_000,
-                    kind=self.kind.currentData(),changes=self.change.currentData(),search=self.search.text(),sort=self.sort,direction=self.direction,
+                    kind=self.kind.currentData(),changes=self.change.currentData(),search=self.search.text(),sort=sort,direction=self.direction,
                     section='private' if self.sections.currentIndex()==1 else 'common',reason=self.reason.currentData(),presence=self.presence.currentData())
 
     def batch_changed(self,*_):
@@ -441,7 +487,7 @@ class DiskBrowser(QWidget):
         count=self.page_size.currentData();self.load_button.setText(f'Tải thêm {count} mục')
         sort=self.query_options.get('sort',self.sort);direction=self.query_options.get('direction',self.direction)
         arrow='↑' if direction=='asc' else '↓'
-        label=HEADERS[SORT_COLUMNS.index(sort)]
+        label=HEADERS[SORT_COLUMNS.index({'disk_old':'old','disk_new':'new'}.get(sort,sort))]
         if sort=='delta' and getattr(self,'ids',(1,))[0] is None:label='Mới (mốc đầu)'
         self.page_label.setText(f'Đã mở {self.model.loaded:,}/{self.model.total:,} mục • {label} {arrow} • cache RAM ≤ {self.model.cache_limit:,} dòng')
         root=self.query_options.get('root',self.root)
@@ -526,12 +572,23 @@ class DiskBrowser(QWidget):
 
     def render_metrics(self,summary):
         self.current_summary=summary
+        from .measurements import amount,reconciliation,provenance
+        mode=self.measurement.currentData()
         def measured(t):
             t=t or {};unknown=t.get('allocated_unknown_files',0)
             return ('Đã đo ≈ '+size(t.get('allocated_known'))+'\n'+str(unknown)+' chưa đo') if unknown else 'Cấp phát\n'+size(t.get('allocated'))
         for index,key,title in ((0,'old','DUNG LƯỢNG CŨ'),(1,'new','DUNG LƯỢNG MỚI')):
             common=summary.get(key+'_totals') or {};private=summary.get('private_'+key+'_totals') or {}
-            self.metrics[index].set_parts(title,size(common.get('logical')),size(private.get('logical')),measured(common),measured(private))
+            def main(t):
+                value,unknown=amount(t,mode)
+                if mode=='allocated' and unknown:
+                    return 'Chưa rõ' if unknown>=t.get('files',0) else '≥ '+size(t.get('allocated_known'))
+                return size(value)
+            def note(t):
+                if mode=='logical':return measured(t)
+                unknown=t.get('allocated_unknown_files',0)
+                return (f'{unknown:,} file chưa rõ' if unknown else 'Chiếm trên đĩa')+'\nSize '+size(t.get('logical'))
+            self.metrics[index].set_parts(title,main(common),main(private),note(common),note(private))
             self.metrics[index].setToolTip('Size theo đường dẫn có thể lớn hơn sức chứa do hardlink.\n'+summary.get('partition_note','')+'\n'+
                 '\n'.join((summary.get('full_'+key+'_totals') or {}).get('normalization',{}).get('warnings',[])))
             raw=lambda t:'—' if t.get('logical') is None else f"{t['logical']:,} B"
@@ -539,14 +596,15 @@ class DiskBrowser(QWidget):
             full=summary.get('full_'+key+'_totals') or {}
             if full.get('identity_unique_logical_estimate') is not None:
                 self.metrics[index].setToolTip(self.metrics[index].toolTip()+'\nToàn phạm vi — Size bỏ đường dẫn hardlink lặp theo ID đã biết (ước tính): '+size(full['identity_unique_logical_estimate'])+'; không phải Allocated hay Windows đã dùng.')
-        delta=summary.get('verified_common_delta');private_delta=summary.get('verified_private_delta')
+        key='_allocated' if mode=='allocated' else ''
+        delta=summary.get('verified_common'+key+'_delta');private_delta=summary.get('verified_private'+key+'_delta')
         def verified_text(group,value):
-            unknown=summary.get('unverified_'+group+'_files',0)
+            unknown=summary.get('unverified_'+group+key+'_files',0)
             counts=summary.get(group+'_counts',[]);files=sum(r['count'] for r in counts if r['kind']=='file')
             if unknown and unknown>=files:return 'Chưa rõ'
             return ('≈ ' if unknown else '')+change_text(value)
         def verified_note(group):
-            unknown=summary.get('unverified_'+group+'_files',0)
+            unknown=summary.get('unverified_'+group+key+'_files',0)
             return f'Đã xác định\n{unknown:,} chưa rõ' if unknown else 'Đã xác định' if summary.get('older') else 'Mốc ban đầu'
         self.metrics[2].set_parts('CHÊNH LỆCH',verified_text('common',delta),verified_text('private',private_delta),
             verified_note('common'),verified_note('private'))
@@ -560,10 +618,35 @@ class DiskBrowser(QWidget):
         common,cnote=count_text(summary.get('common_counts',summary['counts']));private,pnote=count_text(summary.get('private_counts',[]),True)
         self.metrics[3].set_parts('TOÀN PHẠM VI',common,private,cnote,pnote)
         self.metrics[3].setToolTip('Mỗi đường dẫn thuộc một nhóm hiện diện; tổng dung lượng chỉ cộng file, không cộng chồng thư mục cha/con.\n'+summary.get('partition_note',''))
+        full=summary.get('full_new_totals',summary.get('new_totals',{})) or {}
+        checks=summary.get('measurement_checks',{})
+        self.metrics[3].setToolTip(self.metrics[3].toolTip()+'\nKiểm tra Chung + Riêng: '+json.dumps(checks,ensure_ascii=False))
+        roots=json.loads(summary['newer']['config'])['roots'] if summary.get('newer') else []
+        lines=[]
+        for r in reconciliation(full,roots):
+            lines.append(f"{r['volume']} · Sức chứa {size(r['total'])} · Windows đã dùng {size(r['used'])} · File đã đo {size(r['measured'])} · Chưa quy vào file {size(r['residual'])}"+(' · CẢNH BÁO: '+r['warning'] if r['warning'] else ''))
+        small=full.get('small_files')
+        lines.append((f"≤10 MB: {small:,} file, Size {size(full.get('small_logical'))}, đã tính trong tổng." if small is not None else 'Mốc cũ chưa lưu thống kê ≤10 MB; không suy từ phần chênh với Windows.'))
+        lines.append(provenance(full)+' · Phần chưa quy vào file không xác định tăng/giảm theo đường dẫn.')
+        self.reconciliation_text='\n'.join(lines)
+        old,new=summary.get('older'),summary.get('newer')
+        self.result_caption=('Cũ: '+scan_name(old)+' → Mới: ' if old else 'Mốc ban đầu → Mới: ')+(scan_name(new) if new else '')
+        self.reconciliation_label.setText(self.result_caption+' • '+lines[0])
+        self.reconciliation_label.setToolTip(self.reconciliation_text)
+        self.reconciliation_label.show()
         for card in self.metrics:
             card.setToolTip(card.toolTip()+'\nSố hiển thị đã làm tròn; phép tính dùng byte gốc. Tổng các số làm tròn có thể lệch một đơn vị hiển thị.')
         width=max(card.minimumWidth() for card in self.metrics[:3])
         for card in self.metrics[:3]:card.setMinimumWidth(width)
+
+    def measurement_changed(self,*_):
+        mode=self.measurement.currentData();self.model.measurement=mode
+        self.owner.preferences.set('measurement/mode',mode)
+        self.model.headerDataChanged.emit(Qt.Orientation.Horizontal,0,len(HEADERS)-1)
+        self.tree.headerItem().setToolTip(1,'Chiếm trên đĩa' if mode=='allocated' else 'Kích thước file theo đường dẫn')
+        if getattr(self,'current_summary',None):self.render_metrics(self.current_summary)
+        if self.tree_ids:self.refresh_tree(*self.tree_ids)
+        if self.pair_id:self.reload(preserve_count=True)
 
     def fetch_group(self,group):
         if not self.pair_id:return
@@ -588,10 +671,14 @@ class DiskBrowser(QWidget):
                 self.fit_detail_columns()
             volumes=summary.get('full_new_totals',summary.get('new_totals',{})).get('volumes',{})
             disk='; '.join(f"{volume} sức chứa {size(values.get('total'))}, Windows đã dùng {size(values.get('used'))}, trống {size(values.get('free'))}" for volume,values in volumes.items())
-            base=self.info.text().split(' • Tổng đã xác định')[0].split('\n')[0]
+            base=getattr(self,'result_caption',self.info.text().split(' • Tổng đã xác định')[0].split('\n')[0])
             unknown=summary.get('unverified_all_files',0)
-            self.info.setText(base+' • Tổng đã xác định '+change_text(summary.get('verified_delta'))+
-                (f' • {unknown:,} file chưa rõ' if unknown else '')+('\n'+disk if disk else ''))
+            if getattr(self,'reconciliation_text',''):
+                self.info.setText(base+' • '+self.reconciliation_text.splitlines()[0])
+                self.info.setToolTip(base+'\n'+self.reconciliation_text)
+            else:
+                self.info.setText(base+' • Tổng đã xác định '+change_text(summary.get('verified_delta'))+
+                    (f' • {unknown:,} file chưa rõ' if unknown else '')+('\n'+disk if disk else ''))
             accepted[0]=True;self.update_page_text()
             if self.result_help_pending:
                 self.result_help_pending=False
@@ -639,6 +726,16 @@ class DiskBrowser(QWidget):
 
     def load_more(self):
         if self.model.next_cursor and self.detail_worker is None:self.fetch_group(len(self.model.starts))
+
+    def show_reconciliation(self):
+        summary=getattr(self,'current_summary',None)
+        if not summary:return
+        from .measurements import reconciliation,partition_checks
+        full=summary.get('full_new_totals',summary.get('new_totals',{})) or {}
+        roots=json.loads(summary['newer']['config'])['roots']
+        self.owner.show_text({'Tóm tắt':getattr(self,'reconciliation_text',''),
+            'Đối soát byte gốc':reconciliation(full,roots),'Chung + Riêng = Tổng':partition_checks(summary),
+            'Giải thích':'± là kích thước file, ± Đĩa là cấp phát. Các ô Cũ/Mới và cây theo chế độ chọn. Không dùng hiệu Size và Windows để suy ra file nhỏ. Mốc cũ thiếu số đo vẫn để chưa rõ.'},'Đối soát dung lượng — không quét lại ổ')
 
     def track(self,worker):
         self.loading_workers.add(worker);self.cancel_button.setEnabled(True)

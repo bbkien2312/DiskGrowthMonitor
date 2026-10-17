@@ -8,7 +8,7 @@ import tempfile
 import time
 from PySide6.QtCore import QTimer,Qt
 from PySide6.QtWidgets import QApplication,QMessageBox
-from dgm import config,cleanup
+from dgm import config,cleanup,__version__
 
 project=Path(__file__).resolve().parents[1]
 fixture=Path(tempfile.mkdtemp(prefix='gui140-',dir=project/'artifacts'))
@@ -52,11 +52,11 @@ def pump():
     if w.workers or errors:raise RuntimeError(str(errors) or 'Fixture UI worker did not finish')
 pump();w.threshold.setValue(0);w.compare();pump()
 w.cleanup_panel.loaded(plan);w.cleanup_panel.rule_boxes['pip-cache'].setChecked(True)
-out=project/'artifacts/gui-140-implemented';out.mkdir(exist_ok=True)
+out=Path(os.environ.get('DGM_QA_CAPTURE_DIR',str(project/'artifacts/gui-140-implemented')));out.mkdir(exist_ok=True)
 def save(index,name):
     w.tabs.setCurrentIndex(index);pump()
     for _ in range(5):app.processEvents()
-    w.status.setText('ẢNH QA 1.4.0 • metadata minh họa trên D: • không quét / xóa dữ liệu C:')
+    w.status.setText(f'ẢNH QA {__version__} • metadata minh họa trên D: • không quét / xóa dữ liệu C:')
     assert w.grab().save(str(out/name))
 save(0,'implemented-check.png')
 w.browser.sections.setCurrentIndex(1);pump();save(0,'implemented-private.png')
@@ -67,6 +67,14 @@ w.system_tabs.setCurrentIndex(2);w.storage_panel.refresh();pump();save(1,'implem
 save(3,'implemented-schedule.png')
 (config.home()/'logs/app.log').write_text('2026 INFO SCAN 2 begin (QA sample)\n2026 WARNING SCAN 2 coverage limited (QA sample)\n2026 ERROR CLEANUP changed file skipped, no deletion (QA sample)\nTraceback detail example\n2026 DEBUG command arguments example (QA sample)\n',encoding='utf-8')
 w.log_panel.refresh(True);save(4,'implemented-logs.png')
+from dgm.task_journal import Journal
+pending=Journal('scan',{'name':'daily','p':cfg['profiles']['daily']});pending.save(state='interrupted',owner=None,percent=70,stage='Đã chụp dữ liệu; chờ tổng hợp')
+w.log_panel.tasks.signature=None;w.log_panel.tasks.refresh();save(4,'implemented-resume.png')
+from dgm.task_ui import CloseTasksDialog
+from dgm.elevation import owner
+pending.save(state='running',owner=owner())
+dialog=CloseTasksDialog(w);dialog.show();app.processEvents();assert dialog.grab().save(str(out/'implemented-close-dialog.png'));dialog.reject()
+pending.save(state='interrupted',owner=None)
 save(5,'implemented-history.png')
 w.tabs.setCurrentIndex(0);w.resize(1120,780);save(0,'implemented-compact.png')
 for timer in w.findChildren(QTimer):timer.stop()

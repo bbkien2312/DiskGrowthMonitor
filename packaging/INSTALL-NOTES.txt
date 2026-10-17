@@ -1,9 +1,14 @@
-Disk Growth Monitor 1.4.0 - Windows x64
+Disk Growth Monitor 1.5.0 - Windows x64
 
 Private Python/Qt runtime is bundled under .venv.
 New histories use checksummed metadata-only JSONL.gz; file contents are never backed up.
 SQLite indexes are temporary and removed after the last app/CLI process exits.
-Existing SQLite history is retained until you approve verified conversion in System > App storage.
+Interrupted jobs have bounded JSON checkpoints; complete capture metadata can be resumed, incomplete scans restart.
+Disk allocation is the default display. Logical path size is separate and can exceed volume capacity due to hardlinks.
+GUI startup loads saved milestones/summaries only, not full history or a comparison.
+Legacy SQLite history is converted once and retired only after verification.
+Explicit history_format=sqlite or history_auto_migrate=false opts out of automatic conversion.
+Interrupted/failed conversion preserves the original; this step does not remove backups or source CSV.
 No global Python, pip, System PATH, Task Scheduler job or Windows Service is installed.
 Choose an empty folder, preferably on D: to avoid consuming C: space.
 The editable source folder must not be overwritten by this installer.
