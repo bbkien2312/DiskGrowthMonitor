@@ -1,8 +1,37 @@
 # Disk Growth Monitor
 
-[Tải bộ cài Windows x64 v1.3.1](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.3.1) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
+[Tải bộ cài Windows x64 v1.4.0](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.4.0) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
 
-**Bản mới nhất: 1.3.1.** Tải `installer.exe` và đối chiếu `SHA256SUMS.txt` trong GitHub Release. GUI yêu cầu UAC Admin ngay khi mở, không chỉ khi cài; hủy UAC thì app không mở dữ liệu.
+**Bản mới nhất: 1.4.0.** Tải `installer.exe` và đối chiếu `SHA256SUMS.txt` trong GitHub Release. GUI yêu cầu UAC Admin ngay khi mở, không chỉ khi cài; hủy UAC thì app không mở dữ liệu.
+
+## Bản 1.4.0 — giao diện rõ ràng, dọn dẹp có duyệt
+
+- Bảng chi tiết có icon folder/file chung, ký hiệu TT ngắn và màu theo **cả hàng**. Tăng xanh, giảm cam, mất đi xám/gạch đường dẫn, chưa rõ vàng. Hàng đang chọn giữ màu ý nghĩa với viền xanh. Ký hiệu/tooltip và chú giải bổ sung cho màu. Tiêu đề cây/chi tiết cao, đồng bộ, dropdown không cắt chữ; vẫn phân trang/sắp xếp toàn tập, số liệu gốc không đổi.
+- **Dọn dẹp** thay danh sách ID rule khó hiểu bằng catalog và giải thích nhìn thấy ngay: đây là gì, khi nào nên dọn, giữ gì, phương pháp/tác động. Tất cả file ban đầu **không chọn**. Phân biệt xóa từng file, CLI xóa toàn cache và bảo trì Windows; dung lượng chưa ước lượng không gán thành 0 B. Tự động/lịch chỉ quét và nhắc duyệt, không xóa khi bạn vắng mặt.
+- Đề xuất lưu metadata JSONL gzip, bảng chi tiết phân trang 20–1.000 và sort/filter toàn đề xuất. Hạn một giờ, mặc định tổng log đề xuất tối đa 64 MB và chỉ mục tạm 128 MB; tóm tắt tối đa 200 đề xuất/30 ngày, không sao lưu nội dung file. Xác minh checksum, đường dẫn/rule, identity, size/mtime trước khi xử lý; khóa chống dùng lại/lựa chọn thay đổi. Kết quả giữ tóm tắt và mẫu giới hạn, audit xoay vòng. Có nút dọn metadata hết hạn.
+- Bổ sung uv cache, DirectX shader và WER ReportArchive của người dùng. Giữ project được nhận diện, .git/.venv/node_modules, model AI, SQLite/WAL/SHM, dữ liệu trình duyệt và vùng hệ thống. Không thêm registry cleaner, không xóa tay WinSxS/DriverStore/Installer/Package Cache. NVIDIA cần xác nhận cập nhật xong; NuGet ghi rõ lệnh xóa cả global-packages, không giả vờ lọc theo tuổi.
+- **Kiểm tra thủ công** file lớn/trùng SHA-256/folder rỗng trong folder bạn chọn; không xóa. Bảo vệ thư mục tham chiếu, bỏ qua hardlink khi tìm bản trùng, xác minh identity qua handle mở file. Mặc định giới hạn 60 giây/100.000 file/256 MB hash và 1.000 dòng trả về; báo rõ khi chưa đọc hết. Tìm trùng hỏi trước khi đọc nội dung, không mặc định toàn C:.
+- **Hệ thống** chia Cập nhật app / Công cụ quét / Dung lượng app / Chẩn đoán Windows. Đo dung lượng app riêng vì vùng này tự loại trừ khi quét; backup là thành phần của tổng, không cộng hai lần. Mỗi thao tác quét/so sánh/chuẩn hóa/benchmark ghi footprint app mới, không hồi tố vào mốc cũ. Giữ log lịch sử nén và quy trình chuyển có kiểm chứng từ 1.3.1.
+- **Lịch chạy** có tên, tạo/sửa, giờ/thứ dễ đọc, chỉ hiện trường liên quan, lần cuối/kế tiếp và kết quả. Trạng thái lịch độc lập Task/Service; runner vẫn cần đăng ký/bật. **Nhật ký** có bảng màu theo hàng, [LEVEL], lọc công việc/tìm kiếm, traceback và gói hỗ trợ có xem trước/che thông tin. Chỉ đọc 500 KB cuối, giữ 4.000 dòng; không tự gửi lên AI.
+- **Lịch sử** ưu tiên số thứ tự, chuẩn hóa, độ bao phủ và tùy chọn hai mốc. Lượt đã chuẩn hóa nhưng thiếu quyền vẫn ghi có giới hạn; lượt chuẩn ngay khi nhập không bị gọi là chưa chuẩn hóa. Không coi phần khác phạm vi là tăng thật hoặc file đã xóa. Xóa metadata lịch sử và xóa file thật là hai việc riêng.
+
+GUI và CLI dùng cùng API; các lệnh bổ sung:
+
+```powershell
+dgm.exe cleanup plan --rule pip-cache
+dgm.exe cleanup show PLAN_ID
+dgm.exe cleanup page PLAN_ID --limit 100 --sort size --direction desc
+dgm.exe cleanup select PLAN_ID --path "D:\Example\approved-cache.bin"
+dgm.exe cleanup apply PLAN_ID --confirm "XOA PLAN_ID"
+dgm.exe cleanup prune
+dgm.exe cleanup protected
+dgm.exe cleanup inspect-folder "D:\Example\Downloads" --mode duplicates --minimum-mb 10
+dgm.exe schedule add --name "Theo dõi hàng ngày" --times "08:00,14:00,20:00"
+dgm.exe schedule edit SCHEDULE_ID --name "Tên mới"
+dgm.exe log-events --source app.log --level ERROR --anonymize
+```
+
+`cleanup plan/show` mặc định trả tóm tắt, dùng `cleanup page` để đọc từng trang hoặc `--full` để xuất tất cả metadata. Kiểm tra thủ công không mặc nhiên cấp quyền xóa. Tham khảo ý tưởng Preview/catalog/bằng chứng từ BleachBit, Winapp2, BCUninstaller và Czkawka; không đóng gói code/rule bên ngoài hoặc tự nạp script Admin.
 
 ## Bản 1.3.1 — giới hạn dung lượng dữ liệu app
 

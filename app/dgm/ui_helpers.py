@@ -27,7 +27,9 @@ class ElidingLabel(QLabel):
         super().__init__(text);self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
 
-    def sizeHint(self):return QSize(140,self.fontMetrics().height()+2)
+    def sizeHint(self):
+        margins=self.contentsMargins()
+        return QSize(140,self.fontMetrics().height()+margins.top()+margins.bottom()+2)
     def minimumSizeHint(self):return QSize(0,self.sizeHint().height())
     def setText(self,text):
         super().setText(text);self.setToolTip(text)
@@ -35,6 +37,11 @@ class ElidingLabel(QLabel):
         painter=QPainter(self);painter.setPen(self.palette().color(QPalette.ColorRole.WindowText))
         painter.drawText(self.contentsRect(),Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignLeft,
                          self.fontMetrics().elidedText(self.text().replace('\n',' • '),Qt.TextElideMode.ElideRight,self.contentsRect().width()))
+
+
+class SectionLabel(ElidingLabel):
+    """Pane title with explicit font + vertical padding, including high DPI."""
+    def sizeHint(self):return QSize(140,max(30,self.fontMetrics().height()+12))
 
 
 class CompactNote(QLabel):
@@ -134,8 +141,9 @@ class StatusFilter(QToolButton):
         menu.addAction("Bỏ chọn", lambda: self.select([]))
         menu.addAction("Chỉ có thay đổi", lambda: self.select([s for s in statuses if s not in ('same','first_scan')]))
         menu.addSeparator()
+        from .comparison_visuals import status_icon
         for key, label in statuses.items():
-            action = QAction(label, self); action.setCheckable(True); action.setChecked(True)
+            action = QAction(label, self); action.setIcon(status_icon(key));action.setCheckable(True); action.setChecked(True)
             action.toggled.connect(self.refresh_text); menu.addAction(action); self.actions[key] = action
         self.refresh_text()
 

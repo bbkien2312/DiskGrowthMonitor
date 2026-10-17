@@ -169,6 +169,8 @@ def storage_report():
                 rel=path.relative_to(root);parts=rel.parts
                 if parts[0]=='logs':group='Log'
                 elif parts[1]=='history':group='Lịch sử JSONL nén / metadata'
+                elif parts[1]=='cleanup':group='Metadata đề xuất dọn nén'
+                elif parts[1]=='tmp' and len(parts)>2 and parts[2]=='cleanup-index':group='Chỉ mục đề xuất dọn tạm'
                 elif parts[1]=='tmp' and len(parts)>2 and parts[2]=='history-index':group='Chỉ mục SQLite tạm'
                 elif len(parts)>2 and parts[1]=='updates':
                     group='Backup cập nhật' if 'backup' in parts[2:] else 'Installer tải sẵn' if path.name=='installer.exe' else 'Nhật ký cập nhật'

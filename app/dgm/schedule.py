@@ -67,6 +67,10 @@ def add(spec):
     spec = {"id": uuid.uuid4().hex[:10], "enabled": True, "mode": "daily", "interval": 1,
             "times": ["09:00"], "timezone": "Asia/Ho_Chi_Minh", "profile": "daily", "anchor": now(),
             "cleanup_rules": [], "update_done": False, **spec}
+    spec['times']=sorted(set(t.strip() for t in spec['times'] if t.strip()))
+    if spec['mode'] in ('daily','weekly') and not spec['times']:raise ValueError('Cần ít nhất một giờ chạy HH:MM')
+    spec['weekdays']=sorted(set(int(day) for day in spec.get('weekdays',[0])))
+    spec['name']=str(spec.get('name') or spec['profile']).strip()[:120]
     p = profile(spec["profile"])
     if p.get("strict_browsers", False) and p.get("engine", "native") != "native":
         raise ValueError("Cấu hình đang bảo vệ Chrome/Edge nhưng chọn công cụ ngoài native. Sửa và Lưu cấu hình trước khi thêm lịch.")
@@ -75,6 +79,36 @@ def add(spec):
     cfg["schedules"].append(spec)
     save(cfg)
     return spec
+
+
+def update(schedule_id,changes):
+    allowed={'name','profile','mode','interval','times','weekdays','timezone','cleanup_rules'}
+    if set(changes)-allowed:raise ValueError('Trường sửa lịch không hợp lệ')
+    cfg=load();spec=next((s for s in cfg['schedules'] if s['id']==schedule_id),None)
+    if not spec:raise ValueError('Không tìm thấy lịch')
+    candidate={**spec,**changes};candidate['times']=sorted(set(t.strip() for t in candidate['times'] if t.strip()))
+    if candidate['mode'] in ('daily','weekly') and not candidate['times']:raise ValueError('Cần ít nhất một giờ chạy')
+    candidate['weekdays']=sorted(set(int(day) for day in candidate.get('weekdays',[0])))
+    p=profile(candidate['profile'])
+    if p.get('strict_browsers') and p.get('engine','native')!='native':raise ValueError('Cấu hình bảo vệ Chrome/Edge yêu cầu native')
+    timing_changed=any(candidate.get(key)!=spec.get(key) for key in ('mode','interval','times','weekdays','timezone'))
+    if timing_changed:candidate['next_run']=next_time(candidate).isoformat()
+    spec.update(candidate);save(cfg)
+    store=Store()
+    try:
+        if timing_changed:store.db.execute('UPDATE jobs SET next_run=? WHERE schedule_id=?',(candidate['next_run'],schedule_id))
+        store.db.commit()
+    finally:store.close()
+    return candidate
+
+
+def describe(spec):
+    mode=spec['mode'];times=', '.join(spec.get('times',[]))
+    if mode=='daily':return f"{len(spec.get('times',[]))} lần/ngày • {times}"
+    if mode=='weekly':
+        days=', '.join(('T2','T3','T4','T5','T6','T7','CN')[day] for day in spec.get('weekdays',[]))
+        return days+' • '+times
+    return f"Mỗi {spec.get('interval',1)} "+{'hours':'giờ','days':'ngày','weeks':'tuần','months':'tháng','years':'năm'}.get(mode,mode)
 
 
 def modify(schedule_id, enabled=None, delete=False):
@@ -117,7 +151,12 @@ def run_now(schedule_id, stop=None, notify=None):
     result = scan(spec["profile"], profile(spec["profile"]), stop=stop, notify=notify)
     if spec.get("cleanup_rules") and result["status"] in ("complete", "partial") and not (stop and stop.is_set()):
         from .cleanup import plan
-        result["pending_plan"] = plan(spec["cleanup_rules"], update_done=False)["id"]
+        result["pending_plan"] = plan(spec["cleanup_rules"], update_done=False,stop=stop,notify=notify,compact=True)["id"]
+    store=Store()
+    try:
+        store.db.execute('INSERT OR REPLACE INTO jobs VALUES(?,?,?,?)',(spec['id'],now(),next_time(spec).isoformat(),json.dumps(result)))
+        store.db.commit()
+    finally:store.close()
     return result
 
 
@@ -152,7 +191,7 @@ def tick(stop=None):
             result = scan(spec["profile"], profile(spec["profile"]), stop=stop,allow_uac=False)
             if spec.get("cleanup_rules") and result["status"] in ("complete", "partial") and not (stop and stop.is_set()):
                 from .cleanup import plan
-                result["pending_plan"] = plan(spec["cleanup_rules"], update_done=False,allow_uac=False)["id"]
+                result["pending_plan"] = plan(spec["cleanup_rules"], update_done=False,allow_uac=False,stop=stop,compact=True)["id"]
             upcoming = next_time(spec).isoformat()
             store = Store()
             store.db.execute("INSERT OR REPLACE INTO jobs VALUES(?,?,?,?)", (spec["id"], now(), upcoming, json.dumps(result)))

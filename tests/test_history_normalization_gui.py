@@ -16,7 +16,8 @@ def test_history_preview_apply_original_workflow(gui,isolated,monkeypatch):
     monkeypatch.setattr(QMessageBox,'question',lambda *a:QMessageBox.StandardButton.Yes)
     dialog.apply();pump(app,lambda:not w.workers)
     assert json.loads(s.scan(sid)['summary'])['logical']==30 and s.scan(sid,effective=False)==original
-    assert panel.scans.columnCount()==11
+    assert panel.scans.columnCount()==12
+    assert panel.scans.horizontalHeaderItem(11).text()=='Tùy chọn / phương thức'
     dialog.restore();pump(app,lambda:not w.workers)
     assert s.scan(sid)==original
     dialog.close();s.close()

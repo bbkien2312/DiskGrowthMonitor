@@ -26,7 +26,7 @@ def test_split_metrics_tree_details_and_one_preparation(gui,isolated,monkeypatch
     assert browser.metrics[2].value.text()=='↑ +10 MB' and browser.metrics[2].private_value.text()=='Chưa rõ'
     assert browser.metrics[3].width()>browser.metrics[0].width()
     rootitem=browser.tree.topLevelItem(0);assert not rootitem.icon(0).isNull() and rootitem.data(0,Qt.ItemDataRole.UserRole)['row']['private_after']==80_000_000
-    assert 'Chrome/Edge: Có' in browser.newer.currentText() and 'MFT: Không' in browser.newer.currentText()
+    assert 'Chrome/Edge Có' in browser.newer.currentText() and 'MFT Không' in browser.newer.currentText()
     browser.sections.setCurrentIndex(1);pump(app,lambda:not w.workers)
     assert browser.model.private and browser.reason.isVisible()
     rows=[row for chunk in browser.model.chunks.values() for row in chunk]

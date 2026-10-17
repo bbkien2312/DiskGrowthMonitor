@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import os
+import time
 
 from .config import home
 
@@ -50,7 +52,31 @@ def _files(operation):
 
 def _snapshot(operation):
     data, logs = _files(operation)
-    return {"sampled_at": _stamp(), "data_files": data, "log_files": logs}
+    return {"sampled_at": _stamp(), "data_files": data, "log_files": logs,'app_footprint':app_footprint()}
+
+
+def app_footprint(max_seconds=1,max_files=10000):
+    """Measure the self-excluded app separately; never include it in scan totals."""
+    root=home();stack=[root/'data',root/'logs'];groups={};count=0;errors=[];started=time.monotonic();complete=True
+    while stack:
+        if count>=max_files or time.monotonic()-started>max_seconds:complete=False;break
+        folder=stack.pop()
+        try:
+            if folder.is_symlink() or getattr(folder.lstat(),'st_file_attributes',0)&0x400:complete=False;continue
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if count>=max_files or time.monotonic()-started>max_seconds:complete=False;break
+                    st=entry.stat(follow_symlinks=False)
+                    if entry.is_symlink() or getattr(st,'st_file_attributes',0)&0x400:complete=False;continue
+                    if entry.is_dir(follow_symlinks=False):stack.append(Path(entry.path));continue
+                    count+=1;parts=Path(entry.path).relative_to(root).parts
+                    group='logs' if parts[0]=='logs' else 'update_backups' if parts[1]=='updates' and 'backup' in parts else 'updates' if parts[1]=='updates' else 'history' if parts[1]=='history' else 'temporary_indexes' if parts[1]=='tmp' else 'cleanup_plans' if parts[1]=='cleanup' else 'legacy_or_other'
+                    groups[group]=groups.get(group,0)+st.st_size
+        except OSError as exc:
+            complete=False
+            if len(errors)<10:errors.append(str(exc))
+    return {'total_bytes':sum(groups.values()),'groups':groups,'complete':complete,'files_measured':count,'errors':errors,
+            'self_excluded':True,'note':'Đo riêng data/log app; backup là thành phần của tổng, không cộng lại vào Size cây quét.'}
 
 
 def begin(operation):
@@ -86,6 +112,8 @@ def finish(meter):
         "sampled_after": after["sampled_at"],
         "data": _section(before["data_files"], after["data_files"]),
         "logs": _section(before["log_files"], after["log_files"]),
+        'app_footprint':{'before':before.get('app_footprint'),'after':after['app_footprint'],
+                         'delta_bytes':after['app_footprint']['total_bytes']-before['app_footprint']['total_bytes'] if before.get('app_footprint',{}).get('complete') and after['app_footprint']['complete'] else None},
         "note": (
             "Đo kích thước file (st_size) của dữ liệu riêng Disk Growth Monitor (SQLite và WAL/SHM) cùng log app/audit đã xoay vòng; "
             "không phải dung lượng file được quét hay dung lượng cấp phát NTFS. Chênh lệch là ước lượng footprint phát sinh trong thao tác; "

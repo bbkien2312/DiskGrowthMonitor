@@ -323,7 +323,7 @@ def dispatch(action,payload,stop,notify):
         return system_check(payload['tool'],allow_uac=False,stop=stop)
     if action=='cleanup-plan':
         from .cleanup import plan
-        return plan(payload['rules'],payload['update_done'],payload['days'],allow_uac=False,stop=stop)
+        return plan(payload['rules'],payload['update_done'],payload['days'],allow_uac=False,stop=stop,compact=True)
     if action=='cleanup-apply':
         from .cleanup import apply
         notify('info',{'message':'Đang xử lý các mục đã duyệt bằng Admin. Bảo trì DISM sẽ được chờ kết thúc, không cưỡng bức dừng.'})

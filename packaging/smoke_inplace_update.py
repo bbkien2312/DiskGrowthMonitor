@@ -18,7 +18,7 @@ from dgm.benchmark import benchmark
 
 project=Path(__file__).resolve().parent.parent
 installer=Path(sys.argv[1]).resolve()
-legacy_installer=Path(sys.argv[2]).resolve() if len(sys.argv)>2 else None
+legacy_installers=[Path(value).resolve() for value in sys.argv[2:]]
 base=Path(tempfile.mkdtemp(prefix='inplace-update-smoke-',dir=project/'data')).resolve()
 assert base.is_relative_to((project/'data').resolve())
 data_home=base/'Source App';data_home.mkdir()
@@ -93,25 +93,27 @@ assert contents(data_home)==before and (data_home/'data/config.json').read_bytes
 assert Path(json.loads(execute([target/'dgm.exe','doctor']))['home'])==data_home
 report['checks'].append('second update replaces the same managed runtime and retains the external data-home pointer and all history')
 
-if legacy_installer:
-    legacy=base/'Legacy App';install_at(legacy,legacy_installer)
+for legacy_index,legacy_installer in enumerate(legacy_installers):
+    legacy=base/f'Legacy App {legacy_index}';install_at(legacy,legacy_installer)
     exe=legacy/'dgm.exe'
+    legacy_version=json.loads(execute([exe,'doctor']))['app_version']
     execute([exe,'profile','set','daily','--root',fixture,'--engine','native'])
     first=json.loads(execute([exe,'scan']));second=json.loads(execute([exe,'scan']))
     execute([exe,'compare',second['scan_id'],'--older',first['scan_id']])
-    old_contents=contents(legacy);old_config=(legacy/'data/config.json').read_bytes()
+    old_contents=contents(legacy);old_config=(legacy/'data/config.json').read_bytes();had_sqlite=(legacy/'data/history.sqlite').exists()
     coordinate(legacy,legacy,{'executable':str(exe),'arguments':[]},False,legacy/'.venv/dgm/update_helper.ps1')
     assert json.loads(execute([exe,'doctor']))['app_version']==__version__
     assert contents(legacy)==old_contents and (legacy/'data/config.json').read_bytes()==old_config
-    report['checks'].append('real upgrade from prior installer using its OLD coordinator replaces same install directory and preserves scan/comparison history')
+    report['checks'].append(f'real upgrade from {legacy_version} using its OLD coordinator replaces same install directory and preserves scan/comparison history')
     converted=json.loads(execute([exe,'storage','migrate-history','--yes','--retire-old']))
-    assert converted['verified'] and converted['scans']==2 and converted['legacy_removed_bytes']>0,converted
+    if had_sqlite:assert converted['verified'] and converted['scans']==2 and converted['legacy_removed_bytes']>0,converted
+    else:assert converted['needed'] is False,converted
     assert not (legacy/'data/history.sqlite').exists()
     after=json.loads(execute([exe,'compare',second['scan_id'],'--older',first['scan_id']]))
     assert after['summary']['verified_delta']==0
     assert not (legacy/'data/tmp/history-index/history.sqlite').exists()
     old_contents=contents(legacy)
-    report['checks'].append('frozen CLI converts the real legacy SQLite fixture to verified compressed JSONL, retires old databases only after verification and compares both scans after temporary indexes are discarded')
+    report['checks'].append(f'{legacy_version}: verified compressed JSONL history, legacy databases retired only after verification when present, both scans compare after temporary indexes are discarded')
     execute([legacy/'unins000.exe','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'])
     assert contents(legacy)==old_contents
     (legacy/'data/updates/fixture-download/installer.exe').unlink()

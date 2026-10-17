@@ -5,13 +5,20 @@ from PySide6.QtWidgets import QWidget,QVBoxLayout,QHBoxLayout,QTabWidget,QTableW
 from .store import Store
 from .comparison import Comparisons
 from .presentation import scan_label,scan_name,local_time,size,change_text,STATUS,storage_delta,storage_tooltip,whole
+from .history_presentation import normalization,coverage as coverage_text,needs_normalization,pair_explanation
+from .panel_widgets import cards,text_label
 
 
 class HistoryPanel(QWidget):
     def __init__(self,owner):
         super().__init__();self.owner=owner;self.scan_rows=[];self.pair_rows=[]
         self.loaded=False;self.dirty=True;self.refresh_worker=None;self.revision=0
-        layout=QVBoxLayout(self);actions=QHBoxLayout()
+        layout=QVBoxLayout(self);layout.addWidget(text_label('Lịch sử — mốc, độ đầy đủ và kết quả so sánh','pageTitle'))
+        self.summary_cards=cards(layout,[('THAY ĐỔI ĐỦ BẰNG CHỨNG','—','Cặp đã chọn / cặp gần nhất'),
+            ('CHƯA ĐỦ BẰNG CHỨNG','—','Không gán 0 B hoặc coi là đã xóa'),
+            ('CHUẨN HÓA','—','Tách riêng độ bao phủ / lỗi đọc'),('DATA / LOG APP HIỆN TẠI','Chưa đo','Không nằm trong tổng Size của cây quét')])
+        self.scope_note=text_label('Tổng Size theo đường dẫn không phải Windows đã dùng. Không cộng thư mục cha + con hoặc cộng backup hai lần.','safeBanner');layout.addWidget(self.scope_note)
+        actions=QHBoxLayout()
         owner.button("Làm mới lịch sử",self.refresh,actions);owner.button("Xem lượt / so sánh",self.open_selected,actions)
         owner.button("Phục hồi lượt bị gián đoạn",self.recover_selected,actions)
         self.load_state=QLabel('Đang nạp lịch sử…');actions.addWidget(self.load_state,1);layout.addLayout(actions)
@@ -26,21 +33,23 @@ class HistoryPanel(QWidget):
         owner.button('Kiểm tra & chuẩn hóa…',self.normalize_selected,scan_actions)
         owner.button('Chọn lượt chưa chuẩn hóa',self.select_legacy,scan_actions)
         scan_actions.addWidget(QLabel("Có thể giữ Ctrl/Shift để chọn nhiều lượt."));scan_actions.addStretch();layout.addLayout(scan_actions)
-        self.tabs=QTabWidget();layout.addWidget(self.tabs)
-        self.scans=QTableWidget(0,11);self.scans.setHorizontalHeaderLabels(["Lần quét","Thời điểm • UTC+07","Phạm vi","Công cụ","Kết quả lưu","File / thư mục","Logic / trên đĩa","Thời gian","Δ data / log","Độ đầy đủ","Chuẩn hóa"])
+        self.tabs=QTabWidget();layout.addWidget(self.tabs,1)
+        self.scans=QTableWidget(0,12);self.scans.setHorizontalHeaderLabels(["Lần quét","Thời điểm • UTC+07","Phạm vi","Công cụ","Kết quả lưu","File / thư mục","Logic / trên đĩa","Thời gian","Δ data / log","Độ bao phủ","Chuẩn hóa","Tùy chọn / phương thức"])
         self.pairs=QTableWidget(0,10);self.pairs.setHorizontalHeaderLabels(["Mốc cũ → mới","Dung lượng cũ","Dung lượng mới","Mức thay đổi","Tăng (file/folder)","Giảm (file/folder)","Thêm mới (file/folder)","Mất đi (file/folder)","Khác / chưa rõ","Δ data / log"])
         self.tabs.addTab(self.scans,"Các lần quét");self.tabs.addTab(self.pairs,"Các lần so sánh")
         for table in (self.scans,self.pairs):
             table.setAlternatingRowColors(True);table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows);table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.scans.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
-        owner.columns(self.scans,"history-scans-v3",[175,195,210,90,190,130,175,90,135,165,210])
+        owner.columns(self.scans,"history-scans-v140",[100,180,180,95,135,145,160,80,130,160,190,300])
+        header=self.scans.horizontalHeader()
+        for visual,logical in enumerate((0,1,3,10,9,11,5,2,4,6,7,8)):header.moveSection(header.visualIndex(logical),visual)
         owner.columns(self.pairs,"history-pairs-v2",[290,120,120,150,130,130,140,150,180,140])
         for table in (self.scans,self.pairs):
             table.verticalHeader().setDefaultSectionSize(32)
             table.itemSelectionChanged.connect(self.selection_details)
         self.scans.doubleClicked.connect(lambda _:self.open_selected());self.pairs.doubleClicked.connect(lambda _:self.open_selected())
         self.info=QLabel("Tóm tắt tính toàn phạm vi, không chỉ 20 dòng. Thư mục cha gồm con, không cộng trùng dung lượng. Chọn một/nhiều dòng rồi xóa để bỏ metadata snapshot cùng cache so sánh liên quan; Chọn tất cả lượt để xóa toàn bộ. Không xóa file thật, cấu hình hay log.");self.info.setWordWrap(True);layout.addWidget(self.info)
-        self.details=QPlainTextEdit();self.details.setReadOnly(True);self.details.setMaximumHeight(90)
+        self.details=QPlainTextEdit();self.details.setReadOnly(True);self.details.setMaximumHeight(150);self.details.setMinimumHeight(80)
         self.details.setPlaceholderText('Chọn một dòng để xem phạm vi, các bước đã hoàn thành, giới hạn dữ liệu và dung lượng data/log.');layout.addWidget(self.details)
         self.tabs.currentChanged.connect(lambda _:self.selection_details())
 
@@ -56,8 +65,32 @@ class HistoryPanel(QWidget):
         index=table.currentRow()
         if index<0:return
         cells=[table.item(index,column) for column in range(table.columnCount())]
-        self.details.setPlainText('\n'.join(cell.toolTip() if i in (4,8,9) else cell.text()
-            for i,cell in enumerate(cells) if cell is not None))
+        if table is self.scans and index<len(self.scan_rows):
+            row=self.scan_rows[index];summary=json.loads(row['summary'] or '{}')
+            from .snapshot_scope import option_label
+            note='\n'.join((scan_label(row),option_label(row),'Chuẩn hóa: '+normalization(summary),
+                'Độ bao phủ: '+coverage_text(summary),'\n'.join(summary.get('normalization',{}).get('warnings',[])),
+                storage_tooltip(summary.get('storage'))))
+            regions=summary.get('coverage',{}).get('error_regions',[])
+            if regions:note+='\nVùng lỗi đọc:\n'+'\n'.join(str(region.get('path',''))+' — '+str(region.get('message','')) for region in regions[:100])
+            self.details.setPlainText(note)
+            self.summary_cards[2].set_value(normalization(summary),coverage_text(summary))
+        elif table is self.pairs and index<len(self.pair_rows):
+            summary=json.loads(self.pair_rows[index]['summary'] or '{}')
+            self.details.setPlainText(pair_explanation(summary)+'\n'+storage_tooltip(summary.get('storage')))
+            self.render_pair_summary(summary)
+
+    def render_pair_summary(self,summary):
+        from .comparison_visuals import gui_change_text
+        self.summary_cards[0].set_value(gui_change_text(summary.get('verified_delta')),'Cặp đang chọn; phần không đủ bằng chứng không cộng vào Δ')
+        count=summary.get('unverified_all_files')
+        self.summary_cards[1].set_value(f'{count:,} file' if count is not None else 'Chưa ghi nhận')
+        from .snapshot_scope import differences
+        old,new=summary.get('older'),summary.get('newer')
+        changed=differences(old,new) if old and new and 'config' in old and 'config' in new else []
+        self.scope_note.setText('Chênh lệch chỉ tính phần đủ bằng chứng; không lấy hiệu hai tổng khác phạm vi.'+
+            (' Khác phạm vi: '+', '.join(note.split(':',1)[0] for note in changed)+'. Xem chi tiết khi chọn cặp.' if changed else '')+
+            ' Chuẩn hóa không thể bù vùng chưa đọc được.')
 
     def require_idle(self):
         active=[worker for worker in self.owner.workers if worker.isRunning()]
@@ -111,7 +144,7 @@ class HistoryPanel(QWidget):
         self.tabs.setCurrentIndex(0);self.scans.clearSelection()
         for index,row in enumerate(self.scan_rows):
             summary=json.loads(row['summary'] or '{}')
-            if row['status'] in ('complete','partial') and summary.get('normalization',{}).get('version')!=VERSION:
+            if row['status'] in ('complete','partial') and needs_normalization(summary):
                 self.scans.selectionModel().select(self.scans.model().index(index,0),QItemSelectionModel.SelectionFlag.Select|QItemSelectionModel.SelectionFlag.Rows)
 
     def normalize_selected(self):
@@ -175,11 +208,13 @@ class HistoryPanel(QWidget):
             cache=Comparisons(worker.stop,worker.event.emit)
             try:pairs=cache.history()
             finally:cache.close()
-            return scans,pairs
+            from .storage_metrics import app_footprint
+            return scans,pairs,app_footprint()
         def done(data):
             blockers=[QSignalBlocker(self.scans),QSignalBlocker(self.pairs)]
             self.scans.clearSelection();self.pairs.clearSelection()
-            self.scan_rows,self.pair_rows=data;self.scans.setRowCount(len(self.scan_rows));self.pairs.setRowCount(len(self.pair_rows))
+            self.scan_rows,self.pair_rows,footprint=data;self.scans.setRowCount(len(self.scan_rows));self.pairs.setRowCount(len(self.pair_rows))
+            self.summary_cards[3].set_value(('≥ ' if not footprint['complete'] else '')+size(footprint['total_bytes']),'Đo hiện tại, không hồi tố vào các mốc cũ')
             lookup={r["id"]:r for r in self.scan_rows}
             for i,row in enumerate(self.scan_rows):
                 summary=json.loads(row["summary"] or "{}");roots="; ".join(json.loads(row["config"])["roots"])
@@ -187,14 +222,14 @@ class HistoryPanel(QWidget):
                 if summary.get('completed_steps'):note=' • '.join(summary['completed_steps'])+(' • '+note if note else '')
                 status_text=STATUS.get(row["status"],row["status"])+(" • "+summary["phase"] if row["status"]=="running" and summary.get("phase") else "")
                 if row['status'] in ('complete','partial'):
-                    status_text=f"Đã lưu {summary.get('files',0):,} file / {summary.get('folders',0):,} thư mục"
+                    status_text='Đã lưu metadata'
                     if summary.get('errors'):status_text+=f" • {summary['errors']:,} lỗi đọc"
-                coverage='Có vùng chưa xác minh' if summary.get('coverage_unverified') else f"{summary['errors']:,} lỗi đọc" if summary.get('errors') else 'Không ghi nhận lỗi đọc'
-                from .normalization import STATES
+                coverage=coverage_text(summary)
                 norm=summary.get('normalization',{})
-                norm_text=STATES.get(norm.get('state'),'Chuẩn cũ / chưa chuẩn hóa')
-                values=[scan_name(row),local_time(row["started"]),roots,row["engine"],status_text,
-                        f"{summary.get('files',0):,} / {summary.get('folders',0):,}",size(summary.get("logical"))+" / "+size(summary.get("allocated")),f"{whole(summary.get('seconds',0)):,} s",storage_delta(summary.get("storage")),coverage,norm_text]
+                norm_text=normalization(summary)
+                from .snapshot_scope import option_label
+                values=[f"Lần {row.get('ordinal',row['id'])}",local_time(row["started"]).replace(' UTC+07',''),roots,row["engine"],status_text,
+                        f"{summary.get('files',0):,} / {summary.get('folders',0):,}",size(summary.get("logical"))+" / "+size(summary.get("allocated")),f"{whole(summary.get('seconds',0)):,} s",storage_delta(summary.get("storage")),coverage,norm_text,option_label(row)]
                 for j,value in enumerate(values):
                     cell=QTableWidgetItem(value);cell.setToolTip(value+f"\nID nội bộ: {row['id']}\n"+storage_tooltip(summary.get("storage")))
                     if j==4 and (summary.get("coverage_note") or summary.get("note")):cell.setToolTip(status_text+"\n"+(summary.get("coverage_note") or summary.get("note")))
@@ -220,7 +255,7 @@ class HistoryPanel(QWidget):
                         po=summary.get('private_old_totals') or {};pn=summary.get('private_new_totals') or {}
                         cell.setToolTip(cell.toolTip()+'\nCũ/Mới là toàn bộ số đo; chênh lệch chỉ tính phần đủ bằng chứng của Chung và Riêng. Riêng: cũ '+size(po.get('logical'))+' / mới '+size(pn.get('logical'))+'.')
                     if j==0:cell.setData(Qt.ItemDataRole.UserRole,row['id'])
-                    if j==3:cell.setForeground(QColor('#667085' if delta is None else '#138454' if delta>0 else '#d34242'))
+                    if j==3:cell.setForeground(QColor('#667085' if delta is None else '#138454' if delta>0 else '#ac581c' if delta<0 else '#667085'))
                     self.pairs.setItem(i,j,cell)
                 if row['id']==selected_pair:self.pairs.setCurrentCell(i,0)
             for table,value in zip((self.scans,self.pairs),scrolls):table.verticalScrollBar().setValue(value)
@@ -228,6 +263,9 @@ class HistoryPanel(QWidget):
             self.load_state.setText(f'{len(self.scan_rows):,} lượt quét • {len(self.pair_rows):,} cặp so sánh • mới nhất ở trên')
             if self.revision!=revision:self.dirty=True
             for blocker in blockers:blocker.unblock()
+            if self.pair_rows:self.render_pair_summary(json.loads(self.pair_rows[0]['summary'] or '{}'))
+            if self.scan_rows:
+                first=json.loads(self.scan_rows[0]['summary'] or '{}');self.summary_cards[2].set_value(normalization(first),coverage_text(first))
             self.selection_details()
         self.refresh_worker=self.owner.job(read,done)
         read_failed=[False]

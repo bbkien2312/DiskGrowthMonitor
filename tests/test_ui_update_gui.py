@@ -32,7 +32,7 @@ def test_three_columns_fit_default_narrow_resize_drag_and_reset(gui):
     assert tree.columnWidth(0)<=before-15
     assert sum(tree.columnWidth(i) for i in range(3))==tree.viewport().width()
     w.save_layout();saved=json.loads((home()/'data/ui-settings.json').read_text(encoding='utf-8'))
-    assert 'splitter/scan-v3' in saved and 'columns/details-v4' in saved
+    assert 'splitter/scan-v3' in saved and 'columns/details-v5' in saved
     w.reset_layout();app.processEvents()
     assert tree.columnWidth(0)>=default[0]-5
     assert SORT_COLUMNS[4]=='delta' and HEADERS[5]=='Loại'
@@ -57,7 +57,7 @@ def test_status_multi_filter_scope_paging_and_summary_unchanged(gui,isolated):
     b.change.select(CHANGES);b.reload();pump(app,lambda:not w.workers)
     assert b.model.total==1400
     assert b.metrics[2].caption.text()=='CHÊNH LỆCH'
-    assert b.metrics[2].private_value.text()=='→ 0 B'
+    assert b.metrics[2].private_value.text()=='= 0 B'
     store.close()
 
 

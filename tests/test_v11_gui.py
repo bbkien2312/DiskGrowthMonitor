@@ -64,7 +64,7 @@ def test_gui_50_then_1000_and_folder_only_scope(gui,isolated):
     assert [x.text() for x in browser.metrics]==totals
     browser.recursive.setChecked(False);browser.reload();pump(app,lambda:not w.workers)
     assert browser.model.total==1200 and all(r['parent']==str(branch) for page in browser.model.chunks.values() for r in page)
-    assert 'chỉ mục trực tiếp' in browser.scope_label.text()
+    assert browser.scope_label.text().endswith(str(branch)) and not browser.recursive.isChecked()
     browser.select_scope(None);pump(app,lambda:not w.workers)
     assert browser.model.total==1202
     store.close()

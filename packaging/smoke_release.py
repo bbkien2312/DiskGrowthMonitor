@@ -23,6 +23,7 @@ target=base/'Installed App';fixture=base/'scan-fixture';fixture.mkdir()
 env=os.environ.copy()
 for name in ('DGM_HOME','PYTHONPATH','PYTHONHOME'):env.pop(name,None)
 env.update(TEMP=str(base),TMP=str(base),PYTHONUTF8='1',QT_QPA_PLATFORM='offscreen',PYTHONNOUSERSITE='1')
+env['LOCALAPPDATA']=str(base/'UserLocal');env['APPDATA']=str(base/'UserRoaming')
 report={'version':__version__,'installer_sha256':hashlib.sha256(installer.read_bytes()).hexdigest(),'checks':[],'fixture_only':True}
 
 def execute(argv,expected=0):
@@ -90,6 +91,31 @@ assert private['total']==1200 and len(private['rows'])==20
 assert all(row['delta'] is None and row['change']=='not_scanned' for row in private['rows'])
 assert private['summary']['private_old_totals']['logical']>0 and private['summary']['private_new_totals']['logical']==0
 report['checks'].append('frozen automatic common/private scope split: 1200 excluded files are not false deletions')
+
+# Actual cleanup only inside a newly-created D: TEMP fixture, never real caches.
+import time
+temp_cache=base/'UserLocal/Temp';temp_cache.mkdir(parents=True,exist_ok=True)
+cache_file=temp_cache/'approved-fixture-cache.bin';cache_file.write_bytes(b'x'*1500)
+project_fixture=temp_cache/'project';project_fixture.mkdir();(project_fixture/'pyproject.toml').write_text('[project]',encoding='utf-8')
+(project_fixture/'keep.py').write_text('keep',encoding='utf-8')
+for path in (cache_file,project_fixture/'pyproject.toml',project_fixture/'keep.py'):
+    old=time.time()-20*86400;os.utime(path,(old,old))
+proposal=cli('cleanup','plan','--rule','user-temp')
+assert proposal['entry_count']==1 and proposal['entries']==[] and proposal['bytes']==1500
+page=cli('cleanup','page',proposal['id'],'--limit','20','--sort','size','--direction','desc')
+assert page['entries'][0]['path']==str(cache_file)
+assert 'entry_archive' in cli('cleanup','show',proposal['id'])
+cli('cleanup','select',proposal['id'],'--path',cache_file)
+cleaned=cli('cleanup','apply',proposal['id'],'--confirm',proposal['confirmation'])
+assert cleaned['deleted_bytes']==1500 and not cache_file.exists() and (project_fixture/'keep.py').is_file()
+assert cli('cleanup','protected')['protected']
+inspection=cli('cleanup','inspect-folder',fixture,'--minimum-mb','0')
+assert inspection['read_only'] and inspection['files_seen']==1202
+scheduled=cli('schedule','add','--name','Fixture daily','--times','08:00,14:00,20:00')
+edited=cli('schedule','edit',scheduled['id'],'--name','Fixture renamed')
+assert edited['name']=='Fixture renamed'
+assert 'events' in cli('log-events','--anonymize')
+report['checks'].append('1.4 frozen CLI: compressed/paged review plan, exact confirmed deletion of one D: fixture cache, project preserved, protected catalog, bounded read-only inspector, named schedule edit without registering Windows tasks, redacted log events')
 gui=cli('gui','--smoke-test')
 assert __version__ in gui['title'] and gui['tabs']==6 and gui['image_saved']
 execute([target/'DiskGrowthMonitor.exe','gui','--smoke-test'])

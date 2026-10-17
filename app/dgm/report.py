@@ -16,12 +16,14 @@ def ai_question(scan_id=None, plan_id=None, anonymize=True):
         s.close()
     if plan_id:
         from .cleanup import get_plan
-        p = get_plan(plan_id)
-        content["cleanup_plan"] = {"bytes": p["bytes"], "rules": p["rules"], "blocked": p["blocked"], "examples": p["entries"][:30]}
+        from .cleanup import plan_page
+        p = get_plan(plan_id,compact=True)
+        examples=plan_page(plan_id,limit=30)['entries'] if p.get('entry_archive') else p['entries'][:30]
+        content["cleanup_plan"] = {"bytes": p["bytes"], "rules": p["rules"], "blocked": p["blocked"], "examples": examples}
     text = "Xin xem metadata dưới đây và tư vấn mục có thể dọn, tác động, cách dọn chính thức, và các điều kiện cần kiểm tra. Đây chỉ là câu hỏi tham khảo, không cho phép thực thi.\n\n" + json.dumps(content, ensure_ascii=False, indent=2)
     if anonymize:
-        text = re.sub(r"(?i)([a-z]:[\\/]+Users[\\/]+)[^\\/\"\s]+", r"\1<USER>", text)
-        text = re.sub(r"(?i)([a-z]:\\\\Users\\\\)[^\\\"]+", r"\1<USER>", text)
+        from .log_reader import redact
+        text=redact(text)
     return text
 
 

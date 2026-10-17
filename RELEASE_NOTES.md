@@ -1,4 +1,14 @@
-# Disk Growth Monitor 1.3.1 — 17/10/2026
+# Disk Growth Monitor 1.4.0 — 18/10/2026
+
+- Chi tiết có icon folder/file, ký hiệu ngắn, màu cả hàng và viền chọn giữ màu trạng thái; tiêu đề/dropdown cây cao hơn, không cắt chữ. Phân trang, sắp xếp và phép tính byte gốc giữ nguyên.
+- Dọn dẹp có duyệt: catalog tiếng Việt, giải thích điều kiện/tác động và vùng bảo vệ. Không tick sẵn; tool xóa cả cache được phân biệt với xóa từng file. Chặn project trong Temp, model AI, SQLite/WAL/SHM và reparse; không dọn registry hoặc xóa tay thành phần Windows.
+- Kế hoạch dọn chỉ lưu metadata JSONL nén có checksum/hạn một giờ; tổng hạn log 64 MB / chỉ mục tạm 128 MB. GUI/CLI phân trang toàn đề xuất, xác nhận và kiểm lại identity/mtime/size; chống dùng lại, xử lý lựa chọn đã đổi. Không tạo bản sao nội dung để phục hồi.
+- Thêm kiểm tra thủ công file lớn/trùng/folder rỗng trong folder chọn riêng, có giới hạn tài nguyên, tham chiếu được đánh dấu giữ, không tự xóa. Tìm trùng cần đọc nội dung để hash và hỏi trước trên GUI; không đếm hardlink thành dung lượng có thể thu hồi.
+- Hệ thống chia bốn mục; footprint data/log app được đo riêng để không bỏ sót vùng tự loại trừ hoặc cộng trùng backup. Lịch sử phân biệt phiên bản chuẩn hóa và độ bao phủ; không coi khác phạm vi là tăng thật.
+- Lịch có tên/tạo/sửa, thứ dễ chọn, lần cuối/kế tiếp; Task/Service có trạng thái độc lập. Nhật ký có màu theo hàng, lọc theo việc/mức/từ khóa, chi tiết và xuất metadata hỗ trợ có che thông tin/xem trước, không tự gửi web.
+- Các khả năng mới có CLI dùng chung API. Runtime, update tại chỗ và lịch sử nén của 1.3.1 được giữ; không thêm package hệ thống hoặc rule/script bên ngoài.
+
+## Bản 1.3.1 — 17/10/2026
 
 - Sửa xung đột nâng cấp schema cache khi cây thư mục và lịch sử mở đồng thời; kiểm tra lại schema dưới khóa ghi SQLite. Xác minh log sau cập nhật không ghi đè file lịch sử; con trỏ phân trang giữ ổn định khi tạo lại chỉ mục tạm.
 

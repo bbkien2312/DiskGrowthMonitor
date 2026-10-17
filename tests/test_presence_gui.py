@@ -24,7 +24,7 @@ def setup_rows(w,app,isolated):
 
 def test_status_first_colors_strikeout_presence_and_verified_metrics(gui,isolated):
     app,w=gui;setup_rows(w,app,isolated);b=w.browser
-    assert HEADERS==['Trạng thái','Đường dẫn','Cũ','Mới','±','Loại','Trên đĩa','Tạo','Sửa']
+    assert HEADERS==['TT','Đường dẫn','Cũ','Mới','±','Loại','± Đĩa','Tạo','Sửa']
     assert SORT_COLUMNS.index('delta')==4 and SORT_COLUMNS.index('path')==1
     assert b.model.total==1 and b.metrics[2].value.text()=='↑ +2 MB'
     assert b.metrics[2].private_value.text()=='≈ ↓ −4 MB'
@@ -33,15 +33,16 @@ def test_status_first_colors_strikeout_presence_and_verified_metrics(gui,isolate
     rows={Path(b.model.row_at(i)['path']).name:i for i in range(b.model.loaded)}
     assert set(rows)=={'gone','new','cache','unknown'}
     display=lambda name,col:b.model.data(b.model.index(rows[name],col))
-    assert display('cache',2)=='Không quét' and 'Không quét Cũ' in display('cache',0)
-    assert display('unknown',3)=='Chưa rõ' and 'Chỉ Cũ' in display('unknown',0)
-    assert display('gone',3)=='Không có' and display('new',2)=='Không có'
+    assert display('cache',2)=='∅' and display('cache',0)=='∅'
+    assert 'Không quét Cũ' in b.model.data(b.model.index(rows['cache'],0),Qt.ItemDataRole.AccessibleTextRole)
+    assert display('unknown',3)=='?' and 'Chỉ Cũ' in b.model.data(b.model.index(rows['unknown'],0),Qt.ItemDataRole.AccessibleTextRole)
+    assert display('gone',3)=='×' and display('new',2)=='×'
     font=b.model.data(b.model.index(rows['gone'],1),Qt.ItemDataRole.FontRole)
     assert font.strikeOut()
     assert b.model.data(b.model.index(rows['cache'],1),Qt.ItemDataRole.FontRole) is None
     for name in ('gone','new','cache','unknown'):
         assert b.model.data(b.model.index(rows[name],0),Qt.ItemDataRole.BackgroundRole) is not None
-    assert b.tree_mode.currentText()=='Cặp Cũ–Mới' and b.tree_mode.height()>=b.tree_mode.fontMetrics().height()+14
+    assert b.tree_mode.currentText()=='Cặp đang so sánh' and b.tree_mode.height()>=b.tree_mode.fontMetrics().height()+14
     if folder:=os.environ.get('DGM_QA_IMAGES'):
         path=Path(folder);path.mkdir(parents=True,exist_ok=True);assert w.grab().save(str(path/'presence-private.png'))
     b.presence.setCurrentIndex(b.presence.findData('old'));pump(app,lambda:not w.workers)

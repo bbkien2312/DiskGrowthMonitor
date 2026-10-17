@@ -1,4 +1,4 @@
-Disk Growth Monitor 1.3.1 - Windows x64
+Disk Growth Monitor 1.4.0 - Windows x64
 
 Private Python/Qt runtime is bundled under .venv.
 New histories use checksummed metadata-only JSONL.gz; file contents are never backed up.
@@ -17,6 +17,9 @@ Headless CLI/background jobs retain explicit per-operation privilege checks.
 WizTree is proprietary and NOT included. Select your installed WizTree executable
 in the System tab. WinDirStat/gdu can be downloaded explicitly into .venv/tools.
 No scan, cleanup or automatic task starts during installation.
+Cleanup proposals contain compressed metadata, expire after one hour, and start
+with no items selected. Tool actions may affect an entire cache as clearly shown.
+Folder inspection is opt-in, read-only, bounded, and never defaults to a drive.
 
 Upgrades preserve data and logs. Close the application before upgrading.
 For app-assisted updates, the app downloads the official Release, checks SHA-256,

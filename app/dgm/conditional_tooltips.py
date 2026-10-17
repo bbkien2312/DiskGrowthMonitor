@@ -49,15 +49,21 @@ class ConditionalTooltips(QObject):
         if isinstance(parent,QHeaderView):
             index=parent.logicalIndexAt(event.pos())
             if index>=0:
+                from .comparison_visuals import SEMANTIC_HINT_ROLE
                 value=parent.model().headerData(index,parent.orientation(),Qt.ItemDataRole.DisplayRole)
-                if parent.fontMetrics().horizontalAdvance(str(value))>parent.sectionSize(index)-24:text=str(value)
+                semantic=parent.model().headerData(index,parent.orientation(),SEMANTIC_HINT_ROLE)
+                if semantic:text=str(semantic)
+                elif parent.fontMetrics().horizontalAdvance(str(value))>parent.sectionSize(index)-24:text=str(value)
         elif isinstance(parent,QAbstractItemView):
             index=parent.indexAt(event.pos())
             if index.isValid():
+                from .comparison_visuals import SEMANTIC_HINT_ROLE
+                semantic=index.data(SEMANTIC_HINT_ROLE)
                 option=QStyleOptionViewItem();option.initFrom(parent);option.rect=parent.visualRect(index);option.widget=parent
                 delegate=parent.itemDelegateForIndex(index);delegate.initStyleOption(option,index)
                 rect=parent.style().subElementRect(QStyle.SubElement.SE_ItemViewItemText,option,parent)
-                if QFontMetrics(option.font).horizontalAdvance(option.text)>max(0,rect.width()-6):text=option.text
+                if semantic:text=str(semantic)
+                elif QFontMetrics(option.font).horizontalAdvance(option.text)>max(0,rect.width()-6):text=option.text
         else:
             text=clipped_text(watched)
             if text is None:return False

@@ -528,6 +528,19 @@ def logs(audit: bool = False, tail: int = 100, level: Optional[str] = None, foll
         except KeyboardInterrupt:return
 
 
+@app.command('log-events')
+def log_events(source:str='app.log',level:str='',operation:str='',search:str='',anonymize:bool=False):
+    from .config import home
+    from .log_reader import read_tail,events,redact,LEVELS
+    if source not in ('app.log','debug.log','audit.jsonl') or level and level.upper() not in LEVELS:
+        raise typer.BadParameter('Chọn app.log/debug.log/audit.jsonl và mức log hợp lệ')
+    path=home()/'logs'/source
+    rows=events(read_tail(path)[0],audit=source=='audit.jsonl')[-4000:] if path.exists() else []
+    rows=[row for row in rows if (not level or row['level']==level.upper()) and (not operation or operation.casefold() in row['operation'].casefold()) and (not search or search.casefold() in row['detail'].casefold())]
+    if anonymize:rows=[{key:redact(value) for key,value in row.items()} for row in rows]
+    output({'source':source,'events':rows,'counts':{value:sum(row['level']==value for row in rows) for value in LEVELS},'scope':'500 KB cuối / tối đa 4.000 sự kiện; không tự gửi lên web'})
+
+
 @app.command("snapshot-delete")
 def snapshot_delete(scan_id: int):
     from .store import Store
@@ -600,15 +613,34 @@ def cleanup_rules():
 
 
 @cleanup_app.command("plan")
-def cleanup_plan(rule: list[str] = typer.Option(..., "--rule"), update_done: bool = False):
+def cleanup_plan(rule: list[str] = typer.Option(..., "--rule"), update_done: bool = False,
+                 summary:bool=typer.Option(True,'--summary/--full',help='Mặc định chỉ tóm tắt; cleanup page tải từng trang, --full xuất tất cả metadata.')):
     from .cleanup import plan
-    output(invoke_action(plan,rule,update_done,notify=admin_progress))
+    output(invoke_action(plan,rule,update_done,notify=admin_progress,compact=summary))
 
 
 @cleanup_app.command("show")
-def cleanup_show(plan_id: str):
+def cleanup_show(plan_id: str,summary:bool=typer.Option(True,'--summary/--full')):
     from .cleanup import get_plan
-    output(get_plan(plan_id))
+    output(get_plan(plan_id,compact=summary))
+
+
+@cleanup_app.command('page')
+def cleanup_page(plan_id:str,offset:int=0,limit:int=20,sort:str='size',direction:str='desc',rule:str='',search:str=''):
+    from .cleanup import plan_page
+    output(plan_page(plan_id,offset=offset,limit=limit,sort=sort,direction=direction,rule=rule,search=search))
+
+
+@cleanup_app.command('protected')
+def cleanup_protected():
+    from .cleanup_catalog import PROTECTED,REFERENCES
+    output({'protected':PROTECTED,'references':REFERENCES,'note':'Không nạp script/rule ngoài hoặc tự xóa các vùng này.'})
+
+
+@cleanup_app.command('inspect-folder')
+def cleanup_inspect_folder(root:Path,mode:str='large',minimum_mb:int=10,reference:list[str]=typer.Option([],'--reference')):
+    from .manual_inspection import inspect_folder
+    output(inspect_folder(root,mode,min_bytes=minimum_mb*1_000_000,reference=reference))
 
 
 @cleanup_app.command("list")
@@ -617,6 +649,16 @@ def cleanup_list():
     s = Store()
     output([dict(x) for x in s.db.execute("SELECT id,created,status FROM plans ORDER BY created DESC")])
     s.close()
+
+
+@cleanup_app.command('prune')
+def cleanup_prune():
+    from .store import Store
+    from .cleanup_storage import prune
+    store=Store()
+    try:prune(store)
+    finally:store.close()
+    output({'pruned':'expired-plan-metadata','user_files_preserved':True})
 
 
 @cleanup_app.command("select")
@@ -628,10 +670,10 @@ def cleanup_select(plan_id: str, path: list[str] = typer.Option(..., "--path")):
 @cleanup_app.command("apply")
 def cleanup_apply(plan_id: str, confirm: Optional[str] = None):
     from .cleanup import apply, get_plan
-    p = get_plan(plan_id)
+    p = get_plan(plan_id,compact=True)
     if confirm is None:
         from .presentation import size
-        typer.echo(f"{len(p['entries'])} mục; {size(p['bytes'])}. Cache được xóa vĩnh viễn.")
+        typer.echo(f"{p.get('entry_count',len(p['entries']))} mục; {size(p['bytes'])}. Cache được xóa vĩnh viễn; một số tool xử lý toàn bộ cache như ghi trong rule.")
         confirm = typer.prompt(f"Gõ chính xác {p['confirmation']}")
     result=invoke_action(apply,plan_id,confirm,notify=admin_progress);output(result)
     if result.get('cancelled'):raise typer.Exit(130)
@@ -645,10 +687,20 @@ def schedule_list():
 
 @schedules.command("add")
 def schedule_add(profile: str = "daily", mode: str = "daily", interval: int = 1,
-                 times: str = "09:00", weekdays: str = "0", cleanup_rule: list[str] = typer.Option([], "--cleanup-rule")):
+                 times: str = "09:00", weekdays: str = "0", cleanup_rule: list[str] = typer.Option([], "--cleanup-rule"),name:Optional[str]=None):
     from .schedule import add
     output(add({"profile": profile, "mode": mode, "interval": interval, "times": times.split(","),
-                "weekdays": [int(x) for x in weekdays.split(",")], "cleanup_rules": cleanup_rule}))
+                "weekdays": [int(x) for x in weekdays.split(",")], "cleanup_rules": cleanup_rule,'name':name}))
+
+
+@schedules.command('edit')
+def schedule_edit(schedule_id:str,name:Optional[str]=None,profile:Optional[str]=None,mode:Optional[str]=None,
+                  interval:Optional[int]=None,times:Optional[str]=None,weekdays:Optional[str]=None):
+    from .schedule import update
+    changes={key:value for key,value in {'name':name,'profile':profile,'mode':mode,'interval':interval}.items() if value is not None}
+    if times is not None:changes['times']=times.split(',')
+    if weekdays is not None:changes['weekdays']=[int(value) for value in weekdays.split(',')]
+    output(update(schedule_id,changes))
 
 
 @schedules.command("preview")

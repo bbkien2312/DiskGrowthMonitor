@@ -3,31 +3,50 @@ from bisect import bisect_right
 from collections import OrderedDict
 import json
 from pathlib import Path
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal, QEvent
+from PySide6.QtGui import QColor, QFont, QPen, QShortcut, QKeySequence
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit, QPushButton, QCheckBox, QSplitter, QTreeWidget, QTreeWidgetItem, QTableView, QStyledItemDelegate, QTabBar, QStyle, QDialog, QPlainTextEdit, QDialogButtonBox
 from .store import Store
 from .config import comparison_path_key
 from .comparison import Comparisons
 from .presentation import size, local_time, scan_label, scan_name, change_text, change_color, CHANGES, storage_delta, row_status, status_colors, snapshot_cell
-from .ui_helpers import StatusFilter, MetricCard, FittedTree, ElidingLabel
+from .ui_helpers import StatusFilter, MetricCard, FittedTree, ElidingLabel, SectionLabel
+from .comparison_visuals import (visual,status_symbol,status_hint,gui_snapshot_cell,gui_scan_label,make_legend,
+    SEMANTIC_HINT_ROLE,gui_change_text as change_text,gui_change_color as change_color)
 
-HEADERS = ["Trạng thái", "Đường dẫn", "Cũ", "Mới", "±", "Loại", "Trên đĩa", "Tạo", "Sửa"]
+HEADERS = ["TT", "Đường dẫn", "Cũ", "Mới", "±", "Loại", "± Đĩa", "Tạo", "Sửa"]
 SORT_COLUMNS = ["change", "path", "old", "new", "delta", "kind", "allocated", "created", "modified"]
 PAGE_SIZES = (20,50,100,200,500,1000)
 
 
-class PathDelegate(QStyledItemDelegate):
+class ComparisonRowDelegate(QStyledItemDelegate):
     def initStyleOption(self,option,index):
         super().initStyleOption(option,index)
-        # Preserve the filename at the end as well as the drive/root prefix.
-        option.textElideMode=Qt.TextElideMode.ElideMiddle
+        if index.column()==1:option.textElideMode=Qt.TextElideMode.ElideMiddle
+
+    def paint(self,painter,option,index):
+        from PySide6.QtWidgets import QStyleOptionViewItem
+        selected=bool(option.state & QStyle.StateFlag.State_Selected)
+        normal=QStyleOptionViewItem(option)
+        # Keep the semantic row color when selected; selection has blue edges.
+        normal.state &= ~(QStyle.StateFlag.State_Selected|QStyle.StateFlag.State_HasFocus|QStyle.StateFlag.State_MouseOver)
+        super().paint(painter,normal,index)
+        if selected:
+            painter.save();painter.setPen(QPen(QColor('#327bbb'),1))
+            r=option.rect.adjusted(0,0,-1,-1)
+            painter.drawLine(r.topLeft(),r.topRight());painter.drawLine(r.bottomLeft(),r.bottomRight())
+            if index.column()==0:painter.fillRect(r.left(),r.top(),3,r.height()+1,QColor('#327bbb'))
+            painter.restore()
+
+
+class PathDelegate(ComparisonRowDelegate):pass
 
 
 class DetailModel(QAbstractTableModel):
     need_page = Signal(int)
     def __init__(self):
         super().__init__();self.batch_size=20;self.cache_limit=400;self.private=False
+        self.path_icons=None
         self.chunks=OrderedDict();self.anchors={0:None};self.pending=set();self.starts=[];self.lengths=[]
         self.loaded=0;self.next_cursor=None;self.total=0;self.paused=False
 
@@ -54,6 +73,10 @@ class DetailModel(QAbstractTableModel):
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         if role == Qt.ItemDataRole.DisplayRole:
             return HEADERS[section] if orientation == Qt.Orientation.Horizontal else str(section + 1)
+        if orientation==Qt.Orientation.Horizontal and role==Qt.ItemDataRole.ToolTipRole:
+            return {0:'Trạng thái • xem Ký hiệu & màu',4:'Chênh lệch dung lượng logic',6:'Chênh lệch dung lượng cấp phát trên đĩa'}.get(section,HEADERS[section])
+        if orientation==Qt.Orientation.Horizontal and role==SEMANTIC_HINT_ROLE:
+            return {0:'Trạng thái • xem Ký hiệu & màu',6:'Chênh lệch dung lượng cấp phát trên đĩa'}.get(section)
         if orientation==Qt.Orientation.Horizontal and section in (2,3):
             if role==Qt.ItemDataRole.ForegroundRole:return QColor('#325c8a' if section==2 else '#256d55')
             if role==Qt.ItemDataRole.BackgroundRole:return QColor('#edf4fc' if section==2 else '#eaf7ef')
@@ -74,28 +97,43 @@ class DetailModel(QAbstractTableModel):
         row = self.row_at(index.row())
         if row is None:
             return ('Đã dừng tải' if self.paused else 'Đang tải…') if role == Qt.ItemDataRole.DisplayRole and index.column() == 0 else None
-        change=row.get('change','unknown');foreground,background=status_colors(change);column=index.column()
+        change=row.get('change','unknown');_,_,foreground,background=visual(change);column=index.column()
+        if role==Qt.ItemDataRole.DecorationRole and column==1:
+            if self.path_icons is None:
+                from PySide6.QtWidgets import QApplication
+                style=QApplication.style()
+                self.path_icons={
+                    'folder':style.standardIcon(QStyle.StandardPixmap.SP_DirIcon),
+                    'file':style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)}
+            # Generic icons only: never ask Explorer/stat the real saved path.
+            return self.path_icons['folder' if row.get('kind')=='folder' else 'file']
+        if role==SEMANTIC_HINT_ROLE:
+            if column==0:return status_hint(row)
+            if column in (2,3) and gui_snapshot_cell(row,'old' if column==2 else 'new') in ('∅','?','×','—'):
+                return ('Mốc cũ: ' if column==2 else 'Mốc mới: ')+snapshot_cell(row,'old' if column==2 else 'new')
+        if role==Qt.ItemDataRole.AccessibleTextRole and column==0:return status_hint(row)
         if role==Qt.ItemDataRole.FontRole:
-            if column==0:
-                font=QFont();font.setWeight(QFont.Weight.DemiBold);return font
+            if column in (0,4):
+                font=QFont('Segoe UI Symbol') if column==0 else QFont();font.setWeight(QFont.Weight.DemiBold)
+                if column==0:font.setPixelSize(18)
+                return font
+            if column in (2,3) and gui_snapshot_cell(row,'old' if column==2 else 'new') in ('∅','?','×','—'):
+                return QFont('Segoe UI Symbol')
             if column==1 and change=='missing':
                 font=QFont();font.setStrikeOut(True);return font
         if role==Qt.ItemDataRole.ForegroundRole:
-            if column==0 or column==1 and change in ('new','missing'):return QColor(foreground)
-            if column==4:return QColor(change_color(row.get('delta')))
-            if column in (2,3):return QColor('#325c8a' if column==2 else '#256d55')
+            return QColor(foreground)
         if role==Qt.ItemDataRole.BackgroundRole:
-            if column==0:return QColor(background)
-            if change=='missing':return QColor('#f3f4f6')
-            if column in (2,3):return QColor('#f1f6fd' if column==2 else '#eff9f4')
-            if change=='new':return QColor('#f5fbf7')
+            return QColor(background)
+        if role==Qt.ItemDataRole.TextAlignmentRole and column==0:
+            return Qt.AlignmentFlag.AlignCenter
         if role == Qt.ItemDataRole.TextAlignmentRole and column in (2, 3, 4, 6):
             return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole):
             from datetime import datetime
             from zoneinfo import ZoneInfo
             stamp = lambda v: datetime.fromtimestamp(v, ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M:%S") if v else "—"
-            values = [row_status(row),row['path'],snapshot_cell(row,'old'),snapshot_cell(row,'new'),
+            values = [status_symbol(row) if role==Qt.ItemDataRole.DisplayRole else status_hint(row),row['path'],gui_snapshot_cell(row,'old'),gui_snapshot_cell(row,'new'),
                       ('≈ ' if row.get('unverified_count') and row.get('delta') is not None else '')+change_text(row.get('delta')),
                       {"file":"File","folder":"Thư mục","link":"Liên kết"}.get(row["kind"],row["kind"]),change_text(row.get('allocated_delta')),
                       stamp(row.get('created')),stamp(row.get('modified'))]
@@ -129,7 +167,7 @@ class DiskBrowser(QWidget):
         self.pair_id = None; self.tree_pair = None; self.tree_ids = None; self.latest_tree_ids=None; self.root = None; self.profile = None; self.sort = "delta"; self.direction = "desc";self.pending_open=None
         layout = QVBoxLayout(self); layout.setContentsMargins(0,0,0,0); layout.setSpacing(3)
         comparison_controls=QWidget();comparison_controls.setObjectName('comparisonControls');comparison_controls.setAttribute(Qt.WidgetAttribute.WA_StyledBackground,True)
-        controls = QHBoxLayout(comparison_controls);controls.setContentsMargins(5,1,3,1)
+        controls = QHBoxLayout(comparison_controls);controls.setContentsMargins(7,4,5,4);controls.setSpacing(6)
         self.older = QComboBox(); self.newer = QComboBox()
         for field in (self.older,self.newer):
             field.setMinimumWidth(150);field.setMinimumContentsLength(10)
@@ -147,16 +185,22 @@ class DiskBrowser(QWidget):
         for tone in ('old','new','delta','summary'):
             label=MetricCard(tone); cards.addWidget(label,4 if tone=='summary' else 3); self.metrics.append(label)
         layout.addLayout(cards)
-        filters=QHBoxLayout(); self.kind=QComboBox(); self.change=StatusFilter(CHANGES); self.search=QLineEdit(); self.search.setPlaceholderText("Lọc đường dẫn")
+        filter_host=QWidget();filter_host.setObjectName('resultFilters')
+        filters=QHBoxLayout(filter_host);filters.setContentsMargins(7,4,5,4);filters.setSpacing(6)
+        filter_label=QLabel('LỌC');filter_label.setObjectName('zoneTag');filters.addWidget(filter_label)
+        self.kind=QComboBox(); self.change=StatusFilter(CHANGES); self.search=QLineEdit(); self.search.setPlaceholderText("Tìm trong đường dẫn…")
         for label,value in [("Mọi loại","all"),("Thư mục","folder"),("File","file")]: self.kind.addItem(label,value)
         self.recursive=QCheckBox("Gồm thư mục con"); self.recursive.setChecked(True)
-        for field in (self.kind,self.change,self.search,self.recursive): filters.addWidget(field)
+        for field in (self.kind,self.change,self.search): filters.addWidget(field,1 if field is self.search else 0)
         self.units=QComboBox();self.units.addItem('GB (10⁹ B)',False);self.units.addItem('GiB (2³⁰ B)',True)
         self.units.setCurrentIndex(int(bool(owner.preferences.values.get('units/binary',False))))
         self.units.setToolTip('Chỉ đổi cách hiển thị; dữ liệu luôn lưu byte. Windows thường ghi GB nhưng tính theo GiB.')
         filters.addWidget(self.units);self.units.currentIndexChanged.connect(self.units_changed)
-        owner.button("Lọc / về đầu",self.reload,filters); owner.button("Xem toàn bộ",lambda:self.select_scope(None),filters)
-        layout.addLayout(filters)
+        owner.button("Lọc",self.reload,filters); owner.button("Toàn phạm vi",lambda:self.select_scope(None),filters)
+        self.legend_toggle=owner.button('Ký hiệu & màu',lambda:self.legend.setVisible(self.legend_toggle.isChecked()),filters)
+        self.legend_toggle.setCheckable(True);self.legend_toggle.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
+        layout.addWidget(filter_host)
+        self.legend=make_legend(self);layout.addWidget(self.legend)
         self.search.returnPressed.connect(self.reload)
         compare_help=owner.help_box(layout,"compare","Chọn mốc cũ/mới rồi So sánh. Tổng quan, cây và chi tiết mặc định cùng một cặp mốc. Chọn thư mục để giới hạn chi tiết; sắp xếp áp dụng toàn bộ kết quả thỏa bộ lọc, không chỉ các dòng đã tải. Dung lượng logic khác dung lượng cấp phát trên đĩa.")
         self.compare_help=compare_help;self.compare_help.show_transient(False)
@@ -166,23 +210,31 @@ class DiskBrowser(QWidget):
         self.splitter=QSplitter();self.splitter.setMinimumHeight(188)
         self.splitter.setCollapsible(0,False);self.splitter.setCollapsible(1,False)
         left=QWidget(); ll=QVBoxLayout(left); ll.setContentsMargins(0,0,0,0);ll.setSpacing(3)
-        tree_header=QHBoxLayout();self.tree_label=ElidingLabel("Cây thư mục • cặp so sánh đang chọn");self.tree_label.setObjectName('sectionTitle');tree_header.addWidget(self.tree_label,1)
+        self.tree_header=QWidget();self.tree_header.setObjectName('paneBar');self.tree_header.setProperty('zone','tree')
+        tree_header=QHBoxLayout(self.tree_header);tree_header.setContentsMargins(8,3,6,3);tree_header.setSpacing(7)
+        self.tree_label=SectionLabel('Cây thư mục');self.tree_label.setObjectName('paneTitle');tree_header.addWidget(self.tree_label,1)
         self.tree_label.setProperty('zone','tree')
-        self.tree_mode=QComboBox();self.tree_mode.addItem("Cặp Cũ–Mới","selected");self.tree_mode.addItem("2 lượt mới nhất","latest")
-        self.tree_mode.setMinimumHeight(max(self.tree_label.sizeHint().height(),self.tree_mode.fontMetrics().height()+14))
+        self.tree_mode=QComboBox();self.tree_mode.addItem("Cặp đang so sánh","selected");self.tree_mode.addItem("Hai lượt mới nhất","latest")
+        self.tree_mode.setMinimumHeight(self.tree_mode.fontMetrics().height()+14)
         self.tree_mode.view().setStyleSheet('QListView::item{min-height:30px;padding:2px 5px;}')
-        self.tree_mode.setMinimumContentsLength(10);self.tree_mode.setMaximumWidth(160)
+        self.tree_mode.setMinimumContentsLength(13)
         self.tree_mode.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.tree_mode.setCurrentIndex(max(0,self.tree_mode.findData(owner.preferences.values.get('tree/mode','selected'))))
-        self.tree_mode.setToolTip("Chọn cặp so sánh để cây khớp bảng chi tiết, hoặc theo dõi hai lượt hợp lệ mới nhất.");tree_header.addWidget(self.tree_mode);ll.addLayout(tree_header)
-        self.tree=FittedTree(); self.tree.setHeaderLabels(["Thư mục","Mốc mới","Chênh lệch"]); self.tree.setAlternatingRowColors(True)
+        self.tree_mode.setToolTip("Chọn cặp so sánh để cây khớp bảng chi tiết, hoặc theo dõi hai lượt hợp lệ mới nhất.");tree_header.addWidget(self.tree_mode);ll.addWidget(self.tree_header)
+        self.tree=FittedTree(); self.tree.setHeaderLabels(["Thư mục","Mới","±"]); self.tree.setAlternatingRowColors(False)
         self.tree.headerItem().setToolTip(1,'Dung lượng logic tại mốc mới của cặp đang dùng cho cây')
         self.tree.itemExpanded.connect(self.expand); self.tree.itemClicked.connect(self.clicked);self.tree.itemDoubleClicked.connect(self.open_tree_item)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu); self.tree.customContextMenuRequested.connect(self.tree_menu)
         ll.addWidget(self.tree); self.splitter.addWidget(left)
         right=QWidget(); rl=QVBoxLayout(right); rl.setContentsMargins(0,0,0,0);rl.setSpacing(3)
-        self.scope_label=ElidingLabel("Chi tiết: toàn bộ phạm vi so sánh"); self.scope_label.setObjectName('sectionTitle'); rl.addWidget(self.scope_label)
+        self.detail_header=QWidget();self.detail_header.setObjectName('paneBar');self.detail_header.setProperty('zone','details')
+        detail_header=QHBoxLayout(self.detail_header);detail_header.setContentsMargins(8,3,6,3);detail_header.setSpacing(7)
+        self.scope_label=SectionLabel('Chi tiết: Toàn phạm vi');self.scope_label.setObjectName('paneTitle');detail_header.addWidget(self.scope_label,1)
         self.scope_label.setProperty('zone','details')
+        detail_header.addWidget(self.recursive);rl.addWidget(self.detail_header)
+        self.tree_mode.ensurePolished()
+        header_height=max(38,self.tree_mode.minimumHeight()+6,self.tree_mode.sizeHint().height()+6,self.fontMetrics().height()+18)
+        for bar in (self.tree_header,self.detail_header):bar.setFixedHeight(header_height)
         sectionrow=QHBoxLayout();self.sections=QTabBar();self.sections.addTab('Chung • hai mốc');self.sections.addTab('Riêng • một mốc')
         self.sections.setObjectName('comparisonSections')
         self.sections.setTabToolTip(0,'Có bản ghi ở cả Cũ và Mới; dữ liệu chưa đủ vẫn mang trạng thái Chưa rõ')
@@ -198,11 +250,11 @@ class DiskBrowser(QWidget):
         self.reason.setMinimumContentsLength(8);self.reason.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         rl.addLayout(sectionrow)
         self.model=DetailModel(); self.model.need_page.connect(self.fetch_group)
-        self.table=QTableView(); self.table.setModel(self.model); self.table.setAlternatingRowColors(True); self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
+        self.table=QTableView();self.table.setObjectName('comparisonTable'); self.table.setModel(self.model); self.table.setAlternatingRowColors(False); self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.table.setMinimumHeight(132)
         self.table.setWordWrap(False); self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
-        self.table.setItemDelegateForColumn(1,PathDelegate(self.table))
-        self.table.verticalHeader().setDefaultSectionSize(30)
+        self.table.setItemDelegate(ComparisonRowDelegate(self.table))
+        self.table.verticalHeader().setDefaultSectionSize(max(32,self.table.fontMetrics().height()+14))
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu); self.table.customContextMenuRequested.connect(self.table_menu)
         self.table.doubleClicked.connect(self.open_row)
         self.table.horizontalHeader().setSortIndicatorShown(True); self.table.horizontalHeader().setSortIndicator(4,Qt.SortOrder.DescendingOrder)
@@ -214,8 +266,10 @@ class DiskBrowser(QWidget):
         layout.addWidget(self.splitter,1)
         widths=self.tree.default_widths();left.setMinimumWidth(sum(widths)+8);right.setMinimumWidth(430)
         self.splitter.setSizes(owner.preferences.values.get("splitter/scan-v3",[sum(widths)+8,850]))
-        owner.columns(self.tree,"tree-v3",widths); owner.columns(self.table,"details-v4",[185,300,86,86,104,70,104,152,152])
-        self.detail_columns_fitted=bool(owner.preferences.values.get('columns/details-v4'))
+        owner.columns(self.tree,"tree-v3",widths); owner.columns(self.table,"details-v5",[60,270,80,80,100,64,96,148,148])
+        self.detail_columns_fitted=bool(owner.preferences.values.get('columns/details-v5'))
+        self.path_user_sized=self.detail_columns_fitted
+        self.table.viewport().installEventFilter(self)
         self.table.horizontalHeader().sectionResized.connect(self.detail_column_resized)
         footer=QHBoxLayout(); self.page_label=ElidingLabel("0 mục");footer.addWidget(self.page_label,1)
         footer.addWidget(QLabel('Mỗi lượt:'));self.page_size=QComboBox()
@@ -230,6 +284,7 @@ class DiskBrowser(QWidget):
         self.cancel_button=owner.button("Dừng tải",self.cancel_loading,footer);self.cancel_button.setEnabled(False)
         self.cancel_button.setToolTip("Dừng chuẩn bị/tải chi tiết và cây; không xóa snapshot, không thay đổi file trên ổ.")
         footer.addStretch(); owner.button("Hỏi AI",owner.ai_snapshot,footer); layout.addLayout(footer)
+        self.install_shortcuts()
 
     def refresh(self, profile):
         tree_ids=None
@@ -242,10 +297,10 @@ class DiskBrowser(QWidget):
             self.older.addItem("Mốc ban đầu: không so với lượt cũ",0)
             valid=[r for r in rows if r["status"] in ("complete","partial")]
             for row in valid:
-                self.newer.addItem(scan_label(row),row['id']);self.newer.setItemData(self.newer.count()-1,scan_label(row)+'\n'+row['config'],Qt.ItemDataRole.ToolTipRole)
+                self.newer.addItem(gui_scan_label(row,profile),row['id']);self.newer.setItemData(self.newer.count()-1,scan_label(row)+'\n'+row['config'],Qt.ItemDataRole.ToolTipRole)
             for row in all_rows:
                 if row['status'] in ('complete','partial'):
-                    self.older.addItem(scan_label(row),row['id']);self.older.setItemData(self.older.count()-1,scan_label(row)+'\n'+row['config'],Qt.ItemDataRole.ToolTipRole)
+                    self.older.addItem(gui_scan_label(row,profile),row['id']);self.older.setItemData(self.older.count()-1,scan_label(row)+'\n'+row['config'],Qt.ItemDataRole.ToolTipRole)
             if prior and not changed: self.newer.setCurrentIndex(max(0,self.newer.findData(prior)))
             if old is not None and not changed: self.older.setCurrentIndex(max(0,self.older.findData(old)))
             if changed: self.root=None
@@ -260,7 +315,8 @@ class DiskBrowser(QWidget):
         if tree_ids and self.tree_ids!=tree_ids and self.tree_mode.currentData()=='latest':self.refresh_tree(*tree_ids)
         elif not tree_ids:
             self.tree_generation+=1;self.tree.clear();self.tree_ids=None;self.tree_pair=None
-            self.tree_label.setText("Chưa có lượt hợp lệ để hiển thị.")
+            self.tree_label.setText('Cây thư mục')
+            self.tree.addTopLevelItem(QTreeWidgetItem(['Chưa có lượt quét hợp lệ','','']))
 
     def units_changed(self):
         from .presentation import set_units
@@ -298,8 +354,7 @@ class DiskBrowser(QWidget):
             prior=store.scan(previous) if previous else None
             latest=store.scan(newer_id)
         finally: store.close()
-        title="Theo dõi lượt mới nhất (độc lập)" if self.tree_mode.currentData()=='latest' else "Cây theo cặp so sánh"
-        self.tree_label.setText(title)
+        self.tree_label.setText('Cây thư mục')
         self.tree_label.setToolTip((scan_name(prior)+" → " if prior else "Mốc ban đầu → ")+scan_name(latest)+"\n"+local_time(latest["started"]))
         roots=list(dict.fromkeys((json.loads(prior['config'])['roots'] if prior else [])+json.loads(latest['config'])['roots']))
         common=self.common_scope.isChecked() and self.tree_mode.currentData()=='selected'
@@ -320,16 +375,15 @@ class DiskBrowser(QWidget):
         self.track(self.owner.job(prepare,done))
 
     def add_node(self,row,parent=None):
-        item=QTreeWidgetItem([row["path"] if parent is None else Path(row["path"]).name,snapshot_cell(row,'new'),
+        item=QTreeWidgetItem([row["path"] if parent is None else Path(row["path"]).name,gui_snapshot_cell(row,'new'),
             ('≈ ' if row.get('unverified_count') and row.get('delta') is not None else '')+change_text(row.get('delta'))])
         item.setToolTip(0,row['path'])
-        if row.get('private_before') or row.get('private_after'):
-            item.setIcon(0,self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
-            item.setToolTip(0,row['path'])
+        item.setIcon(0,self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
         item.setToolTip(1,'Chung: '+size(row['after'])+'\nRiêng: '+size(row.get('private_after')))
         item.setData(0,Qt.ItemDataRole.UserRole,{"path":row["path"],"pair":self.tree_pair,"cursor":None,'row':row})
-        foreground,_=status_colors(row['change'])
-        if row['change'] in ('new','missing'):item.setForeground(0,QColor(foreground))
+        _,_,foreground,background=visual(row['change'])
+        for column in range(3):
+            item.setForeground(column,QColor(foreground));item.setBackground(column,QColor(background))
         if row['change']=='missing':
             font=item.font(0);font.setStrikeOut(True);item.setFont(0,font)
         basis='theo hai lượt mới nhất' if self.tree_mode.currentData()=='latest' else 'theo cặp Cũ/Mới đang chọn'
@@ -391,7 +445,7 @@ class DiskBrowser(QWidget):
         if sort=='delta' and getattr(self,'ids',(1,))[0] is None:label='Mới (mốc đầu)'
         self.page_label.setText(f'Đã mở {self.model.loaded:,}/{self.model.total:,} mục • {label} {arrow} • cache RAM ≤ {self.model.cache_limit:,} dòng')
         root=self.query_options.get('root',self.root)
-        scope=(str(root)+(' • gồm nhánh con' if self.query_options.get('recursive',True) else ' • chỉ mục trực tiếp')) if root else 'toàn bộ phạm vi so sánh'
+        scope=str(root) if root else 'Toàn phạm vi'
         self.scope_label.setText('Chi tiết: '+scope)
 
     def stop_details(self):
@@ -610,10 +664,11 @@ class DiskBrowser(QWidget):
 
     def fit_detail_columns(self):
         # Measure at most the bounded in-memory page, never all saved paths.
-        widths=[185,300,76,76,94,66,94,148,148];fm=self.table.fontMetrics()
+        widths=[60,270,76,76,94,64,96,148,148];fm=self.table.fontMetrics()
         self.fitting_columns=True
         try:
-            for column in (0,2,3,4,5,6,7,8):
+            self.table.setColumnWidth(0,60)
+            for column in (2,3,4,5,6,7,8):
                 measured=max((fm.horizontalAdvance(str(self.model.data(self.model.index(i,column))))+20 for i in range(min(20,self.model.loaded))),default=0)
                 widths[column]=max(fm.horizontalAdvance(HEADERS[column])+28,min(measured,220 if column==0 else 160 if column in (7,8) else 120),widths[column])
                 self.table.setColumnWidth(column,widths[column])
@@ -622,6 +677,51 @@ class DiskBrowser(QWidget):
 
     def detail_column_resized(self,*_):
         if not self.fitting_columns:self.detail_columns_fitted=True
+        if not self.fitting_columns and _ and _[0]==1:self.path_user_sized=True
+
+    def eventFilter(self,watched,event):
+        if watched is self.table.viewport() and event.type()==QEvent.Type.Resize and not self.path_user_sized:
+            self.fitting_columns=True
+            try:
+                fixed=sum(self.table.columnWidth(i) for i in (0,2,3,4,5,6))
+                self.table.setColumnWidth(1,max(180,min(340,self.table.viewport().width()-fixed-5)))
+            finally:self.fitting_columns=False
+        return super().eventFilter(watched,event)
+
+    def install_shortcuts(self):
+        self.shortcuts=[]
+        def bind(keys,widget,action):
+            shortcut=QShortcut(QKeySequence(keys),widget)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(action);self.shortcuts.append(shortcut)
+        def focus_search():self.search.setFocus();self.search.selectAll()
+        bind('Ctrl+F',self,focus_search)
+        for widget in (self.table,self.tree):
+            bind('Ctrl+Shift+C',widget,lambda:self.selected_action('copy'))
+            bind('Alt+Return',widget,lambda:self.selected_action('properties'))
+            bind('F2',widget,lambda:self.selected_action('rename'))
+            bind('Delete',widget,lambda:self.selected_action('trash'))
+        bind('Escape',self.table,self.escape_details)
+
+    def escape_details(self):
+        if self.detail_jobs:self.cancel_loading()
+        elif self.legend.isVisible():self.legend_toggle.setChecked(False);self.legend.hide()
+
+    def selected_action(self,action):
+        from PySide6.QtWidgets import QApplication
+        focus=QApplication.focusWidget();row=None
+        if focus is not None and (focus is self.tree or self.tree.isAncestorOf(focus)):
+            item=self.tree.currentItem();data=item.data(0,Qt.ItemDataRole.UserRole) if item else None
+            row=data.get('row') if data and not data.get('more') else None
+        else:
+            index=self.table.currentIndex()
+            if index.isValid():row=self.model.row_at(index.row())
+        if not row:return
+        if action=='copy':QApplication.clipboard().setText(row['path']);return
+        if not Path(row['path']).exists():
+            self.owner.status.setText('Mục chỉ có trong lịch sử hoặc không còn truy cập được; có thể sao chép đường dẫn / xem dữ liệu hai mốc.');return
+        # Existing handlers retain rename/trash confirmations. No new delete path.
+        self.owner.file_action(row['path'],action)
 
     def snapshot_details(self,row):
         dialog=QDialog(self.owner);dialog.setWindowTitle('Dữ liệu hai mốc — không đọc file hiện tại');dialog.resize(720,460)

@@ -60,7 +60,7 @@ def test_primary_actions_are_distinct_bold_and_disabled_remains_clear(gui):
     app,w=gui
     assert w.scan_button.property('actionRole')=='primary'
     assert w.browser.compare_button.property('actionRole')=='compare'
-    assert w.stop_button.property('actionRole')=='danger'
+    assert w.stop_button.property('actionRole')=='stop'
     for button in (w.scan_button,w.rescan_button,w.new_profile_button,w.save_profile_button,w.browser.compare_button):
         assert button.font().weight()>=600
     assert w.scan_button.font().weight()>=700

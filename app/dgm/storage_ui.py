@@ -25,8 +25,8 @@ class StoragePanel(QGroupBox):
         logrow.addStretch();layout.addLayout(logrow)
         self.summary=QLabel('Chỉ đo dữ liệu/log của app; không đọc lại file trên các ổ đã quét.')
         self.summary.setWordWrap(True);layout.addWidget(self.summary)
-        self.table=QTableWidget(0,2);self.table.setHorizontalHeaderLabels(['Thành phần','Dung lượng'])
-        self.table.setMaximumHeight(145);self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table=QTableWidget(0,3);self.table.setHorizontalHeaderLabels(['Thành phần','Dung lượng','Mục đích / cách quản lý'])
+        self.table.setMinimumHeight(220);self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setStretchLastSection(True);layout.addWidget(self.table)
         row=QHBoxLayout();cfg=load()
         self.keep=QSpinBox();self.keep.setRange(1,20);self.keep.setValue(max(1,cfg.get('update_backup_keep',1)))
@@ -34,6 +34,7 @@ class StoragePanel(QGroupBox):
         row.addWidget(QLabel('Giữ backup thành công'));row.addWidget(self.keep)
         row.addWidget(QLabel('Dự phòng MB'));row.addWidget(self.reserve)
         owner.button('Lưu chính sách',self.save_policy,row)
+        owner.button('Dọn đề xuất hết hạn',lambda:self.owner.cleanup_panel.prune() if self.idle() else None,row)
         layout.addLayout(row)
         self.all_backups=QCheckBox('Dọn cả backup gần nhất (mất bản dự phòng)');layout.addWidget(self.all_backups)
         self.note=QLabel('Tự giữ backup gần nhất, dọn bản cũ sau cập nhật đã kiểm chứng. Lượt lỗi/chờ khôi phục được bảo vệ. '
@@ -80,6 +81,11 @@ class StoragePanel(QGroupBox):
         from .config import home
         self.retire_button.setVisible(mode and any((home()/'data'/name).exists() for name in ('history.sqlite','comparisons.sqlite','normalization.sqlite')))
         self.report=report;plan=report['update_cleanup'] or {}
+        if hasattr(self.owner,'system_cards'):
+            cards=self.owner.system_cards
+            cards[1].set_value(size(report['total_data_log_bytes']),'Chỉ dữ liệu/log app; không phải file đã quét')
+            cards[2].set_value(size(report['groups'].get('Backup cập nhật',0)),'Đã nằm trong tổng data app, không cộng lại')
+            cards[3].set_value(size(report['free_bytes']),'Ổ chứa app; không suy từ tổng Size cây thư mục')
         self.summary.setText(f"Dữ liệu/log {size(report['total_data_log_bytes'])} • Trống {size(report['free_bytes'])} • "
             f"Có thể dọn backup/installer {size(plan.get('reclaimable_bytes',0))} • "
             f"Trang trống trong cache {size(report.get('databases',{}).get('comparisons.sqlite',{}).get('reusable_bytes',0))}")
@@ -87,6 +93,16 @@ class StoragePanel(QGroupBox):
         self.table.setRowCount(len(groups))
         for row,(name,value) in enumerate(groups):
             self.table.setItem(row,0,QTableWidgetItem(name));self.table.setItem(row,1,QTableWidgetItem(size(value)))
+            note=('Giữ cấu hình và metadata chưa phân loại; không tự xóa' if name=='Cấu hình / dữ liệu khác' else
+                  'Xoay vòng log có hạn dung lượng; không tự gửi ra ngoài' if name=='Log' else
+                  'Metadata có hạn 1 giờ; không chứa nội dung file' if name=='Metadata đề xuất dọn nén' else
+                  'Dọn đề xuất hết hạn; có thể dựng lại từ log nén' if name=='Chỉ mục đề xuất dọn tạm' else
+                  'Giữ log metadata, không chứa nội dung file' if 'JSONL' in name else
+                  'Có thể bỏ khi rảnh; giữ log lịch sử' if 'tạm' in name else
+                  'Giữ mặc định một bản, bỏ bản cuối cần duyệt' if 'Backup' in name else
+                  'Chuyển và xác minh trước khi thu hồi' if name in ('SQLite cũ chưa thu hồi','Lịch sử quét') else
+                  'Có hạn dung lượng/tuổi; không xóa file đã quét')
+            self.table.setItem(row,2,QTableWidgetItem(note))
         self.table.resizeColumnToContents(0)
         if report['warnings']:self.note.setText('Chưa đo/dọn được một số mục: '+'; '.join(report['warnings']))
 

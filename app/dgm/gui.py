@@ -77,6 +77,8 @@ class Window(QMainWindow):
         if font_path.exists():
             QFontDatabase.addApplicationFont(str(font_path))
             QApplication.instance().setFont(QFont("Segoe UI", 10))
+        symbol_font=font_path.with_name('seguisym.ttf')
+        if symbol_font.exists():QFontDatabase.addApplicationFont(str(symbol_font))
         from . import __version__
         self.setWindowTitle(f"Disk Growth Monitor {__version__} — Theo dõi ổ đĩa")
         screen=QApplication.primaryScreen().availableGeometry()
@@ -199,7 +201,17 @@ class Window(QMainWindow):
 
     def button(self, label, fn, row):
         button = QPushButton(label)
-        if label.startswith(('Xóa','Gỡ','Dừng')):button.setProperty('actionRole','danger')
+        if label.startswith('Dừng'):button.setProperty('actionRole','stop')
+        elif label.startswith(('Xóa','Gỡ')):button.setProperty('actionRole','danger')
+        elif label.startswith(('Quét tạo','Chạy ngay')):button.setProperty('actionRole','primary')
+        elif label.startswith(('Lưu lịch','Lưu sửa')):button.setProperty('actionRole','compare')
+        icons={'Quét ngay':QStyle.StandardPixmap.SP_MediaPlay,'Quét lại':QStyle.StandardPixmap.SP_BrowserReload,
+            'Dừng':QStyle.StandardPixmap.SP_MediaStop,'Dừng tải':QStyle.StandardPixmap.SP_MediaStop,
+            'So sánh':QStyle.StandardPixmap.SP_FileDialogDetailedView,'Lịch chạy':QStyle.StandardPixmap.SP_FileDialogInfoView,
+            'Toàn phạm vi':QStyle.StandardPixmap.SP_DirHomeIcon,
+            'Quét tạo đề xuất':QStyle.StandardPixmap.SP_BrowserReload,'Chạy ngay':QStyle.StandardPixmap.SP_MediaPlay,
+            'Lưu lịch':QStyle.StandardPixmap.SP_DialogSaveButton,'Lưu sửa lịch':QStyle.StandardPixmap.SP_DialogSaveButton}
+        if label in icons:button.setIcon(self.style().standardIcon(icons[label]))
         button.clicked.connect(lambda checked=False: fn())
         row.addWidget(button)
         return button
@@ -373,7 +385,8 @@ class Window(QMainWindow):
         self.profile_combo.setMinimumWidth(100);self.profile_combo.setMaximumWidth(135)
         self.profile_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.profile_combo.currentTextChanged.connect(self.load_profile)
-        row.addWidget(QLabel("Cấu hình")); row.addWidget(self.profile_combo)
+        scan_tag=QLabel('QUÉT');scan_tag.setObjectName('zoneTag');row.addWidget(scan_tag); row.addWidget(self.profile_combo)
+        self.profile_combo.setAccessibleName('Cấu hình quét')
         self.profile_combo.setToolTip("Một bộ lựa chọn gồm phạm vi, công cụ, loại trừ và ngưỡng hiển thị.")
         self.new_profile_button = self.button("Tạo", self.new_profile, row)
         self.new_profile_button.setToolTip("Tạo cấu hình có tên mới từ phạm vi đang chọn; công cụ mặc định là WizTree.")
@@ -384,16 +397,16 @@ class Window(QMainWindow):
         layout.addLayout(row)
         profile_help=self.help_box(layout, "profile", "Cấu hình quét là bộ lựa chọn để dùng lại. Tạo mới: đặt tên cho bộ lựa chọn mới. Lưu cấu hình: ghi lựa chọn trên màn hình để các lịch dùng nó. Nạp lại: đọc bản đã lưu. Quét ngay/Quét lại dùng lựa chọn hiện tại nhưng không tự ghi đè cấu hình. Khi đổi cấu hình, app hỏi nếu còn thay đổi chưa lưu.")
         row.addWidget(profile_help.toggle)
-        self.scan_options = QWidget(); options_layout = QVBoxLayout(self.scan_options); options_layout.setContentsMargins(0, 0, 0, 0)
+        self.scan_options = QWidget();self.scan_options.setObjectName('scanOptions'); options_layout = QVBoxLayout(self.scan_options); options_layout.setContentsMargins(0, 0, 0, 0)
         toolrow = QHBoxLayout()
         self.engine = QComboBox(); self.engine.addItems(["wiztree", "native", "windirstat", "gdu"])
         self.engine.setFixedWidth(92)
         self.engine.setToolTip("WizTree là mặc định. Native duyệt thư mục và bảo đảm không đọc vùng Chrome/Edge bị loại trừ.")
-        row.addWidget(QLabel("Công cụ")); row.addWidget(self.engine)
+        toolrow.addWidget(QLabel("Công cụ")); toolrow.addWidget(self.engine)
         self.strict = QCheckBox("Không đọc/quét Chrome/Edge"); self.strict.setChecked(True)
         self.strict.setToolTip("Không stat/đọc metadata/đi vào thư mục trình duyệt. Cần chọn native, không chỉ lọc kết quả WizTree.")
         toolrow.addWidget(self.strict)
-        self.mft = QCheckBox("MFT nhanh toàn ổ (Admin)"); toolrow.addWidget(self.mft)
+        self.mft = QCheckBox("MFT toàn ổ (Admin)"); toolrow.addWidget(self.mft)
         self.mft.setToolTip("Đọc chỉ mục NTFS. Khi cần quyền Admin, app tự hiện UAC; bạn bấm Yes để tiếp tục. Không tương thích cấm đọc Chrome/Edge.")
         self.strict.toggled.connect(lambda checked: self.mft.setChecked(False) if checked else None)
         self.mft.setEnabled(False)
@@ -405,14 +418,14 @@ class Window(QMainWindow):
         root_row = row
         self.roots = QLineEdit(); self.roots.setPlaceholderText("Nhiều ổ/folder, phân cách bằng dấu ;")
         root_row.addWidget(QLabel("Phạm vi"));root_row.addWidget(self.roots,1)
-        self.roots.setMinimumWidth(180);self.roots.setMaximumWidth(360)
+        self.roots.setMinimumWidth(160);self.roots.setMaximumWidth(360)
         pick=self.button("",self.pick_root,root_row);pick.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon));pick.setToolTip('Chọn thư mục/ổ quét')
         self.excludes = QLineEdit(); self.excludes.setPlaceholderText("Đường dẫn/glob loại trừ, phân cách ;")
         self.excludes.setMinimumWidth(160);self.excludes.setMaximumWidth(300)
         self.threshold = QDoubleSpinBox(); self.threshold.setRange(0, 1000000); self.threshold.setValue(10); self.threshold.setSuffix(" MB")
         self.threshold.setDecimals(0)
-        self.threshold.setFixedWidth(105);toolrow.setSpacing(6)
-        toolrow.addWidget(QLabel("File lớn hơn")); toolrow.addWidget(self.threshold)
+        self.threshold.setFixedWidth(90);toolrow.setSpacing(6)
+        toolrow.addWidget(QLabel("File >")); toolrow.addWidget(self.threshold)
         toolrow.addWidget(QLabel("Loại trừ thêm"));toolrow.addWidget(self.excludes,1)
         expand=self.button('',self.edit_excludes,toolrow);expand.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown));expand.setToolTip('Mở rộng danh sách loại trừ, mỗi dòng một đường dẫn / glob')
         self.threshold.setToolTip("Chỉ lọc file trong bảng. Vẫn lưu metadata file nhỏ để tính tổng thư mục và phát hiện file tăng vượt ngưỡng.")
@@ -721,57 +734,85 @@ class Window(QMainWindow):
             self.job(remove,lambda _:(self.refresh_history(),self.compare()))
 
     def make_system(self):
-        layout = self.add_tab("Hệ thống")
+        layout = self.add_tab("Hệ thống",scroll=False)
+        from .panel_widgets import text_label,cards
+        from . import __version__
+        layout.addWidget(text_label('Hệ thống & công cụ','pageTitle'))
+        self.system_cards=cards(layout,[('BẢN APP',__version__,'Runtime riêng; cập nhật giữ lịch sử'),
+            ('DỮ LIỆU / LOG APP','Chưa đo','Đo riêng vùng app tự loại trừ khi quét'),
+            ('BACKUP CẬP NHẬT','Chưa đo','Là một phần data app, không cộng hai lần'),
+            ('Ổ ĐĨA APP CÒN TRỐNG','Chưa đo','Không suy từ tổng Size của cây thư mục')])
+        self.system_tabs=QTabWidget();layout.addWidget(self.system_tabs,1)
+        def section(title):
+            viewport=QScrollArea();viewport.setWidgetResizable(True)
+            content=QWidget();inner=QVBoxLayout(content);inner.setSpacing(6);viewport.setWidget(content)
+            self.system_tabs.addTab(viewport,title);return inner
+        updates=section('Cập nhật app')
         from .update_ui import AppUpdatePanel
-        self.app_update_panel=AppUpdatePanel(self);layout.addWidget(self.app_update_panel)
-        from .storage_ui import StoragePanel
-        self.storage_panel=StoragePanel(self);layout.addWidget(self.storage_panel)
+        self.app_update_panel=AppUpdatePanel(self);updates.addWidget(self.app_update_panel)
+        updates.addWidget(text_label('Cập nhật cài đè đúng thư mục, giữ lịch sử. Chuyển SQLite cũ sang JSONL nén là tác vụ riêng trong Dung lượng app, có kiểm tra và xác nhận.','safeBanner'));updates.addStretch()
+        tools=section('Công cụ quét')
+        tools.addWidget(text_label('Công cụ thực tế và khả năng MFT được ghi theo engine đã chạy, không theo checkbox được yêu cầu. Native không dùng MFT.','safeBanner'))
         row = QHBoxLayout()
         self.button("Làm mới phiên bản / môi trường", self.doctor, row)
         self.update_all_button = self.button("Kiểm tra cập nhật tất cả", lambda: self.check_updates(), row)
         self.update_all_button.setToolTip("Chỉ tra phiên bản từ nhà phát hành/PyPI/GitHub. Không cài hay sửa Python/pip hệ thống.")
-        for label, tool in [("WinSxS Analyze", "winsxs"), ("DriverStore / PnPUtil", "drivers"), ("Shadow storage", "shadowstorage")]:
-            self.system_check_buttons.append(self.button(label, lambda checked=False, t=tool: self.system_check(t), row))
-        self.system_check_buttons.append(self.button('Thử UAC / quyền Admin',self.test_admin,row))
-        layout.addLayout(row)
-        self.environment_note = QLabel(); self.environment_note.setWordWrap(True); layout.addWidget(self.environment_note)
+        tools.addLayout(row)
+        self.environment_note = QLabel(); self.environment_note.setWordWrap(True); tools.addWidget(self.environment_note)
         self.package_table = QTableWidget(0, 6)
         self.package_table.setHorizontalHeaderLabels(["Gói / công cụ", "Đang dùng", "Mới nhất", "Trạng thái", "Đường dẫn", "Thao tác"])
-        self.package_table.setAlternatingRowColors(True)
+        self.package_table.setAlternatingRowColors(True);self.package_table.setMinimumHeight(220)
         self.columns(self.package_table, "packages", [210, 115, 110, 260, 310, 290])
-        layout.addWidget(self.package_table, 1)
-        self.help_box(layout, "system", "Icon phân biệt công cụ quét, Python riêng và thư viện của app. Kiểm tra cập nhật chỉ tra cứu, không tự cài. Nguồn mở trang nhà phát hành để xem bản mới; Python/thư viện vẫn được khóa bằng uv.lock trong môi trường riêng. Cài engine OSS chỉ cài bản đã pin vào .venv/tools, không phải tự nâng cấp lên bản mới nhất. Các kiểm tra DISM/PnPUtil ở đây chỉ phân tích, không xóa.")
+        tools.addWidget(self.package_table, 1)
+        self.help_box(tools, "system", "Kiểm tra cập nhật chỉ tra cứu, không tự cài. Nguồn mở trang nhà phát hành. Runtime/Python/thư viện được khóa riêng theo uv.lock; không cập nhật pip hệ thống. Cài engine OSS chỉ tải bản đã pin vào tools riêng, không thay PATH. DISM/PnPUtil chỉ phân tích, không xóa.")
         toolrow = QHBoxLayout()
         self.tool_kind = QComboBox(); self.tool_kind.addItems(["wiztree", "windirstat", "gdu"])
-        self.tool_path = QLineEdit()
-        toolrow.addWidget(self.tool_kind); toolrow.addWidget(self.tool_path)
+        self.tool_path = QLineEdit();self.tool_path.setPlaceholderText('Đường dẫn executable riêng, không thêm vào PATH hệ thống')
+        toolrow.addWidget(self.tool_kind); toolrow.addWidget(self.tool_path,1)
         self.button("Chọn / Lưu executable", self.pick_engine, toolrow)
         self.button("Cài engine OSS portable", self.install_engines, toolrow)
-        layout.addLayout(toolrow)
+        tools.addLayout(toolrow)
         row2 = QHBoxLayout()
         self.bench_repeats = QSpinBox(); self.bench_repeats.setRange(1, 10); self.bench_repeats.setValue(3)
         self.bench_engines = QLineEdit("native,wiztree")
-        row2.addWidget(QLabel("Đo cấu hình quét đang chọn")); row2.addWidget(self.bench_engines); row2.addWidget(self.bench_repeats)
+        row2.addWidget(QLabel("Benchmark cấu hình đang chọn")); row2.addWidget(self.bench_engines,1); row2.addWidget(self.bench_repeats)
         self.benchmark_button = self.button("Đo thời gian / tài nguyên", self.begin_benchmark, row2)
-        layout.addLayout(row2)
+        tools.addLayout(row2)
+        storage_layout=section('Dung lượng app')
+        from .storage_ui import StoragePanel
+        self.storage_panel=StoragePanel(self);storage_layout.addWidget(self.storage_panel,1)
         settings = QHBoxLayout()
         self.retention = QSpinBox(); self.retention.setRange(2, 3650); self.retention.setValue(load()["retention_days"])
         self.max_snapshots = QSpinBox(); self.max_snapshots.setRange(2, 10000); self.max_snapshots.setValue(load()["max_snapshots"])
         self.db_limit = QSpinBox(); self.db_limit.setRange(50, 50000); self.db_limit.setValue(load()["database_limit_mb"])
-        for label, box in [("Giữ ngày", self.retention), ("Tối đa snapshot/profile", self.max_snapshots), ("Giới hạn DB MB", self.db_limit)]:
+        for label, box in [("Giữ ngày", self.retention), ("Tối đa mốc/cấu hình", self.max_snapshots), ("Ngưỡng lịch sử MB", self.db_limit)]:
             settings.addWidget(QLabel(label)); settings.addWidget(box)
         self.button("Lưu giới hạn", self.save_limits, settings)
-        layout.addLayout(settings)
+        storage_layout.addLayout(settings)
         sources=QHBoxLayout()
         self.source_limit=QSpinBox();self.source_limit.setRange(0,10000);self.source_limit.setValue(load().get('source_archive_limit_mb',512))
         self.source_days=QSpinBox();self.source_days.setRange(0,3650);self.source_days.setValue(load().get('source_archive_retention_days',90))
         sources.addWidget(QLabel('CSV WizTree nén: tối đa MB'));sources.addWidget(self.source_limit)
         sources.addWidget(QLabel('Giữ tối đa ngày'));sources.addWidget(self.source_days)
-        sources.addWidget(QLabel('0 = không giữ nguồn; lịch sử vẫn lưu.'));sources.addStretch();layout.addLayout(sources)
+        sources.addWidget(QLabel('0 = không giữ nguồn; lịch sử vẫn lưu.'));sources.addStretch();storage_layout.addLayout(sources)
+        windows=section('Chẩn đoán Windows')
+        windows.addWidget(text_label('Chỉ phân tích trước. Không xóa tay WinSxS, DriverStore, Installer, Package Cache; không ResetBase hoặc force driver hàng loạt.','warningBanner'))
+        row=QHBoxLayout()
+        for label,tool in [('Phân tích WinSxS','winsxs'),('Rà DriverStore / PnPUtil','drivers'),('Shadow storage','shadowstorage')]:
+            self.system_check_buttons.append(self.button(label,lambda t=tool:self.system_check(t),row))
+        self.system_check_buttons.append(self.button('Thử UAC / quyền Admin',self.test_admin,row));windows.addLayout(row)
+        from .cleanup_catalog import PROTECTED
+        protected=QTableWidget(len(PROTECTED),3);protected.setHorizontalHeaderLabels(['Vùng bảo vệ','Mục đích','Cách xử lý'])
+        from .panel_widgets import setup_table
+        setup_table(protected);protected.setMinimumHeight(250)
+        for i,values in enumerate(PROTECTED):
+            for j,value in enumerate(values):protected.setItem(i,j,QTableWidgetItem(value))
+        self.columns(protected,'system-protected-v140',[260,360,650]);windows.addWidget(protected,1)
         self.system_details_toggle = QToolButton(); self.system_details_toggle.setText("> Chẩn đoán chi tiết"); self.system_details_toggle.setCheckable(True)
         layout.addWidget(self.system_details_toggle)
         self.system_output = QPlainTextEdit(); self.system_output.setReadOnly(True); self.system_output.setMaximumHeight(170); self.system_output.hide(); layout.addWidget(self.system_output)
         self.system_details_toggle.toggled.connect(self.system_output.setVisible)
+        self.system_tabs.currentChanged.connect(lambda index:self.storage_panel.refresh_timer.start(100) if index==2 else None)
         self.doctor()
 
     def doctor(self):
@@ -871,93 +912,32 @@ class Window(QMainWindow):
         self.job(lambda worker: benchmark(name, p, engines, repeats, worker.event.emit, cancel=worker.stop), lambda value: (self.system_output.setPlainText(display_json(value)), self.system_details_toggle.setChecked(True)), scan_job=True)
 
     def make_cleanup(self):
-        layout = self.add_tab("Xóa tự động")
-        from .cleanup import rules
-        layout.addWidget(QLabel("Tự nhận diện → xem đề xuất → bạn xác nhận. Cache xóa vĩnh viễn; công cụ Windows dùng quy trình riêng."))
-        group = QGroupBox("Nhóm kiểm tra/dọn")
-        rule_layout = QVBoxLayout(group)
-        self.rule_boxes = {}
-        for name, info in rules().items():
-            box = QCheckBox(f"{name} — {info['title']}")
-            box.setToolTip(info["risk"] + "\n" + "\n".join(info["roots"]))
-            rule_layout.addWidget(box); self.rule_boxes[name] = box
-        row = QHBoxLayout()
-        row.addWidget(group)
-        info = QPlainTextEdit(); info.setReadOnly(True)
-        info.setPlainText("Không xóa project, .venv, settings, video/draft CapCut, WinSxS/DriverStore bằng lệnh xóa file.\n\nPlan có hạn 1 giờ. Trước khi xóa app kiểm tra lại file và junction.\n\nNVIDIA update: chỉ chọn xác nhận bên dưới khi cập nhật đã hoàn tất.\n\nWindows Update mở Disk Cleanup để bạn chọn; không xóa toàn bộ SoftwareDistribution.")
-        row.addWidget(info); layout.addLayout(row)
-        controls = QHBoxLayout()
-        self.update_done = QCheckBox("NVIDIA update đã hoàn tất"); controls.addWidget(self.update_done)
-        self.cleanup_action_buttons.append(self.button("Quét tạo đề xuất", self.make_plan, controls))
-        self.plan_combo = QComboBox(); controls.addWidget(self.plan_combo)
-        self.button("Mở plan", self.load_plan, controls)
-        self.button("Hỏi AI", self.ai_plan, controls)
-        layout.addLayout(controls)
-        self.plan_info = QLabel("Chưa có đề xuất"); self.plan_info.setWordWrap(True); layout.addWidget(self.plan_info)
-        self.plan_table = QTableWidget(0, 4); self.plan_table.setHorizontalHeaderLabels(["Chọn", "Đường dẫn", "Dung lượng", "Lý do / tác động"])
-        self.columns(self.plan_table, "cleanup", [70, 500, 130, 460])
-        layout.addWidget(self.plan_table, 1)
-        buttons = QHBoxLayout()
-        self.button("Chọn tất cả", lambda: self.set_plan_checks(True), buttons)
-        self.button("Bỏ chọn", lambda: self.set_plan_checks(False), buttons)
-        buttons.addStretch()
-        self.cleanup_action_buttons.append(self.button("OK — xử lý các mục đã chọn", self.apply_plan, buttons))
-        layout.addLayout(buttons)
-        self.help_box(layout, "cleanup", "Quét tạo đề xuất chưa xóa gì. Chọn các dòng cần xử lý rồi OK; app yêu cầu xác nhận và kiểm tra lại file trước khi xóa. Tắt/Gỡ lịch chạy nền không xóa snapshot hay dữ liệu quét. WinSxS/DriverStore không được xóa tay; dùng quy trình Windows được hỗ trợ.")
+        from .cleanup_ui import CleanupPanel
+        layout=self.add_tab('Dọn dẹp',scroll=False)
+        self.cleanup_panel=CleanupPanel(self);layout.addWidget(self.cleanup_panel)
+        self.rule_boxes=self.cleanup_panel.rule_boxes;self.update_done=self.cleanup_panel.update_done
+        self.plan_table=self.cleanup_panel.table;self.plan_combo=self.cleanup_panel.plan_combo;self.plan_info=self.cleanup_panel.info
 
     def make_plan(self):
-        from .cleanup import plan
-        selected = [x for x, b in self.rule_boxes.items() if b.isChecked()]
-        if not selected:
-            return self.fail("Chọn ít nhất một nhóm")
-        update_done=self.update_done.isChecked()
-        self.job(lambda worker: plan(selected,update_done,notify=worker.event.emit,stop=worker.stop), self.plan_done)
+        self.cleanup_panel.make()
 
     def plan_done(self, plan):
-        self.current_plan = plan
-        self.refresh_plans()
-        self.plan_combo.setCurrentText(plan["id"])
-        self.populate_plan()
-        self.status.setText('Đã tạo đề xuất; chưa xóa gì. Chọn các mục và xác nhận trước khi xử lý.')
+        self.cleanup_panel.loaded(plan)
 
     def refresh_plans(self):
-        s = Store(readonly=True); rows = s.db.execute("SELECT id FROM plans ORDER BY created DESC LIMIT 100").fetchall(); s.close()
-        self.plan_combo.clear(); self.plan_combo.addItems([x[0] for x in rows])
+        self.cleanup_panel.refresh_plans()
 
     def load_plan(self):
-        if self.plan_combo.currentText():
-            from .cleanup import get_plan
-            self.current_plan = get_plan(self.plan_combo.currentText()); self.populate_plan()
+        self.cleanup_panel.load()
 
     def populate_plan(self):
-        p = self.current_plan
-        self.plan_info.setText(f"Plan {p['id']} • {len(p['entries']):,} mục • {size(p['bytes'])} dự kiến • blocked: {len(p['blocked'])} • lỗi đọc: {len(p['errors'])}. {p['note']}")
-        self.plan_table.setRowCount(len(p["entries"]))
-        for i, e in enumerate(p["entries"]):
-            check = QTableWidgetItem(); check.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled); check.setCheckState(Qt.CheckState.Checked)
-            self.plan_table.setItem(i, 0, check)
-            for j, text in enumerate([e["path"], size(e["size"]), e["rule"] + " — " + e["risk"]], 1):
-                cell = QTableWidgetItem(text); cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable); self.plan_table.setItem(i, j, cell)
+        if self.current_plan:self.cleanup_panel.loaded(self.current_plan)
 
     def set_plan_checks(self, checked):
-        for i in range(self.plan_table.rowCount()):
-            self.plan_table.item(i, 0).setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+        self.cleanup_panel.set_checks(checked)
 
     def apply_plan(self):
-        if not self.current_plan:
-            return
-        p = self.current_plan
-        paths = [p["entries"][i]["path"] for i in range(len(p["entries"])) if self.plan_table.item(i, 0).checkState() == Qt.CheckState.Checked]
-        if not paths:
-            return self.fail("Chưa chọn mục")
-        confirmation, ok = QInputDialog.getText(self, "Xác nhận xóa", f"{len(paths)} mục. Cache bị xóa vĩnh viễn.\nGõ: {p['confirmation']}")
-        if ok:
-            from .cleanup import select, apply
-            try:
-                select(p["id"], paths)
-                self.job(lambda worker: apply(p["id"], confirmation,notify=worker.event.emit,stop=worker.stop), self.cleanup_result)
-            except Exception as exc:
-                self.fail(str(exc))
+        self.cleanup_panel.apply()
 
     def cleanup_result(self,value):
         self.status.setText('Đã dừng an toàn; các mục chưa xử lý được giữ nguyên. Xem kết quả dọn.' if value.get('cancelled') else 'Đã hoàn tất xử lý đề xuất. Xem kết quả dọn.')
@@ -984,24 +964,40 @@ class Window(QMainWindow):
 
     def make_schedule(self):
         layout = self.add_tab("Lịch chạy")
-        row = QHBoxLayout()
+        from .panel_widgets import text_label,cards,setup_table
+        layout.addWidget(text_label('Lịch chạy — lúc nào, ai chạy và làm gì','pageTitle'))
+        layout.addWidget(text_label('Bật lịch và bật Task/Service là hai việc riêng. Lịch chỉ quét / lập đề xuất; không tự xóa. Máy thức lại chạy bù một lần, không tạo lượt quét chồng nhau.','safeBanner'))
+        self.schedule_cards=cards(layout,[('LỊCH ĐANG CHỌN','Chưa chọn','Xem 10 lần chạy tới trước khi lưu'),
+            ('MÚI GIỜ','UTC+07','Asia/Ho_Chi_Minh'),('BỘ CHẠY NỀN','Chưa kiểm tra','Đọc trạng thái thực của Windows'),('VIỆC SẼ LÀM','Chỉ quét','Lập đề xuất vẫn cần bạn duyệt')])
+        form=QGroupBox('Tạo / sửa lịch');form_layout=QVBoxLayout(form);row=QHBoxLayout()
+        self.schedule_name=QLineEdit();self.schedule_name.setPlaceholderText('Tên lịch dễ nhận biết');self.schedule_name.setMinimumWidth(180);self.schedule_name.setMaximumWidth(260)
         self.schedule_profile = QComboBox(); self.schedule_profile.addItems(load()["profiles"])
         self.mode = QComboBox()
         for text, value in [("Theo giờ mỗi ngày", "daily"), ("Mỗi N giờ", "hours"), ("Mỗi N ngày", "days"), ("Theo thứ trong tuần", "weekly"), ("Mỗi N tuần", "weeks"), ("Mỗi N tháng", "months"), ("Mỗi N năm", "years")]:
             self.mode.addItem(text, value)
         self.interval = QSpinBox(); self.interval.setRange(1, 10000)
         self.times = QLineEdit("09:00"); self.times.setPlaceholderText("08:00,14:00,20:00")
-        self.weekdays = QLineEdit("0"); self.weekdays.setPlaceholderText("0=Thứ Hai ... 6=CN")
-        for label, field in [("Cấu hình quét", self.schedule_profile), ("Lặp", self.mode), ("Mỗi N", self.interval), ("Giờ/ngày", self.times), ("Thứ", self.weekdays)]:
+        self.times.setMinimumWidth(170);self.times.setMaximumWidth(340)
+        self.weekdays = QLineEdit("0");self.weekdays.hide()
+        for label, field in [("Tên",self.schedule_name),("Cấu hình", self.schedule_profile), ("Lặp", self.mode)]:
             row.addWidget(QLabel(label)); row.addWidget(field)
-        self.button("Thêm lịch", self.add_schedule, row); layout.addLayout(row)
+        self.interval_label=QLabel('Mỗi N');row.addWidget(self.interval_label);row.addWidget(self.interval)
+        self.times_label=QLabel('Giờ');row.addWidget(self.times_label);row.addWidget(self.times,1)
+        row.addStretch();form_layout.addLayout(row);week=QHBoxLayout();self.weekday_widgets=[];self.weekday_boxes=[]
+        for i,name in enumerate(('T2','T3','T4','T5','T6','T7','CN')):
+            check=QCheckBox(name);check.setChecked(i==0);week.addWidget(check);self.weekday_widgets.append(check);self.weekday_boxes.append(check)
+            check.toggled.connect(lambda _:self.weekdays.setText(','.join(str(i) for i,b in enumerate(self.weekday_boxes) if b.isChecked())))
+        week.addStretch();self.button('Lưu lịch',self.add_schedule,week);self.button('Nạp lịch đã chọn',self.load_selected_schedule,week)
+        self.button('Lưu sửa lịch',self.save_selected_schedule,week);form_layout.addLayout(week);layout.addWidget(form)
         self.times.setToolTip("Theo giờ mỗi ngày: 08:00,14:00,20:00 là 3 lần/ngày. Chạy bù một lần khi máy thức lại.")
         self.weekdays.setToolTip("0 = Thứ Hai, 1 = Thứ Ba, …, 6 = Chủ nhật. Ví dụ 0,2,4.")
         self.interval.setToolTip("Mỗi N giờ/ngày/tuần/tháng/năm, tính từ thời điểm tạo lịch. Không dùng với lịch theo giờ mỗi ngày.")
         self.mode.currentIndexChanged.connect(self.schedule_mode_changed); self.schedule_mode_changed()
-        self.help_box(layout, "schedule", "Một lịch chọn cấu hình đã lưu và thời điểm chạy. Theo giờ mỗi ngày: nhập 08:00,14:00,20:00 để chạy 3 lần/ngày. Theo thứ: 0=Thứ Hai … 6=Chủ nhật. Mỗi N đơn vị tính từ lúc tạo; tháng/năm giữ mốc lịch, máy ngủ sẽ chạy bù một lần. Bật/Tắt lịch chỉ đổi lịch được chọn. Bộ chạy nền bên dưới phải được đăng ký và bật để lịch chạy khi đóng GUI. Chạy ngay không cần đợi đến lịch.")
-        self.schedule_table = QTableWidget(0, 6); self.schedule_table.setHorizontalHeaderLabels(["ID", "Cấu hình quét", "Kiểu lịch", "Giờ / khoảng lặp", "Trạng thái", "Lần kế tiếp (UTC+07)"])
-        self.columns(self.schedule_table, "schedule", [130, 180, 190, 180, 105, 260]); layout.addWidget(self.schedule_table)
+        self.help_box(layout, "schedule", "Dùng cấu hình đã lưu. Theo giờ mỗi ngày: 08:00,14:00,20:00 = 3 lần/ngày. Theo tuần chọn T2…CN. Mỗi N đơn vị tính từ lúc tạo; tháng/năm giữ mốc lịch. Máy ngủ chạy bù một lần. Lịch và bộ chạy nền phải cùng bật để chạy khi đóng GUI. Chạy ngay không cần đợi đến lịch.")
+        self.schedule_table = QTableWidget(0, 7); self.schedule_table.setHorizontalHeaderLabels(["Tên lịch", "Cấu hình / hành động", "Lặp", "Trạng thái", "Lần cuối UTC+07", "Lần kế tiếp UTC+07","Kết quả gần nhất"])
+        setup_table(self.schedule_table);self.schedule_table.setMinimumHeight(190)
+        self.columns(self.schedule_table, "schedule-v140", [180,190,250,90,200,200,260]); layout.addWidget(self.schedule_table,1)
+        self.schedule_table.itemSelectionChanged.connect(self.render_schedule_selection)
         controls = QHBoxLayout()
         self.button("Xem 10 lần tới", self.preview_schedule, controls)
         self.button("Bật/tắt lịch", self.toggle_schedule, controls)
@@ -1015,8 +1011,38 @@ class Window(QMainWindow):
 
     def schedule_mode_changed(self, *_):
         mode = self.mode.currentData()
-        self.interval.setEnabled(mode not in ("daily", "weekly"))
-        self.times.setEnabled(mode in ("daily", "weekly")); self.weekdays.setEnabled(mode == "weekly")
+        for field in (self.interval,self.interval_label):field.setVisible(mode not in ('daily','weekly'))
+        for field in (self.times,self.times_label):field.setVisible(mode in ('daily','weekly'))
+        for field in self.weekday_widgets:field.setVisible(mode=='weekly')
+
+    def schedule_editor(self):
+        mode=self.mode.currentData()
+        return {'name':self.schedule_name.text().strip() or self.schedule_profile.currentText(),
+            'profile':self.schedule_profile.currentText(),'mode':mode,'interval':self.interval.value(),
+            'times':self.times.text().split(',') if mode in ('daily','weekly') else ['09:00'],
+            'weekdays':[i for i,box in enumerate(self.weekday_boxes) if box.isChecked()],'timezone':'Asia/Ho_Chi_Minh'}
+
+    def load_selected_schedule(self):
+        spec=self.selected_schedule()
+        if not spec:return
+        self.schedule_name.setText(spec.get('name',spec['profile']));self.schedule_profile.setCurrentText(spec['profile'])
+        self.mode.setCurrentIndex(self.mode.findData(spec['mode']));self.interval.setValue(spec['interval']);self.times.setText(','.join(spec['times']))
+        for i,box in enumerate(self.weekday_boxes):box.setChecked(i in spec.get('weekdays',[]))
+
+    def save_selected_schedule(self):
+        spec=self.selected_schedule()
+        if not spec:return
+        from .schedule import update
+        try:update(spec['id'],self.schedule_editor());self.refresh_schedules()
+        except Exception as exc:self.fail(str(exc))
+
+    def render_schedule_selection(self):
+        spec=self.selected_schedule()
+        if not spec:return
+        from .schedule import describe
+        caption,_,times=describe(spec).partition(' • ')
+        self.schedule_cards[0].set_value(caption,('Giờ: '+times+' • ' if times else '')+spec.get('name',spec['profile']))
+        self.schedule_cards[3].set_value('Quét + đề xuất' if spec.get('cleanup_rules') else 'Chỉ quét','Không tự xóa file; đề xuất mới cần duyệt lại')
 
     def make_background_controls(self, layout,compact=False):
         box=QWidget() if compact else QGroupBox('Trạng thái và điều khiển chạy nền'); group=QVBoxLayout(box)
@@ -1121,6 +1147,8 @@ class Window(QMainWindow):
         schedules=self.background_state.get('schedules',{})
         self.background_summary.setText("Chạy nền: " + (" • ".join(descriptions) or "chưa đăng ký") + f" • {schedules.get('enabled_count',0)} lịch đang bật")
         if schedules.get('next_run'):self.background_summary.setText(self.background_summary.text()+' • Kế tiếp: '+local_time(schedules['next_run']))
+        if hasattr(self,'schedule_cards'):
+            self.schedule_cards[2].set_value(' • '.join(descriptions) or ('Chưa kiểm tra' if not self.background_state else 'Chưa đăng ký'),f"{schedules.get('enabled_count',0)} lịch đang bật • kiểm tra và mở Windows riêng")
         external = self.background_state.get("scan", {})
         if self.scan_worker is None:
             self.stop_button.setEnabled(external.get("running", False))
@@ -1148,20 +1176,21 @@ class Window(QMainWindow):
     def refresh_schedules(self):
         from .schedule import listing
         self.schedule_rows = listing()
-        self.schedule_table.setRowCount(len(self.schedule_rows))
+        from .schedule import describe
+        from PySide6.QtCore import QSignalBlocker
+        blocker=QSignalBlocker(self.schedule_table);prior=self.schedule_table.currentRow();self.schedule_table.setRowCount(len(self.schedule_rows))
         for i, s in enumerate(self.schedule_rows):
-            mode = next((self.mode.itemText(i) for i in range(self.mode.count()) if self.mode.itemData(i) == s["mode"]), s["mode"])
-            values = [s["id"], s["profile"], mode, ",".join(s["times"]) + f" / N={s['interval']}", "Bật" if s["enabled"] else "Tắt", local_time(s["next_run"])]
+            last=s.get('last_result') or {};result={'deferred':'Đợi lượt đang quét kết thúc','running':'Đang chạy','failed':'Lỗi: '+str(last.get('error','')),'complete':'Đã lưu kết quả','partial':'Đã lưu, có giới hạn','cancelled':'Đã dừng'}.get(last.get('status'),'Chưa chạy')
+            values = [s.get('name',s['profile']),s['profile']+(' • quét + đề xuất' if s.get('cleanup_rules') else ' • chỉ quét'),describe(s),'Bật' if s['enabled'] else 'Tắt',local_time(s.get('last_run')),local_time(s['next_run']),result]
             for j, value in enumerate(values):
-                self.schedule_table.setItem(i, j, QTableWidgetItem(value))
+                cell=QTableWidgetItem(value);cell.setToolTip(value+'\nID: '+s['id']);self.schedule_table.setItem(i,j,cell)
+        if self.schedule_rows:self.schedule_table.setCurrentCell(min(max(0,prior),len(self.schedule_rows)-1),0)
+        blocker.unblock();self.render_schedule_selection()
 
     def add_schedule(self):
         try:
             from .schedule import add
-            mode = self.mode.currentData()
-            times = self.times.text().split(",") if mode in ("daily", "weekly") else ["09:00"]
-            weekdays = [int(x) for x in self.weekdays.text().split(",")] if mode == "weekly" else [0]
-            add({"profile": self.schedule_profile.currentText(), "mode": mode, "interval": self.interval.value(), "times": times, "weekdays": weekdays})
+            add(self.schedule_editor())
             self.refresh_schedules()
             self.render_background()
         except Exception as exc:
@@ -1169,7 +1198,7 @@ class Window(QMainWindow):
 
     def selected_schedule(self):
         row = self.schedule_table.currentRow()
-        return self.schedule_rows[row] if row >= 0 else None
+        return self.schedule_rows[row] if 0<=row<len(getattr(self,'schedule_rows',[])) else None
 
     def preview_schedule(self):
         spec = self.selected_schedule()
