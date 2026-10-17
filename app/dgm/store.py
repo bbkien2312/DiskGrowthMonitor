@@ -11,21 +11,34 @@ from .config import home, load, comparison_path_key
 _path_key_lock=threading.RLock()
 
 
+def stable_path_id(path):
+    # Stable across disposable index generations, including CLI pagination.
+    # A collision is detected below and aborts rather than merging two paths.
+    return (int.from_bytes(hashlib.sha256(str(path).encode('utf-8')).digest()[:8],'big') & ((1<<63)-1)) or 1
+
+
 def now():
     return datetime.now(timezone.utc).isoformat()
 
 
 class Store:
     def __init__(self, path=None, readonly=False, *, migrate_keys=True, stop=None, notify=None):
-        self.path = path or home() / "data/history.sqlite"
-        self.db = sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro" if readonly else self.path, timeout=30, uri=readonly)
+        from .storage_safety import SpaceConnection
+        from .history_backend import database_path,log_mode,manager
+        self._archive=manager() if path is None and log_mode() else None
+        self.path = path or database_path('history.sqlite')
+        self.log_index=log_mode() and self.path==database_path('history.sqlite',create=False)
+        self.db = sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro" if readonly else self.path, timeout=30, uri=readonly,factory=SpaceConnection)
         self.db.row_factory = sqlite3.Row
         if not readonly:
             self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.create_function("dgm_hash", -1, lambda *args: hashlib.sha256(json.dumps(args, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest(), deterministic=True)
         self.db.create_function("dgm_path_key", 1, comparison_path_key, deterministic=True)
+        self.db.create_function('dgm_log_path_id',1,stable_path_id,deterministic=True)
+        self.db.create_function('dgm_stable_ids',0,lambda:int(self.log_index),deterministic=True)
         if readonly:
+            if self._archive:self._archive.bind_source(self.db,readonly=True)
             return
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY, profile TEXT, scope TEXT, engine TEXT,
@@ -52,6 +65,8 @@ class Store:
         self.db.execute("INSERT OR IGNORE INTO scan_id_counter VALUES(1,(SELECT COALESCE(MAX(scan_id),0)+1 FROM scan_numbers))")
         self.db.commit()
 
+        if self._archive:self._archive.bind_source(self.db)
+
     def _number(self, scan_id, profile):
         row = self.db.execute("SELECT next_number FROM sequence_counters WHERE profile=?", (profile,)).fetchone()
         ordinal = row[0] if row else 1
@@ -76,7 +91,8 @@ class Store:
         CREATE VIEW IF NOT EXISTS entries AS SELECT m.scan_id,p.path,p.parent,r.kind,r.logical,r.allocated,r.created,r.modified,
           r.identity,r.attrs,r.status,r.note FROM members m JOIN paths p ON p.id=m.path_id JOIN revisions r ON r.id=m.revision_id;
         CREATE TRIGGER IF NOT EXISTS entries_insert INSTEAD OF INSERT ON entries BEGIN
-          INSERT OR IGNORE INTO paths(path,parent) VALUES(NEW.path,NEW.parent);
+          INSERT OR IGNORE INTO paths(id,path,parent) VALUES(CASE WHEN dgm_stable_ids() THEN dgm_log_path_id(NEW.path) ELSE NULL END,NEW.path,NEW.parent);
+          SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM paths WHERE path=NEW.path) THEN RAISE(ABORT,'Path ID collision') END;
           INSERT OR IGNORE INTO revisions(key,path_id,kind,logical,allocated,created,modified,identity,attrs,status,note)
             VALUES(dgm_hash(NEW.path,NEW.kind,NEW.logical,NEW.allocated,NEW.created,NEW.modified,NEW.identity,NEW.attrs,NEW.status,NEW.note),
               (SELECT id FROM paths WHERE path=NEW.path),NEW.kind,NEW.logical,NEW.allocated,NEW.created,NEW.modified,NEW.identity,NEW.attrs,NEW.status,NEW.note);
@@ -154,6 +170,7 @@ class Store:
             cur = self.db.execute("INSERT INTO scans(id,profile,scope,engine,started,status,config) VALUES(?,?,?,?,?,?,?)",
                                   (next_id, name, scope, engine, now(), "running", json.dumps(profile)))
             scan_id=cur.lastrowid;self._number(scan_id,name);self.db.commit()
+            if self._archive:self._archive.mark_loaded(self.db,scan_id)
             return scan_id
         except BaseException:
             self.db.rollback();raise
@@ -161,15 +178,19 @@ class Store:
     def put(self, scan_id, entries):
         # Three indexed joins per batch, rather than executing view triggers and
         # hashing the same metadata twice for every individual file.
-        self.db.execute("CREATE TEMP TABLE IF NOT EXISTS ingest(path TEXT,parent TEXT,kind TEXT,logical INTEGER,allocated INTEGER,created REAL,modified REAL,identity TEXT,attrs INTEGER,status TEXT,note TEXT,key TEXT)")
+        self.db.execute("CREATE TEMP TABLE IF NOT EXISTS ingest(path TEXT,parent TEXT,kind TEXT,logical INTEGER,allocated INTEGER,created REAL,modified REAL,identity TEXT,attrs INTEGER,status TEXT,note TEXT,key TEXT,stable_id INTEGER)")
         self.db.execute("DELETE FROM ingest")
         values = []
         for e in entries:
             metadata = (e["path"], e["kind"], e["logical"], e["allocated"], e["created"], e["modified"], e.get("identity", ""), e.get("attrs", 0), e.get("status", "ok"), e.get("note", ""))
             key = hashlib.sha256(json.dumps(metadata, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-            values.append((e["path"], e["parent"], *metadata[1:], key))
-        self.db.executemany("INSERT INTO ingest VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", values)
-        self.db.execute("INSERT OR IGNORE INTO paths(path,parent) SELECT path,parent FROM ingest")
+            values.append((e["path"], e["parent"], *metadata[1:], key,stable_path_id(e['path']) if self.log_index else None))
+        self.db.executemany("INSERT INTO ingest VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", values)
+        if self.log_index:
+            self.db.execute('INSERT OR IGNORE INTO paths(id,path,parent) SELECT stable_id,path,parent FROM ingest')
+            if self.db.execute('SELECT 1 FROM ingest i JOIN paths p ON p.id=i.stable_id WHERE p.path<>i.path LIMIT 1').fetchone():
+                self.db.rollback();raise ValueError('Va chạm khóa đường dẫn; giữ log gốc, không gộp nhầm dữ liệu')
+        else:self.db.execute("INSERT OR IGNORE INTO paths(path,parent) SELECT path,parent FROM ingest")
         self.db.execute("""INSERT OR IGNORE INTO revisions(key,path_id,kind,logical,allocated,created,modified,identity,attrs,status,note)
         SELECT i.key,p.id,i.kind,i.logical,i.allocated,i.created,i.modified,i.identity,i.attrs,i.status,i.note
         FROM ingest i JOIN paths p ON p.path=i.path""")
@@ -183,6 +204,7 @@ class Store:
         self.db.execute("UPDATE scans SET finished=?,status=?,summary=? WHERE id=?",
                         (now(), status, json.dumps(summary, ensure_ascii=False), scan_id))
         self.db.commit()
+        if self._archive:self._archive.publish_scan(self.db,scan_id)
 
     def dedupe(self, scan_id, stop=None):
         from .platform_ops import ProcessCancelled
@@ -248,6 +270,10 @@ class Store:
         self.db.commit()
 
     def totals(self, scan_id):
+        from .history_backend import snapshots
+        with snapshots([scan_id]):return self._totals_loaded(scan_id)
+
+    def _totals_loaded(self,scan_id):
         return dict(self.db.execute("""SELECT CASE WHEN SUM(r.kind='file' AND r.logical IS NULL)>0 THEN NULL ELSE COALESCE(SUM(CASE WHEN r.kind='file' THEN r.logical ELSE 0 END),0) END AS logical,
         CASE WHEN SUM(r.kind='file' AND r.allocated IS NULL)>0 THEN NULL ELSE COALESCE(SUM(CASE WHEN r.kind='file' THEN r.allocated ELSE 0 END),0) END AS allocated,
         COALESCE(SUM(r.kind='file'),0) AS files,COALESCE(SUM(r.kind='folder'),0) AS folders,COALESCE(SUM(r.kind='link'),0) AS links,
@@ -267,7 +293,9 @@ class Store:
             self.db.execute("CREATE INDEX IF NOT EXISTS members_path ON members(path_id)")
         notify("info", {"message": "Đang dọn dữ liệu lịch sử không còn liên kết..."})
         self.db.execute("DELETE FROM revisions WHERE NOT EXISTS (SELECT 1 FROM members WHERE revision_id=revisions.id)")
-        self.db.execute("DELETE FROM paths WHERE NOT EXISTS (SELECT 1 FROM members WHERE path_id=paths.id)")
+        # Cached rows/normalized overrides share stable path IDs for this live
+        # JSONL index session. The entire path dictionary is dropped on exit.
+        if not self._archive:self.db.execute("DELETE FROM paths WHERE NOT EXISTS (SELECT 1 FROM members WHERE path_id=paths.id)")
         self.db.commit()
 
     def delete_scan(self, scan_id):
@@ -308,7 +336,8 @@ class Store:
 
     def _delete_normalizations(self,scan_ids):
         # Only the overlay beside this database belongs to its snapshots.
-        if self.path.parent!=(home()/'data') or not (self.path.parent/'normalization.sqlite').exists():return
+        from .history_backend import database_path
+        if self.path!=database_path('history.sqlite') or (not self._archive and not database_path('normalization.sqlite').exists()):return
         from .normalization import Normalizations
         norm=Normalizations()
         try:norm.delete_for_scans(scan_ids)
@@ -343,6 +372,10 @@ class Store:
         return None
 
     def entries(self, scan_id, minimum=0, kind="all", search="", limit=1000, offset=0):
+        from .history_backend import snapshots
+        with snapshots([scan_id]):return self._entries_loaded(scan_id,minimum,kind,search,limit,offset)
+
+    def _entries_loaded(self,scan_id,minimum,kind,search,limit,offset):
         clauses = ["scan_id=?", "(kind='folder' OR logical>=?)", "path LIKE ?"]
         args = [scan_id, minimum, "%" + search + "%"]
         if kind != "all":

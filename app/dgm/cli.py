@@ -12,12 +12,67 @@ schedules = typer.Typer(help="Lịch chạy và worker nền")
 files = typer.Typer(help="Thao tác file/thư mục")
 ai = typer.Typer(help="Tạo câu hỏi và mở AI web")
 app_updates = typer.Typer(help='Kiểm tra/tải/cài bản app chính thức; không dùng pip hoặc ghi đè source')
+storage_app=typer.Typer(help='Dung lượng riêng của app: xem trước, dọn backup/installer, thu gọn cache; không tự xóa lịch sử')
 app.add_typer(profiles, name="profile")
 app.add_typer(cleanup_app, name="cleanup")
 app.add_typer(schedules, name="schedule")
 app.add_typer(files, name="file")
 app.add_typer(ai, name="ai")
 app.add_typer(app_updates, name='app-update')
+app.add_typer(storage_app,name='storage')
+
+
+@storage_app.command('report')
+def storage_report():
+    from .storage_maintenance import storage_report as report
+    output(report())
+
+
+@storage_app.command('cleanup-updates')
+def storage_cleanup(keep:Optional[int]=None,yes:bool=typer.Option(False,'--yes'),preview:bool=False):
+    from .storage_maintenance import update_plan,cleanup_updates
+    plan=update_plan(keep=keep)
+    if preview:output(plan);return
+    if not yes:
+        output(plan)
+        if not typer.confirm('Xóa các file backup/installer trong danh sách? Không thể hoàn tác; lịch sử hiện tại giữ nguyên.'):
+            raise typer.Exit()
+    output(cleanup_updates(keep=keep,preview=plan))
+
+
+@storage_app.command('compact-cache')
+def storage_compact(yes:bool=typer.Option(False,'--yes')):
+    from .storage_maintenance import compact_comparison_cache
+    if not yes and not typer.confirm('Thu gọn cache SQLite, giữ kết quả và lịch sử? Cần đủ chỗ tạm.'):
+        raise typer.Exit()
+    output(compact_comparison_cache())
+
+
+@storage_app.command('clear-index')
+def storage_clear_index(yes:bool=typer.Option(False,'--yes')):
+    from .history_backend import clear_indexes
+    if not yes and not typer.confirm('Xóa chỉ mục tạm? Log lịch sử giữ nguyên; lần so sánh sau cần đọc lại log.'):
+        raise typer.Exit()
+    output(clear_indexes())
+
+
+@storage_app.command('migrate-history')
+def storage_migrate_history(yes:bool=typer.Option(False,'--yes'),retire_old:bool=typer.Option(False,'--retire-old',help='Sau xác minh, dọn SQLite cũ, CSV nguồn và backup cập nhật hoàn tất; giữ log metadata.')):
+    from .history_migration import preview,migrate
+    plan=preview()
+    if not plan['needed']:output(plan);return
+    if not yes:output(plan)
+    if not yes and not typer.confirm('Chuyển lịch sử metadata sang JSONL nén, xác minh trước khi bỏ nguồn SQLite cũ?'):
+        raise typer.Exit()
+    output(migrate(remove_old=retire_old,notify=admin_progress))
+
+
+@storage_app.command('retire-legacy')
+def storage_retire_legacy(yes:bool=typer.Option(False,'--yes')):
+    from .history_migration import retire_legacy
+    if not yes and not typer.confirm('Xác minh lại các log và bỏ đúng SQLite cũ không thay đổi?'):
+        raise typer.Exit()
+    output(retire_legacy())
 
 
 def output(data):

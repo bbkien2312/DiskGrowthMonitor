@@ -1,6 +1,9 @@
-Disk Growth Monitor 1.3.0 - Windows x64
+Disk Growth Monitor 1.3.1 - Windows x64
 
 Private Python/Qt runtime is bundled under .venv.
+New histories use checksummed metadata-only JSONL.gz; file contents are never backed up.
+SQLite indexes are temporary and removed after the last app/CLI process exits.
+Existing SQLite history is retained until you approve verified conversion in System > App storage.
 No global Python, pip, System PATH, Task Scheduler job or Windows Service is installed.
 Choose an empty folder, preferably on D: to avoid consuming C: space.
 The editable source folder must not be overwritten by this installer.

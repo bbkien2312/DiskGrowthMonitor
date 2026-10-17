@@ -36,11 +36,15 @@ SORT_INDEX = {"delta":"diff_signed_delta", "old":"diff_old", "new":"diff_new", "
 
 class Comparisons(Presence):
     def __init__(self, stop=None, notify=None):
+        from .storage_safety import SpaceConnection
+        from .history_backend import database_path,log_mode,manager
         self.stop = stop or threading.Event(); self.notify = notify or (lambda *a: None)
-        self.path = home() / "data/comparisons.sqlite"
-        self.db = sqlite3.connect(f"file:{self.path.as_posix()}?mode=rwc", uri=True, timeout=30)
+        self.path = database_path('comparisons.sqlite')
+        self.db = sqlite3.connect(f"file:{self.path.as_posix()}?mode=rwc", uri=True, timeout=30,factory=SpaceConnection)
         self.db.row_factory = sqlite3.Row
         self.db.create_function("dgm_path_key", 1, comparison_path_key, deterministic=True)
+        if not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone():
+            self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')
         self.db.execute("PRAGMA journal_mode=WAL"); self.db.execute("PRAGMA cache_size=-16384")
         self.last_pulse = time.monotonic(); self.stage = "Chuẩn bị so sánh"
         self.db.set_progress_handler(self._progress, 4000)
@@ -51,10 +55,10 @@ class Comparisons(Presence):
         finally: source.close()
         if not has_keys:
             source = Store(stop=self.stop,notify=self.notify); source.close()
-        self.db.execute("ATTACH DATABASE ? AS source", (f"file:{(home() / 'data/history.sqlite').as_posix()}?mode=ro",))
+        self.db.execute("ATTACH DATABASE ? AS source", (database_path('history.sqlite').as_uri()+'?mode=ro',))
         from .normalization import Normalizations
         norm=Normalizations(self.stop,self.notify);norm.close()
-        self.db.execute('ATTACH DATABASE ? AS canonical', ((home()/'data/normalization.sqlite').as_uri()+'?mode=ro',))
+        self.db.execute('ATTACH DATABASE ? AS canonical', (database_path('normalization.sqlite').as_uri()+'?mode=ro',))
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS pairs(id INTEGER PRIMARY KEY,older INTEGER,newer INTEGER,version INTEGER,
           created TEXT,status TEXT,summary TEXT,touched TEXT,names_ready INTEGER DEFAULT 0,UNIQUE(older,newer,version));
@@ -127,11 +131,22 @@ class Comparisons(Presence):
             DELETE FROM private_rows WHERE pair_id=NEW.id; END;
         ''')
         if 'dataset_signature' not in {r[1] for r in self.db.execute('PRAGMA table_info(pairs)')}:
-            self.db.execute('ALTER TABLE pairs ADD COLUMN dataset_signature TEXT');self.db.commit()
+            # History and the browser can open the same cache concurrently.
+            # Recheck under SQLite's cross-process write lock, not only a
+            # Python lock or a stale pre-lock PRAGMA result.
+            try:
+                self.db.execute('BEGIN IMMEDIATE')
+                if 'dataset_signature' not in {r[1] for r in self.db.execute('PRAGMA table_info(pairs)')}:
+                    self.db.execute('ALTER TABLE pairs ADD COLUMN dataset_signature TEXT')
+                self.db.commit()
+            except BaseException:
+                self.db.rollback();self.db.close();raise
+        if log_mode():manager().bind_comparisons(self.db)
 
     def _progress(self):
         if self.stop.is_set():
             return 1
+        if self.db.space_guard and self.db.space_guard.progress():return 1
         if time.monotonic() - self.last_pulse > 2:
             self.notify("info", {"message": self.stage + " • vẫn đang xử lý"})
             logging.getLogger("dgm").debug("COMPARE heartbeat %s", self.stage); self.last_pulse = time.monotonic()
@@ -279,6 +294,25 @@ class Comparisons(Presence):
                 'common_scope':self.common_scope}
 
     def prepare(self, older, newer, *, common=False):
+        from .history_backend import snapshots,log_mode
+        if not log_mode():return self._prepare_loaded(older,newer,common=common)
+        import uuid
+        original=self.notify;ident=uuid.uuid4().hex;percent=[0]
+        def forward(event,data):
+            if event=='task-progress':
+                value=int(data.get('percent',0));source=data.get('task')
+                mapped=value//5 if source=='history-index' else 20+value*80//100 if source=='comparison' else percent[0]
+                percent[0]=max(percent[0],mapped)
+                original(event,{**data,'task':'comparison','id':ident,'percent':percent[0]})
+            else:original(event,data)
+        self.notify=forward
+        try:
+            self.overview(older,newer,common=common)
+            with snapshots([older,newer],stop=self.stop,notify=forward):return self._prepare_loaded(older,newer,common=common)
+        finally:self.notify=original
+
+    def _prepare_loaded(self,older,newer,*,common=False):
+        self.db.space_guard=None
         from .storage_metrics import begin as begin_storage, finish as finish_storage
         from .progress import TaskProgress
         task=TaskProgress('comparison',self.notify,[('read','Đọc hai mốc lịch sử',10),('normalize','Chuẩn bị dung lượng thư mục',30),
@@ -308,6 +342,9 @@ class Comparisons(Presence):
                 logging.getLogger("dgm").info("COMPARE cached old=%s new=%s", older, newer)
                 task.finish(f"Đã đọc cache: {summary.get('common_rows',0):,} mục Chung • {summary.get('private_rows',0):,} mục Riêng")
                 return existing["id"]
+            from .storage_safety import SpaceGuard
+            entries=sum(int((t or {}).get('files') or 0)+int((t or {}).get('folders') or 0) for t in (overview['old_totals'],overview['new_totals']))
+            self.db.space_guard=SpaceGuard(entries*1400,operation='lập cache so sánh và dữ liệu tạm')
             self.trim(keep=existing["id"] if existing else None, target_pairs=1)
             self.db.execute("INSERT OR IGNORE INTO pairs(older,newer,version,created,status,touched) VALUES(?,?,?,?,?,?)", (older or 0, newer, pair_version, now(), "building", now()))
             pair = self.db.execute("SELECT id FROM pairs WHERE older=? AND newer=? AND version=?", (older or 0, newer, pair_version)).fetchone()[0]
@@ -391,6 +428,7 @@ class Comparisons(Presence):
             except BaseException as exc:
                 self.db.set_progress_handler(None, 0); self.db.rollback()
                 self.db.execute("UPDATE pairs SET status='failed' WHERE id=?", (pair,)); self.db.commit()
+                if self.db.space_guard and self.db.space_guard.error:raise self.db.space_guard.error from exc
                 if self.stop.is_set() and isinstance(exc, sqlite3.OperationalError):
                     raise ProcessCancelled() from exc
                 raise
@@ -511,6 +549,16 @@ class Comparisons(Presence):
                 self.rollback_stage();raise
 
     def page(self, pair, *, limit=20, cursor=None, sort="delta", direction="desc", minimum=0, kind="all", changes="all", search="", root=None, recursive=True, folders_only=False, section='all', reason=None, presence='all'):
+        from .history_backend import snapshots,log_mode
+        if log_mode():
+            info=self.db.execute('SELECT older,newer FROM pairs WHERE id=?',(pair,)).fetchone()
+            if info is None:raise ValueError('Không tìm thấy cặp mốc')
+            with snapshots(info,stop=self.stop,notify=self.notify):
+                if self.db.execute('SELECT status FROM pairs WHERE id=?',(pair,)).fetchone()[0]!='ready':self.prepare(info[0] or None,info[1])
+                return self._page_loaded(pair,limit=limit,cursor=cursor,sort=sort,direction=direction,minimum=minimum,kind=kind,changes=changes,search=search,root=root,recursive=recursive,folders_only=folders_only,section=section,reason=reason,presence=presence)
+        return self._page_loaded(pair,limit=limit,cursor=cursor,sort=sort,direction=direction,minimum=minimum,kind=kind,changes=changes,search=search,root=root,recursive=recursive,folders_only=folders_only,section=section,reason=reason,presence=presence)
+
+    def _page_loaded(self,pair,*,limit=20,cursor=None,sort='delta',direction='desc',minimum=0,kind='all',changes='all',search='',root=None,recursive=True,folders_only=False,section='all',reason=None,presence='all'):
         if section not in ('all','common','private'):raise ValueError('Phần dữ liệu không hợp lệ')
         if presence not in ('all','both','old','new'):raise ValueError('Mốc hiện diện không hợp lệ')
         from .snapshot_scope import REASONS
@@ -613,7 +661,7 @@ class Comparisons(Presence):
         self.stage=f'Đang lấy tối đa {limit:,} mục đã sắp xếp '+('trong thư mục đã chọn' if root else 'trong toàn phạm vi')
         if cursor:
             where += f" AND ({key},c.path_id) {'>' if direction=='asc' else '<'} (?,?)"
-            page_args += [cursor["value"], cursor["path_id"]]
+            page_args += [cursor["value"], int(cursor["path_id"])]
         sql = f"""SELECT c.*,p.path,p.parent,CASE WHEN c.new_revision IS NOT NULL THEN c.after ELSE c.before END AS logical,
           r.identity,r.attrs,CASE WHEN c.kind='file' AND c.allocated IS NULL AND r.status='ok' THEN 'metadata-partial' ELSE r.status END AS status,r.note,op.path AS other_path,{key} AS _key,
           pr.common_before,pr.common_after,pr.private_before,pr.private_after,pr.unverified_count
@@ -624,11 +672,23 @@ class Comparisons(Presence):
         rows = [enrich_presence(dict(r)) for r in self.db.execute(sql, (*page_args, limit + 1))]
         more = len(rows) > limit; rows = rows[:limit]
         for row in rows:row['baseline']=not bool(record['older'])
-        next_cursor = {"value": rows[-1]["_key"], "path_id": rows[-1]["path_id"], "filter": fingerprint} if more else None
+        from .history_backend import log_mode
+        next_cursor = {"value": rows[-1]["_key"], "path_id": str(rows[-1]["path_id"]) if log_mode() else rows[-1]["path_id"], "filter": fingerprint} if more else None
         task.finish(f'Đã tải {len(rows):,} dòng chi tiết; tổng bộ lọc {total:,} mục')
         return {"rows": rows, "cursor": next_cursor, "total": total, "pair_id": pair}
 
     def details(self, row):
+        from .history_backend import log_mode,snapshots
+        if log_mode() and row.get('pair_id'):
+            info=self.db.execute('SELECT older,newer FROM pairs WHERE id=?',(row['pair_id'],)).fetchone()
+            with snapshots(info,stop=self.stop,notify=self.notify):
+                self.prepare(info[0] or None,info[1])
+                fresh=self.db.execute('SELECT * FROM diff_rows WHERE pair_id=? AND path_id=?',(row['pair_id'],row['path_id'])).fetchone()
+                if fresh is None:raise ValueError('Mục không còn trong cặp mốc này')
+                return self._details_loaded(dict(fresh))
+        return self._details_loaded(row)
+
+    def _details_loaded(self,row):
         revision = row["new_revision"] or row["old_revision"]
         raw=dict(self.db.execute("SELECT * FROM source.revisions WHERE id=?", (revision,)).fetchone())
         return {**raw,'logical':row['after'] if row['new_revision'] else row['before'],
@@ -702,6 +762,8 @@ class Comparisons(Presence):
             self.db.execute("UPDATE pairs SET status='archived',names_ready=0 WHERE id=?", (row[0],))
         self.db.commit()
         used = (self.db.execute("PRAGMA page_count").fetchone()[0] - self.db.execute("PRAGMA freelist_count").fetchone()[0]) * self.db.execute("PRAGMA page_size").fetchone()[0]
+        from .storage_safety import incremental_reclaim
+        incremental_reclaim(self.db)
         if used > load().get("comparison_cache_mb", 768) * 1_000_000 and target_pairs > 1:
             self.trim(keep=keep, target_pairs=1)
 

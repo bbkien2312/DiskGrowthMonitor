@@ -30,10 +30,16 @@ def fingerprint(scan):
 
 def effective_rows(rows, history_path=None):
     """Cheap summary lookup, including from a readonly Store. No auto migration."""
-    path = (Path(history_path).parent if history_path else home() / 'data') / 'normalization.sqlite'
+    from .history_backend import database_path,log_mode
+    path = (Path(history_path).parent / 'normalization.sqlite') if history_path else database_path('normalization.sqlite')
+    if log_mode() and not path.exists():
+        instance=Normalizations();instance.close()
     if not path.exists(): return rows
     db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=30)
     try:
+        # Another startup worker can have opened the database file but not
+        # yet created its schema. No published overlay exists at that point.
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='datasets'").fetchone():return rows
         active = {r[0]: r for r in db.execute('SELECT scan_id,fingerprint,report,id FROM datasets WHERE active=1 AND version=?', (VERSION,))}
         for row in rows:
             item = active.get(row['id'])
@@ -51,9 +57,11 @@ def effective_rows(rows, history_path=None):
 
 class Normalizations:
     def __init__(self, stop=None, notify=None):
+        from .storage_safety import SpaceConnection
+        from .history_backend import database_path,log_mode,manager
         self.stop = stop or threading.Event(); self.notify = notify or (lambda *a: None)
-        self.path = home() / 'data/normalization.sqlite'
-        self.db = sqlite3.connect(self.path, timeout=30,uri=True)
+        self.path = database_path('normalization.sqlite')
+        self.db = sqlite3.connect(self.path, timeout=30,uri=True,factory=SpaceConnection)
         self.db.row_factory = sqlite3.Row
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA cache_size=-16384')
@@ -68,7 +76,8 @@ class Normalizations:
           allocated INTEGER,created REAL,modified REAL,identity TEXT,attrs INTEGER,status TEXT,
           PRIMARY KEY(dataset_id,path_id)) WITHOUT ROWID;
         ''')
-        self.db.execute('ATTACH DATABASE ? AS source', ((home() / 'data/history.sqlite').as_uri() + '?mode=ro',))
+        self.db.execute('ATTACH DATABASE ? AS source', (database_path('history.sqlite').as_uri() + '?mode=ro',))
+        if log_mode():manager().bind_normalization(self.db)
         self.last_pulse = time.monotonic()
         self.db.set_progress_handler(self._progress, 4000)
 
@@ -77,6 +86,7 @@ class Normalizations:
 
     def _progress(self):
         if self.stop.is_set(): return 1
+        if self.db.space_guard and self.db.space_guard.progress():return 1
         if time.monotonic() - self.last_pulse > 2:
             self.notify('info', {'message': 'Đang kiểm chứng metadata lịch sử; không quét lại file trên ổ'})
             self.last_pulse = time.monotonic()
@@ -88,15 +98,24 @@ class Normalizations:
     def current(self, scan_id):
         scan = self.db.execute('SELECT * FROM source.scans WHERE id=?', (scan_id,)).fetchone()
         if scan is None: raise ValueError('Không tìm thấy lượt quét')
-        return self.db.execute('SELECT * FROM datasets WHERE scan_id=? AND active=1 AND version=? AND fingerprint=?',
+        result=self.db.execute('SELECT * FROM datasets WHERE scan_id=? AND active=1 AND version=? AND fingerprint=?',
                                (scan_id, VERSION, fingerprint(scan))).fetchone()
+        from .history_backend import log_mode,manager
+        if result and log_mode():manager().load_normalization(self.db,result['id'])
+        return result
 
     def inspect(self, scan_id, *, apply=False, force=False):
+        from .history_backend import snapshots
+        with snapshots([scan_id],stop=self.stop,notify=self.notify):return self._inspect_loaded(scan_id,apply=apply,force=force)
+
+    def _inspect_loaded(self,scan_id,*,apply=False,force=False):
         while not _lock.acquire(timeout=.05):
             if self.stop.is_set(): raise ProcessCancelled()
+        self.db.space_guard=None
         try: return self._inspect(scan_id, apply=apply, force=force)
         except BaseException as exc:
             self.db.set_progress_handler(None, 0); self.db.rollback()
+            if self.db.space_guard and self.db.space_guard.error:raise self.db.space_guard.error from exc
             if self.stop.is_set(): raise ProcessCancelled('Đã dừng chuẩn hóa; bản gốc và bản đang dùng được giữ nguyên') from exc
             raise
         finally:
@@ -143,6 +162,9 @@ class Normalizations:
             if apply:self._publish(scan_id,report,storage_meter,copy_overrides=False)
             task.finish('Đã đọc chuẩn hóa được thực hiện lúc quét; không tính lại file/thư mục')
             return report
+        from .storage_safety import SpaceGuard
+        self.db.space_guard=SpaceGuard((original.get('files',0)+original.get('folders',0))*900,
+            operation='chuẩn hóa lịch sử và bảng tạm')
         for table in ('work', 'owners', 'direct'):
             self.db.execute(f'DROP TABLE IF EXISTS temp.{table}')
         columns={r[1] for r in self.db.execute('PRAGMA source.table_info(paths)')}
@@ -259,6 +281,8 @@ class Normalizations:
         for old in stale:
             self.db.execute('DELETE FROM overrides WHERE dataset_id=?',(old,));self.db.execute('DELETE FROM datasets WHERE id=?',(old,))
         self.db.commit()
+        from .history_backend import log_mode,manager
+        if log_mode():manager().publish_normalization(self.db,ident)
 
     def _totals(self):
         return dict(self.db.execute('''SELECT CASE WHEN SUM(kind='file' AND logical IS NULL)>0 THEN NULL

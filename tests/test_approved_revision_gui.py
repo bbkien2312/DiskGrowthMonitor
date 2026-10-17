@@ -9,10 +9,12 @@ from test_v2_gui import gui,pump
 
 
 def test_legacy_index_upgrade_never_blocks_gui_construction(isolated,monkeypatch):
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication,QMessageBox
     from dgm.gui import Window
     import dgm.background as background
     monkeypatch.setattr(background,'status',lambda:{'task':{'installed':False},'service':{'installed':False},'scan':{'running':False}})
+    errors=[]
+    monkeypatch.setattr(QMessageBox,'warning',lambda *args:errors.append(args[-1]))
     s=Store(migrate_keys=False);root=isolated/'legacy'
     sid=s.begin_scan('daily','scope','native',{'roots':[str(root)]})
     s.put(sid,[entry(root,'folder'),entry(root/'f',value=5)]);s.finish(sid,'complete',s.totals(sid));s.close()
@@ -24,6 +26,7 @@ def test_legacy_index_upgrade_never_blocks_gui_construction(isolated,monkeypatch
     app=QApplication.instance() or QApplication([]);w=Window();w.show()
     try:
         pump(app,lambda:not w.workers)
+        assert not errors,errors
         assert threads and w.history_panel.loaded
     finally:
         for worker in w.workers:worker.stop.set()

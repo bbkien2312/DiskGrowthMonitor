@@ -190,6 +190,11 @@ def release_lease(session):
 
 
 def prepare_install(release, installer, *, reopen=False):
+    from .storage_maintenance import maintenance_lock
+    with maintenance_lock():return _prepare_install(release,installer,reopen=reopen)
+
+
+def _prepare_install(release, installer, *, reopen=False):
     """Update the current installation while retaining its existing data home."""
     from .runtime import binary_root,managed_executable
     source_conversion=installation_mode()!='installed'
@@ -213,9 +218,12 @@ def prepare_install(release, installer, *, reopen=False):
             raise RuntimeError('Chưa xác minh được chủ sở hữu '+kind+'; chưa cập nhật')
     owned={kind:item for kind in ('task','service') if verified_background_owner(kind,item:=state[kind])}
     if owned.get('task',{}).get('running'): raise RuntimeError('Task đang chạy: chờ hoàn tất trước khi cập nhật')
-    databases=[home()/'data'/name for name in ('history.sqlite','comparisons.sqlite','normalization.sqlite')]
-    required=sum(p.stat().st_size for p in databases if p.exists())+release['size']*5
-    if shutil.disk_usage(home()).free<required: raise RuntimeError(f'Cần ít nhất {required:,} byte trống cho sao lưu/cài cập nhật')
+    from .history_backend import log_mode
+    databases=[] if log_mode() else [home()/'data'/name for name in ('history.sqlite','comparisons.sqlite','normalization.sqlite')]
+    required=sum(p.stat().st_size+sum(q.stat().st_size for q in (p.with_name(p.name+'-wal'),) if q.exists()) for p in databases if p.exists())+release['size']*8
+    from .storage_safety import require_space
+    space=require_space(required,operation='sao lưu/cài cập nhật và chỗ trống sau cài')
+    required=space['required_bytes']
     if active_update(): raise RuntimeError('Một lượt cập nhật đang hoạt động')
     pending = pending_recovery()
     if pending: raise RuntimeError('Cần khôi phục bộ chạy nền của lượt cập nhật trước: '+str(pending[0]['session']))
@@ -312,6 +320,11 @@ def stage(path):
     from .installation import verified_background_owner
     state=status()
     if state['scan'].get('running'): raise RuntimeError('Một lượt quét đã bắt đầu; chưa cài và không cưỡng bức dừng')
+    from .storage_safety import require_space
+    from .history_backend import log_mode
+    backup_names=() if log_mode() else ('history.sqlite','comparisons.sqlite','normalization.sqlite')
+    required=sum(p.stat().st_size for p in (home()/'data'/n for n in backup_names) if p.exists())+session['release']['size']*8
+    require_space(required,operation='sao lưu/cài cập nhật')
     try:
         for kind in session['original']:
             item=state[kind]
@@ -331,12 +344,12 @@ def stage(path):
             source=home()/'data'/name
             if source.resolve()!=source.absolute() or (backup/name).is_symlink():raise ValueError('File cấu hình/backup không được là symlink')
             if source.exists(): shutil.copy2(source,backup/name)
-        for name in ('history.sqlite','comparisons.sqlite','normalization.sqlite'):
+        for name in backup_names:
             history=home()/'data'/name
             if history.resolve()!=history.absolute() or (backup/name).is_symlink():raise ValueError('Database/backup không được là symlink')
             if history.exists():
                 with closing(sqlite3.connect(history.as_uri()+'?mode=ro',uri=True)) as source, closing(sqlite3.connect(backup/name)) as target:
-                    source.backup(target);target.commit()
+                    source.backup(target,pages=2048,progress=lambda *args:require_space(operation='sao lưu cập nhật'));target.commit()
         preserved={}
         for name,tables in (('history.sqlite',('scans','members','benchmarks')),('comparisons.sqlite',('pairs',)),('normalization.sqlite',('datasets','overrides'))):
             database=backup/name
@@ -345,6 +358,10 @@ def stage(path):
                 preserved[name]={table:db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
                     for table in tables if db.execute('SELECT 1 FROM sqlite_master WHERE name=?',(table,)).fetchone()}
         session['preserved_counts']=preserved
+        from .history_backend import log_mode
+        if log_mode():
+            folder=home()/'data/history'
+            session['preserved_logs']={str(p.relative_to(folder)):file_digest(p) for p in folder.rglob('*') if p.is_file()}
         session['config_sha256']=file_digest(backup/'config.json') if (backup/'config.json').exists() else None
         installer=Path(session['installer'])
         if installer.stat().st_size!=session['release']['size'] or file_digest(installer)!=session['release']['sha256']: raise ValueError('Installer đã thay đổi trước khi cài')
@@ -365,6 +382,10 @@ def finish(path, success=False):
         success=False; errors.append('Phiên bản sau cài không khớp Release')
     if success:
         try:
+            for relative,digest in session.get('preserved_logs',{}).items():
+                log_path=home()/'data/history'/relative
+                if log_path.resolve()!=log_path.absolute() or not inside(log_path,home()/'data/history') or file_digest(log_path)!=digest:
+                    raise RuntimeError('Log lịch sử thay đổi/mất sau cập nhật: '+relative)
             for name,tables in session.get('preserved_counts',{}).items():
                 database=home()/'data'/name
                 with closing(sqlite3.connect(database.as_uri()+'?mode=ro',uri=True)) as db:
@@ -387,6 +408,14 @@ def finish(path, success=False):
     save_session(path,session,phase='complete' if success and not errors else 'failed',restore_pending=bool(restore_errors),errors=errors)
     release_lease(session)
     if errors: raise RuntimeError('Cần khôi phục thủ công; xem '+str(path)+'\n'+'\n'.join(errors))
+    if success:
+        # Post-verification only: cleanup failure must never turn an installed,
+        # verified version into a failed update or discard recovery evidence.
+        try:
+            from .storage_maintenance import cleanup_updates
+            cleanup=cleanup_updates()
+            save_session(path,session,cleanup=cleanup)
+        except Exception as exc:logging.getLogger('dgm').warning('STORAGE post-update cleanup deferred: %s',exc)
     return {'updated':success,'restored':True,'session':str(path),'backup':str(path.parent/'backup')}
 
 

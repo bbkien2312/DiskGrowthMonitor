@@ -724,6 +724,8 @@ class Window(QMainWindow):
         layout = self.add_tab("Hệ thống")
         from .update_ui import AppUpdatePanel
         self.app_update_panel=AppUpdatePanel(self);layout.addWidget(self.app_update_panel)
+        from .storage_ui import StoragePanel
+        self.storage_panel=StoragePanel(self);layout.addWidget(self.storage_panel)
         row = QHBoxLayout()
         self.button("Làm mới phiên bản / môi trường", self.doctor, row)
         self.update_all_button = self.button("Kiểm tra cập nhật tất cả", lambda: self.check_updates(), row)
@@ -1254,7 +1256,10 @@ class Window(QMainWindow):
             event.ignore()
             return
         self.tray.hide()
+        for timer in self.findChildren(QTimer):timer.stop()
         self.save_layout()
+        from .history_backend import close_indexes
+        close_indexes()
         event.accept()
 
 
@@ -1262,6 +1267,13 @@ def start(tray=False,smoke_test=False):
     app = QApplication.instance() or QApplication([])
     app.setApplicationName("Disk Growth Monitor")
     app.setStyle("Fusion")
+    if not smoke_test:
+        # Handles successful updates made by older coordinators too. Never
+        # remove failed/recovery sessions or current scan/comparison data.
+        try:
+            from .storage_maintenance import cleanup_updates
+            cleanup_updates()
+        except (OSError,ValueError,RuntimeError):pass
     window = Window()
     if not tray:
         window.show()

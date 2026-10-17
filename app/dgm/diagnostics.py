@@ -11,6 +11,7 @@ from .platform_ops import is_admin, run, system_tool
 
 
 def doctor():
+    from .history_backend import log_mode,database_path
     ROOT = home()
     cfg = load()
     packages = {}
@@ -43,7 +44,8 @@ def doctor():
     return {"app_version": __version__, "home": str(ROOT), "python": sys.version, "executable": sys.executable,
             "base_prefix": sys.base_prefix, "venv_prefix": sys.prefix, "isolated": bool(getattr(sys,'frozen',False)) or sys.prefix != sys.base_prefix,
             "admin": is_admin(), "frozen":bool(getattr(sys,'frozen',False)), "packages": packages, "engines": engines, "disks": disks,
-            "database_bytes": (ROOT / "data/history.sqlite").stat().st_size if (ROOT / "data/history.sqlite").exists() else 0}
+            "database_bytes": database_path('history.sqlite',create=False).stat().st_size if database_path('history.sqlite',create=False).exists() else 0,
+            'history_format':'jsonl.gz' if log_mode() else 'legacy-sqlite'}
 
 
 def system_check(tool, *, allow_uac=True, notify=None,stop=None):

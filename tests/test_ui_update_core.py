@@ -302,3 +302,76 @@ def test_uac_cancel_is_cooperative_not_an_update_error(session,monkeypatch):
     monkeypatch.setattr(shell,'ShellExecuteEx',deny)
     with pytest.raises(ElevationCancelled,match='hủy UAC'):update.launch(ticket)
     assert not update.active_update()
+
+
+def test_stage_rechecks_free_space_before_disabling_runner(session,monkeypatch):
+    from dgm import storage_safety as safety
+    ticket,state=session
+    monkeypatch.setattr(safety.shutil,'disk_usage',lambda _:type('Usage',(),{'free':1})())
+    with pytest.raises(safety.LowSpaceError,match='dự phòng'):update.stage(ticket['session'])
+    saved=json.loads(Path(ticket['session']).read_text())
+    assert state['task']['enabled'] and not saved['changed']
+    assert not (Path(ticket['session']).parent/'backup').exists()
+
+
+def test_verified_update_prunes_prior_completed_backup_only(session,monkeypatch):
+    from test_storage_policy import session as storage_session
+    import dgm.background as background
+    import dgm.schedule as schedule
+    ticket,state=session;old,_=storage_session(1);failed,_=storage_session(2,phase='failed')
+    monkeypatch.setattr(background,'control',lambda *a,**kw:state['task'].update(enabled=False))
+    monkeypatch.setattr(schedule,'enable_task',lambda value:state['task'].update(enabled=value))
+    db=Store();db.close();before=(home()/'data/history.sqlite').read_bytes()
+    update.stage(ticket['session']);monkeypatch.setattr(update,'__version__','99.0.0')
+    result=update.finish(ticket['session'],success=True)
+    assert result['updated'] and not (old/'backup').exists()
+    assert (failed/'backup/history.sqlite').exists() and (Path(result['backup'])/'history.sqlite').exists()
+    assert (home()/'data/history.sqlite').read_bytes()==before and state['task']['enabled']
+
+
+def test_backup_space_failure_keeps_recovery_evidence_and_restores_runner(session,monkeypatch):
+    from dgm import storage_safety as safety
+    import dgm.background as background
+    import dgm.schedule as schedule
+    ticket,state=session;calls=[]
+    monkeypatch.setattr(background,'control',lambda *a,**kw:state['task'].update(enabled=False))
+    monkeypatch.setattr(schedule,'enable_task',lambda value:state['task'].update(enabled=value))
+    db=Store();db.close();before=(home()/'data/history.sqlite').read_bytes()
+    original=safety.require_space
+    def insufficient_during_backup(*args,**kwargs):
+        calls.append(1)
+        if len(calls)>1:raise safety.LowSpaceError('fixture backup space exhausted')
+        return original(*args,**kwargs)
+    monkeypatch.setattr(safety,'require_space',insufficient_during_backup)
+    with pytest.raises(safety.LowSpaceError,match='fixture'):update.stage(ticket['session'])
+    saved=json.loads(Path(ticket['session']).read_text())
+    assert saved['phase']=='failed' and saved['restore_pending']
+    assert update.finish(ticket['session'])['restored'] and state['task']['enabled']
+    assert (Path(ticket['session']).parent/'backup').exists()
+    assert (home()/'data/history.sqlite').read_bytes()==before
+
+
+@pytest.mark.parametrize('tamper',[False,True])
+def test_jsonl_update_verifies_logs_without_copying_databases(isolated,release,monkeypatch,tamper):
+    from dgm import config,background
+    from dgm.history_backend import close_indexes
+    cfg=config.load();cfg['history_format']='jsonl';config.save(cfg)
+    monkeypatch.setattr(background,'status',lambda:{'scan':{'running':False},'task':{'installed':False},'service':{'installed':False}})
+    root=isolated/'virtual';store=Store();snapshot(store,root,[entry(root/'f',value=12)]);store.close()
+    folder=home()/'data/updates/fixture';folder.mkdir(parents=True);installer=folder/'installer.exe';installer.write_bytes(release[0])
+    ticket=update.prepare_install(release[1],installer)
+    staged=update.stage(ticket['session']);backup=Path(staged['backup'])
+    assert (backup/'config.json').exists() and not list(backup.glob('*.sqlite'))
+    saved=json.loads(Path(ticket['session']).read_text());assert saved['preserved_logs']
+    log_root=home()/'data/history'
+    if tamper:next((log_root/'scans').glob('*.jsonl.gz')).write_bytes(b'changed after staging')
+    before={key:(log_root/key).read_bytes() for key in saved['preserved_logs']}
+    monkeypatch.setattr(update,'__version__','99.0.0')
+    if tamper:
+        with pytest.raises(RuntimeError,match='Log lịch sử'):update.finish(ticket['session'],success=True)
+    else:
+        result=update.finish(ticket['session'],success=True)
+        assert result['updated'] and Path(result['session'])==Path(ticket['session'])
+    assert json.loads(Path(ticket['session']).read_text())['phase']==('failed' if tamper else 'complete')
+    assert {key:(log_root/key).read_bytes() for key in before}==before
+    close_indexes();assert not (home()/'data/tmp/history-index/history.sqlite').exists()

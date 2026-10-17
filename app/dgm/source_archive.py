@@ -14,6 +14,9 @@ def archive_folder():
 
 def retain(source, *, engine, root, options, stop):
     from .platform_ops import ProcessCancelled
+    if load().get('source_archive_limit_mb',0)<=0:
+        return {'retained':False,'source_bytes':source.stat().st_size,'engine':engine,'root':root,
+            'reason':'Không giữ CSV nguồn; lịch sử chỉ lưu metadata JSONL/SQLite theo chế độ đã chọn.'}
     folder=archive_folder()
     target=folder/(time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex+'.csv.gz')
     digest=hashlib.sha256()

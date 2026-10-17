@@ -1,3 +1,15 @@
+# Disk Growth Monitor 1.3.1 — 17/10/2026
+
+- Sửa xung đột nâng cấp schema cache khi cây thư mục và lịch sử mở đồng thời; kiểm tra lại schema dưới khóa ghi SQLite. Xác minh log sau cập nhật không ghi đè file lịch sử; con trỏ phân trang giữ ổn định khi tạo lại chỉ mục tạm.
+
+- Bổ sung lịch sử JSONL gzip làm nguồn metadata, không chứa nội dung file; SQLite là chỉ mục tạm theo phiên GUI/CLI. Dọn chỉ mục khi tiến trình cuối thoát, có nút/CLI bỏ chủ động; mở lại cặp cần đọc log/lập chỉ mục đầy đủ trước khi tải trang.
+- Chuyển lịch sử SQLite cũ qua GUI/CLI, xác minh từng log/checksum/số bản ghi, giữ mốc/tóm tắt/benchmark/lớp chuẩn hóa. Nguồn thay đổi/dừng/lỗi thì không xóa SQLite; thu hồi nguồn cũ/CSV/backup hoàn tất chỉ theo duyệt. Bản cài mới không giữ CSV nguồn mặc định.
+
+- Sửa tích lũy backup SQLite/installer sau cập nhật: mặc định giữ một backup thành công gần nhất, chỉ dọn phiên hoàn tất đã kiểm chứng; bảo vệ phiên lỗi/chờ khôi phục. Khởi động GUI xử lý các phiên thành công từ phiên bản cũ; giữ nhật ký và dữ liệu hiện dùng.
+- Thêm Hệ thống → Dung lượng app và CLI storage: phân loại dữ liệu/log, đo trang trống SQLite, xem trước/xác nhận dọn backup/installer, chọn riêng khi muốn xóa cả backup gần nhất, lưu số backup/dung lượng dự phòng. Không tự đổi retention lịch sử.
+- Thu gọn cache giữ dữ liệu/kết quả, yêu cầu đủ chỗ tạm. Cache mới dùng incremental auto-vacuum có giới hạn thời gian khi dọn; không tự chạy VACUUM lớn trên cache cũ.
+- Kiểm tra dung lượng cho quét, chuẩn hóa, tạo cache và backup/cài cập nhật; mặc định chừa 1.024 MB. SQL dài kiểm tra định kỳ và trả lỗi rõ ràng; cache có sẵn vẫn đọc được khi thiếu chỗ tạo cache mới. Có khóa bảo trì/cập nhật và kiểm tra lại đường dẫn/file trước khi xóa.
+
 # Disk Growth Monitor 1.3.0 — 17/10/2026
 
 - Chung là bản ghi có ở cả hai mốc; Riêng là chỉ một mốc. Hiện diện tách khỏi độ tin cậy: thêm/mất thật trong Riêng vẫn được tính vào tổng, không quét/chưa rõ không bị coi là đã xóa. Ghi rõ vấn đề ở Cũ hay Mới; giữ lịch sử gốc, không đọc file hiện tại để giả làm dữ liệu cũ.

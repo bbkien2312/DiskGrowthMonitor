@@ -43,6 +43,11 @@ def execute(argv,env=None):
     return done.stdout
 
 def contents(root):
+    catalog=root/'data/history/catalog.json'
+    if catalog.exists():
+        return {'catalog':json.loads(catalog.read_text(encoding='utf-8')),
+            'logs':{str(p.relative_to(catalog.parent)):hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in catalog.parent.rglob('*.gz')}}
     result={}
     for database,tables in (('history.sqlite',('scans','benchmarks')),('comparisons.sqlite',('pairs',)),('normalization.sqlite',('datasets','overrides'))):
         if not (root/'data'/database).exists():continue
@@ -73,10 +78,11 @@ target=data_home/'.dgm-app'
 session=coordinate(data_home,target,{'executable':sys.executable,'arguments':['-m','dgm']},True,project/'app/dgm/update_helper.ps1')
 assert contents(data_home)==before and (data_home/'data/config.json').read_bytes()==config_bytes
 assert source.read_text()=='keep source' and venv.read_text()=='keep venv' and log.read_text()=='keep log'
-assert (session/'backup/history.sqlite').is_file() and (session/'backup/comparisons.sqlite').is_file()
+assert not (session/'backup/history.sqlite').exists() and (session/'backup/config.json').is_file()
+assert json.loads((session/'session.json').read_text())['preserved_logs']
 doctor=json.loads(execute([target/'dgm.exe','doctor']))
 assert doctor['frozen'] and Path(doctor['home'])==data_home and doctor['app_version']==__version__
-report['checks'].append('source update uses managed runtime and existing data home; scan/comparison/benchmark rows, config, logs, source and development venv preserved')
+report['checks'].append('source update uses managed runtime and existing data home; compressed JSONL history/normalization/comparison/benchmark metadata, config, logs, source and development venv preserved without full database copies')
 env=dict(environment,DGM_HOME=str(data_home))
 forwarded=json.loads(execute([sys.executable,'-m','dgm','doctor'],env))
 assert forwarded['frozen'] and Path(forwarded['home'])==data_home
@@ -97,6 +103,14 @@ if legacy_installer:
     assert json.loads(execute([exe,'doctor']))['app_version']==__version__
     assert contents(legacy)==old_contents and (legacy/'data/config.json').read_bytes()==old_config
     report['checks'].append('real upgrade from prior installer using its OLD coordinator replaces same install directory and preserves scan/comparison history')
+    converted=json.loads(execute([exe,'storage','migrate-history','--yes','--retire-old']))
+    assert converted['verified'] and converted['scans']==2 and converted['legacy_removed_bytes']>0
+    assert not (legacy/'data/history.sqlite').exists()
+    after=json.loads(execute([exe,'compare',second['scan_id'],'--older',first['scan_id']]))
+    assert after['summary']['verified_delta']==0
+    assert not (legacy/'data/tmp/history-index/history.sqlite').exists()
+    old_contents=contents(legacy)
+    report['checks'].append('frozen CLI converts the real legacy SQLite fixture to verified compressed JSONL, retires old databases only after verification and compares both scans after temporary indexes are discarded')
     execute([legacy/'unins000.exe','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'])
     assert contents(legacy)==old_contents
     (legacy/'data/updates/fixture-download/installer.exe').unlink()

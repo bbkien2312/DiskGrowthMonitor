@@ -1,8 +1,29 @@
 # Disk Growth Monitor
 
-[Tải bộ cài Windows x64 v1.3.0](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.3.0) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
+[Tải bộ cài Windows x64 v1.3.1](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.3.1) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
 
-**Bản mới nhất: 1.3.0.** Tải `installer.exe` và đối chiếu `SHA256SUMS.txt` trong GitHub Release. GUI yêu cầu UAC Admin ngay khi mở, không chỉ khi cài; hủy UAC thì app không mở dữ liệu.
+**Bản mới nhất: 1.3.1.** Tải `installer.exe` và đối chiếu `SHA256SUMS.txt` trong GitHub Release. GUI yêu cầu UAC Admin ngay khi mở, không chỉ khi cài; hủy UAC thì app không mở dữ liệu.
+
+## Bản 1.3.1 — giới hạn dung lượng dữ liệu app
+
+Bản cài mới dùng **log metadata JSONL gzip**, không chứa nội dung file đã quét. `data/history/catalog.json` lưu mốc/tóm tắt; `scans/*.jsonl.gz` lưu các chỉ số theo đường dẫn và `normalization/*.jsonl.gz` lưu các sửa chuẩn hóa. SQLite chuyển thành chỉ mục tạm ở `data/tmp/history-index`, dùng chung khi GUI/CLI còn mở và bỏ khi tiến trình cuối đóng. Có thể chủ động bỏ chỉ mục bằng nút **Xóa chỉ mục tạm**, giữ nguyên log. Mở lại cặp sau khi bỏ chỉ mục cần đọc toàn bộ log hai mốc để dựng tổng/sắp xếp; không thể tính toàn ổ chỉ từ 20 dòng. CLI từng lệnh có thể dựng lại nếu không còn tiến trình cùng app giữ phiên.
+
+Lịch sử SQLite cũ không bị xóa ngay khi cài đè. Dùng **Hệ thống → Dung lượng app → Chuyển lịch sử sang JSONL nén** hoặc `dgm.exe storage migrate-history --yes --retire-old`: ghi từng mốc, đọc lại xác minh checksum/số bản ghi, giữ bản gốc nếu dừng/lỗi hoặc nguồn thay đổi. Khi duyệt thu hồi sau chuyển, app dọn đúng SQLite cũ không thay đổi, CSV nguồn và backup cập nhật hoàn tất; bảo vệ lượt lỗi/chưa khôi phục. Không phục hồi được nội dung file từ các log này. Tóm tắt so sánh/benchmark, số thứ tự mốc và lớp chuẩn hóa được giữ.
+
+Mặc định giữ một backup cập nhật thành công gần nhất; dọn backup cũ và installer đã dùng sau kiểm chứng cập nhật hoặc khi khởi động GUI. Phiên lỗi/chờ khôi phục, đường dẫn không rõ và reparse point được bảo vệ. Không xóa lịch sử đang dùng; giữ nhật ký phiên cập nhật. Thay đổi chính sách giữ lịch sử chỉ qua thiết lập sẵn có, không bị tự rút ngắn.
+
+**Hệ thống → Dung lượng app** phân loại dữ liệu/log, ước tính dọn backup/installer, trang SQLite có thể tái sử dụng và chỗ trống. Dọn thủ công có xác nhận; xóa cả backup hoàn tất gần nhất cần chọn riêng. Thu gọn cache giữ tóm tắt/kết quả và lịch sử, yêu cầu đủ chỗ tạm. Cache mới hỗ trợ thu hồi tăng dần, cache cũ không tự VACUUM lớn.
+
+Ngưỡng dự phòng mặc định 1.024 MB, thay đổi được. Quét, chuẩn hóa, lập cache và cập nhật kiểm tra chỗ trống, kể cả phần tạm; SQL dài kiểm tra định kỳ. Số cần là ước tính, không bảo đảm dung lượng đỉnh khi phần mềm khác cùng dùng ổ. Không xóa file WAL/SHM hoặc database lịch sử bằng tay.
+
+```powershell
+dgm.exe storage report
+dgm.exe storage cleanup-updates --preview
+dgm.exe storage cleanup-updates --yes
+dgm.exe storage compact-cache --yes
+```
+
+`storage cleanup-updates --keep 0 --yes` xóa cả backup cập nhật hoàn tất (mất bản dự phòng); không phải mặc định. Bộ cài thủ công tại thư mục hiện có giữ dữ liệu và không tự tạo thêm backup cập nhật.
 
 ## Bản 1.3.0
 

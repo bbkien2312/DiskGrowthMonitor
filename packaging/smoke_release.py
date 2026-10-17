@@ -65,7 +65,8 @@ audit=cli('snapshot-audit','--id',second['scan_id'])
 assert audit[0]['after']['logical']==second['logical'] and not audit[0]['applied']
 normalized=cli('snapshot-normalize','--id',second['scan_id'],'--yes')
 assert normalized['applied'][0]['source_preserved']
-assert (target/'data/normalization.sqlite').is_file()
+assert list((target/'data/history/normalization').glob('*.jsonl.gz'))
+assert not (target/'data/tmp/history-index/history.sqlite').exists()
 report['checks'].append('frozen CLI audits and normalizes history without rewriting the source snapshot')
 report['checks'].append('two native fixture scans and +2000000-byte comparison')
 shared=('compare',second['scan_id'],'--older',first['scan_id'],'--kind','file','--minimum-mb','0','--sort','new','--direction','desc')
@@ -93,7 +94,7 @@ gui=cli('gui','--smoke-test')
 assert __version__ in gui['title'] and gui['tabs']==6 and gui['image_saved']
 execute([target/'DiskGrowthMonitor.exe','gui','--smoke-test'])
 report['checks'].append('console and windowed GUI bootloaders render and close normally')
-config=target/'data/config.json';history=target/'data/history.sqlite'
+config=target/'data/config.json';history=target/'data/history/catalog.json'
 config_hash=hashlib.sha256(config.read_bytes()).hexdigest()
 scan_ids=[item['id'] for item in cli('history')]
 install()
@@ -124,10 +125,10 @@ def coordinator(expected_hash,expected_exit):
     return json.loads(session_path.read_text()),folder
 outcome,session_folder=coordinator(hashlib.sha256(installer.read_bytes()).hexdigest(),0)
 assert outcome['phase']=='complete' and not outcome['restore_pending']
-assert (session_folder/'backup/history.sqlite').is_file() and (session_folder/'backup/config.json').is_file()
-assert (session_folder/'backup/normalization.sqlite').is_file()
+assert not (session_folder/'backup/history.sqlite').exists() and (session_folder/'backup/config.json').is_file()
+assert outcome['preserved_logs'] and not (session_folder/'backup/normalization.sqlite').exists()
 assert json.loads((target/'installed-app.json').read_text())['portable'] is True
-report['checks'].append('real frozen detached updater: same-version replacement, SQLite backup, portable mode and history preserved; no runner mutation')
+report['checks'].append('real frozen detached updater: same-version replacement; JSONL metadata logs/hash manifest preserved without database copies; portable mode, no runner mutation')
 outcome,_=coordinator('0'*64,1)
 assert outcome['phase']=='failed' and not outcome['restore_pending'] and exe.is_file()
 report['checks'].append('real updater checksum failure: installer not executed, current app/history retained and lease cleared')

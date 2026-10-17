@@ -319,10 +319,13 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
     if engine not in ("native", "wiztree", "windirstat", "gdu"):
         raise ValueError("Engine không hợp lệ")
     policy = Policy(p)
+    from .storage_safety import SpaceGuard
+    disk_guard=SpaceGuard(256_000_000,operation='ghi lịch sử quét')
     from .storage_metrics import begin as begin_storage, finish as finish_storage
     storage_meter = begin_storage("scan")
     start = time.perf_counter()
     with ScanLock(stop) as lock, StoreContext(stop,external_notify) as store:
+        store.db.space_guard=disk_guard
         lock.interrupt = store.db.interrupt
         # Owning the global lock means earlier 'running' rows are orphaned.
         store.db.execute("UPDATE scans SET status='failed',finished=? WHERE status='running'", (datetime.now(timezone.utc).isoformat(),))
@@ -363,7 +366,7 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
         status = "complete"
         batch = []
         try:
-            store.db.set_progress_handler(lambda: int(stop.is_set()), 1000)
+            store.db.set_progress_handler(lambda: int(stop.is_set()) or disk_guard.progress(), 1000)
             if stop.is_set():
                 raise Cancelled()
             notify("info", {"message": "Đang chuẩn bị lịch sử quét..."})
@@ -384,6 +387,7 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
                 batch.append(entry)
                 summary["files" if entry["kind"] == "file" else "folders"] += 1
                 if len(batch) >= 5000:
+                    disk_guard.check()
                     store.put(scan_id, batch)
                     batch.clear()
                     pages = store.db.execute("PRAGMA page_count").fetchone()[0]
@@ -400,7 +404,7 @@ def scan(name, p, stop=None, notify=None, *, allow_uac=True):
             summary["import_complete"] = True; summary["phase"] = "aggregating"
             store.record_stage(scan_id, summary)
             task.stage('totals')
-            store.db.set_progress_handler(lambda: int(stop.is_set()), 1000)
+            store.db.set_progress_handler(lambda: int(stop.is_set()) or disk_guard.progress(), 1000)
             notify("info", {"message": "Đối chiếu tổng thư mục một lần lúc nhập theo chuẩn chung; giữ tổng export gốc để đối chiếu."})
             store.aggregate(scan_id, stop=stop, notify=notify)
             summary['hardlinks']=store.hardlink_stats

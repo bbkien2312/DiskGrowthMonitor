@@ -20,13 +20,16 @@ def _files(operation):
         "normalization":("normalization.sqlite",),
     }[operation]
     data = {}
+    from .history_backend import database_path
     for database in databases:
         for suffix in ("", "-wal", "-shm"):
-            path = root / "data" / (database + suffix)
+            path = database_path(database,create=False).with_name(database+suffix)
             try:
-                data[f"data/{path.name}"] = path.stat().st_size
+                data[str(path.relative_to(root)).replace('\\','/')] = path.stat().st_size
             except FileNotFoundError:
-                data[f"data/{path.name}"] = 0
+                data[str(path.relative_to(root)).replace('\\','/')] = 0
+    for path in (root/'data/history').rglob('*'):
+        if path.is_file():data[str(path.relative_to(root)).replace('\\','/')]=path.stat().st_size
     if operation in ('scan','benchmark'):
         for path in (root/'data/exports/archive').glob('*.csv.gz'):
             try:data[str(path.relative_to(root))]=path.stat().st_size

@@ -43,7 +43,9 @@ def browser_path(path) -> bool:
 def defaults() -> dict:
     return {"schema": 1, "threshold_mb": 10, "retention_days": 90, "max_snapshots": 90,
             "database_limit_mb": 4096, "debug": False,
-            "source_archive_limit_mb":512,"source_archive_retention_days":90,
+            "storage_reserve_mb":1024,"update_backup_keep":1,
+            "source_archive_limit_mb":0,"source_archive_retention_days":90,
+            "history_format":"jsonl",
             "engines": {"wiztree": r"C:\Program Files\WizTree\WizTree64.exe", "windirstat": "", "gdu": ""},
             "profiles": {"daily": {"roots": ["C:\\"], "excludes": [], "strict_browsers": False, "engine": "wiztree", "mft": True}},
             "schedules": [], "alerts": {"free_gb": 10, "growth_gb": 2},
