@@ -1,5 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Installer,
-      [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-fA-F]{64}$')][string]$ExpectedSha256)
+      [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-fA-F]{64}$')][string]$ExpectedSha256,
+      [switch]$OnlyInPlace)
 $ErrorActionPreference='Stop'
 $taskRoot=Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $taskInstaller=[System.IO.Path]::GetFullPath($Installer)
@@ -16,14 +17,29 @@ New-Item -ItemType Directory -Path $taskTemp -Force | Out-Null
 $env:TEMP=$taskTemp
 $env:TMP=$env:TEMP
 Set-Location -LiteralPath $taskRoot
+function Invoke-OwnedQa([string]$Script,[string]$LogName,[string[]]$Arguments) {
+    # Windows PowerShell 5 treats native stderr as a terminating error under
+    # Stop. Capture both streams directly so a Python traceback is retained.
+    $taskOut=Join-Path $taskOutput ($LogName+'.log')
+    $taskErr=Join-Path $taskOutput ($LogName+'.stderr.log')
+    $taskQuoted=(@($Script)+$Arguments | ForEach-Object {'"'+$_+'"'}) -join ' '
+    $taskRun=Start-Process -FilePath $taskPython -ArgumentList $taskQuoted -WorkingDirectory $taskRoot -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $taskOut -RedirectStandardError $taskErr
+    if($taskRun.ExitCode -ne 0){
+        $taskDetail=(Get-Content -LiteralPath $taskErr -Tail 35) -join "`n"
+        throw ($LogName+' failed (exit '+$taskRun.ExitCode+'): '+$taskDetail)
+    }
+}
 try {
     if(-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'Administrator approval required.'}
-    @{phase='fresh-install';fixture_only=$true}|ConvertTo-Json|Out-File -LiteralPath $taskStatus -Encoding utf8
-    & $taskPython (Join-Path $taskRoot 'packaging\smoke_release.py') $taskInstaller 2>&1 | Out-File -LiteralPath (Join-Path $taskOutput 'fresh-install-smoke.log') -Encoding utf8
-    if($LASTEXITCODE -ne 0){throw 'Fresh-install smoke failed; see fresh-install-smoke.log'}
+    if($OnlyInPlace){
+        $taskFresh=Get-Content -LiteralPath (Join-Path $taskOutput 'release-test-results.json') -Raw | ConvertFrom-Json
+        if($taskFresh.installer_sha256 -ne $ExpectedSha256 -or $taskFresh.fixture_only -ne $true){throw 'Fresh install must already pass for this exact installer.'}
+    }else{
+        @{phase='fresh-install';fixture_only=$true}|ConvertTo-Json|Out-File -LiteralPath $taskStatus -Encoding utf8
+        Invoke-OwnedQa (Join-Path $taskRoot 'packaging\smoke_release.py') 'fresh-install-smoke' @($taskInstaller)
+    }
     @{phase='inplace-update';fixture_only=$true}|ConvertTo-Json|Out-File -LiteralPath $taskStatus -Encoding utf8
-    & $taskPython (Join-Path $taskRoot 'packaging\smoke_inplace_update.py') $taskInstaller (Join-Path $taskRoot 'dist\installer.exe') 2>&1 | Out-File -LiteralPath (Join-Path $taskOutput 'inplace-update-smoke.log') -Encoding utf8
-    if($LASTEXITCODE -ne 0){throw 'In-place-update smoke failed; see inplace-update-smoke.log'}
+    Invoke-OwnedQa (Join-Path $taskRoot 'packaging\smoke_inplace_update.py') 'inplace-update-smoke' @($taskInstaller,(Join-Path $taskRoot 'dist\installer.exe'))
     @{phase='complete';fixture_only=$true;success=$true}|ConvertTo-Json|Out-File -LiteralPath $taskStatus -Encoding utf8
 } catch {
     @{phase='failed';fixture_only=$true;success=$false;error=$_.Exception.Message}|ConvertTo-Json|Out-File -LiteralPath $taskStatus -Encoding utf8

@@ -1,5 +1,6 @@
 """Exercise source->managed runtime and an existing-install upgrade in owned fixtures."""
 import hashlib
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -51,7 +52,7 @@ def contents(root):
     result={}
     for database,tables in (('history.sqlite',('scans','benchmarks')),('comparisons.sqlite',('pairs',)),('normalization.sqlite',('datasets','overrides'))):
         if not (root/'data'/database).exists():continue
-        with sqlite3.connect(f'file:{(root/"data"/database).as_posix()}?mode=ro',uri=True) as db:
+        with closing(sqlite3.connect(f'file:{(root/"data"/database).as_posix()}?mode=ro',uri=True)) as db:
             for table in tables:result[table]=db.execute(f'SELECT * FROM {table} ORDER BY '+('dataset_id,path_id' if table=='overrides' else 'id')).fetchall()
     return result
 
@@ -104,7 +105,7 @@ if legacy_installer:
     assert contents(legacy)==old_contents and (legacy/'data/config.json').read_bytes()==old_config
     report['checks'].append('real upgrade from prior installer using its OLD coordinator replaces same install directory and preserves scan/comparison history')
     converted=json.loads(execute([exe,'storage','migrate-history','--yes','--retire-old']))
-    assert converted['verified'] and converted['scans']==2 and converted['legacy_removed_bytes']>0
+    assert converted['verified'] and converted['scans']==2 and converted['legacy_removed_bytes']>0,converted
     assert not (legacy/'data/history.sqlite').exists()
     after=json.loads(execute([exe,'compare',second['scan_id'],'--older',first['scan_id']]))
     assert after['summary']['verified_delta']==0

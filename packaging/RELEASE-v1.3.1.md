@@ -25,3 +25,10 @@ CLI tương đương: `storage report`, `storage cleanup-updates --preview`, `st
 Tải **installer.exe**, đối chiếu **SHA256SUMS.txt**. Windows x64, UAC Admin, runtime riêng; không cài pip/Python hệ thống. Đóng app, cài đúng thư mục bản hiện tại để giữ dữ liệu. Nếu bản cũ báo không đủ chỗ để tự sao lưu cập nhật, dọn cache/backup được duyệt hoặc dùng bộ cài thủ công tại vị trí cũ; không xóa history.sqlite hay các file WAL/SHM bằng tay.
 
 Bộ cài chưa ký số. Windows có thể hiện Unknown publisher/SmartScreen; không cần tắt bảo vệ. Kiểm thử tự động dùng fixture riêng, không quét/dọn ổ thật hay sửa Task/Service đang dùng. Báo cáo cài/cập nhật và checksum kèm Release.
+
+## Kiểm thử
+
+- 417 bài kiểm thử tự động đạt; giao diện kiểm tra ở mức phóng đại 125% và 150%.
+- Bộ cài thực tế: cài mới, CLI/GUI, chuẩn hóa, phân trang toàn tập, Chung/Riêng, cập nhật tại chỗ và gỡ giữ dữ liệu đều đạt.
+- Nâng cấp từ bộ cài cũ bằng coordinator cũ; chuyển SQLite cũ sang log nén, xác minh rồi thu hồi nguồn; mở lại và so sánh sau khi bỏ chỉ mục tạm đều đạt.
+- `release-test-results.json`, `inplace-update-test-results.json`, `frozen-cli-test-results.json` ghi các kiểm tra bằng fixture riêng, không chứa lịch sử cá nhân.
