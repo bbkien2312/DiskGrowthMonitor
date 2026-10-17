@@ -10,7 +10,10 @@ $taskOutput=Split-Path -Parent $taskInstaller
 $taskStatus=Join-Path $taskOutput 'admin-smoke-status.json'
 $taskPython=Join-Path $taskRoot '.venv\Scripts\python.exe'
 $env:PYTHONUTF8='1'
-$env:TEMP=Join-Path $taskRoot 'data\test-tmp'
+$taskTemp=Join-Path $taskRoot 'data\test-tmp'
+if((Test-Path -LiteralPath $taskTemp) -and ((Get-Item -LiteralPath $taskTemp -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Test temp must not be a reparse point.'}
+New-Item -ItemType Directory -Path $taskTemp -Force | Out-Null
+$env:TEMP=$taskTemp
 $env:TMP=$env:TEMP
 Set-Location -LiteralPath $taskRoot
 try {
