@@ -55,8 +55,9 @@ def history(profile=None):
 
 
 def scan(name, profile, stop=None, notify=None, *, allow_uac=True):
-    from .config import load
+    from .config import load, normalize_profile
     from .platform_ops import is_admin, ProcessCancelled
+    profile = normalize_profile(profile, load().get('threshold_mb',10))
     if profile.get('engine', 'wiztree') == 'wiztree' and profile.get('mft', True) and not is_admin():
         if not allow_uac:
             raise PermissionError('MFT chạy lịch cần quyền Admin; không mở UAC trong worker nền')
@@ -117,6 +118,10 @@ def delete_comparison(ident):
 
 
 def page(query, *, offset=0, cursor=None, **options):
+    from .comparison_policy import choose_measure
+    requested = options.get('measure', 'auto')
+    policy = choose_measure(query.new, query.old, requested)
+    options['measure'] = policy['measurement']
     if offset < 0 or (offset and cursor):
         raise ValueError('Offset không âm; không dùng đồng thời offset và cursor')
     if offset:
@@ -126,7 +131,7 @@ def page(query, *, offset=0, cursor=None, **options):
         normalized.update({key: value for key, value in options.items() if key != 'limit'})
         cursor = base64.urlsafe_b64encode(json.dumps({'offset': offset,
             'signature': query._fingerprint(normalized)}).encode()).decode()
-    return query.page(cursor=cursor, **options)
+    return dict(query.page(cursor=cursor, **options), **policy)
 
 
 def legacy_plan(source_home=None, repo=None):

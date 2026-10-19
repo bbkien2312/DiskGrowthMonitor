@@ -74,9 +74,22 @@ def profile(name: str) -> dict:
     cfg = load()
     if name not in cfg["profiles"]:
         raise ValueError(f"Không có profile: {name}")
-    result = dict(cfg["profiles"][name])
-    result.setdefault("threshold_mb", cfg["threshold_mb"])
+    return normalize_profile(cfg["profiles"][name], cfg["threshold_mb"])
+
+
+def normalize_profile(value: dict, threshold_mb=10) -> dict:
+    result = dict(value)
+    result.setdefault('engine', 'wiztree')
+    result.setdefault('excludes', [])
+    result.setdefault('strict_browsers', False)
+    result.setdefault('threshold_mb', threshold_mb)
+    result['mft'] = bool(result.get('mft', True) and result['engine']=='wiztree' and not result['strict_browsers'])
     return result
+
+
+def profile_caption(value: dict) -> str:
+    p = normalize_profile(value)
+    return p['engine'] + (' · MFT bật' if p['mft'] else ' · MFT tắt')
 
 
 def scope_hash(p: dict) -> str:

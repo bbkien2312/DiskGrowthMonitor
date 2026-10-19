@@ -4,7 +4,7 @@ param([Parameter(Mandatory=$true)][string]$Installer,
 $ErrorActionPreference='Stop'
 $taskRoot=Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $taskInstaller=[System.IO.Path]::GetFullPath($Installer)
-$taskExpected=@((Join-Path $taskRoot 'dist\release-v1.2.0\installer.exe'),(Join-Path $taskRoot 'dist\preview-chung-rieng\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.3.0\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.3.1\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.4.0\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.5.0\installer.exe'),(Join-Path $taskRoot 'dist\release-v2.0.0\installer.exe'))
+$taskExpected=@((Join-Path $taskRoot 'dist\release-v1.2.0\installer.exe'),(Join-Path $taskRoot 'dist\preview-chung-rieng\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.3.0\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.3.1\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.4.0\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.5.0\installer.exe'),(Join-Path $taskRoot 'dist\release-v2.0.0\installer.exe'),(Join-Path $taskRoot 'dist\release-v2.1.0\installer.exe'))
 if($taskInstaller -notin $taskExpected){throw 'Only an explicitly allowed app-owned preview installer may be tested.'}
 if((Get-FileHash -LiteralPath $taskInstaller -Algorithm SHA256).Hash -ne $ExpectedSha256){throw 'Preview checksum changed.'}
 $taskOutput=Split-Path -Parent $taskInstaller
@@ -22,6 +22,13 @@ function Invoke-OwnedQa([string]$Script,[string]$LogName,[string[]]$Arguments) {
     # Stop. Capture both streams directly so a Python traceback is retained.
     $taskOut=Join-Path $taskOutput ($LogName+'.log')
     $taskErr=Join-Path $taskOutput ($LogName+'.stderr.log')
+    foreach($taskOldLog in @($taskOut,$taskErr)){
+        if((Test-Path -LiteralPath $taskOldLog) -and (Get-Item -LiteralPath $taskOldLog).Length){
+            $taskArchive=Join-Path $taskOutput 'qa-attempts'
+            New-Item -ItemType Directory -Path $taskArchive -Force | Out-Null
+            Copy-Item -LiteralPath $taskOldLog -Destination (Join-Path $taskArchive ([DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff')+'-'+[IO.Path]::GetFileName($taskOldLog)))
+        }
+    }
     $taskQuoted=(@($Script)+$Arguments | ForEach-Object {'"'+$_+'"'}) -join ' '
     $taskRun=Start-Process -FilePath $taskPython -ArgumentList $taskQuoted -WorkingDirectory $taskRoot -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $taskOut -RedirectStandardError $taskErr
     if($taskRun.ExitCode -ne 0){
@@ -31,9 +38,11 @@ function Invoke-OwnedQa([string]$Script,[string]$LogName,[string[]]$Arguments) {
 }
 try {
     if(-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'Administrator approval required.'}
-    if($taskInstaller -eq (Join-Path $taskRoot 'dist\release-v2.0.0\installer.exe')){
+    if($taskInstaller -in @((Join-Path $taskRoot 'dist\release-v2.0.0\installer.exe'),(Join-Path $taskRoot 'dist\release-v2.1.0\installer.exe'))){
         @{phase='parquet-install-upgrade';fixture_only=$true}|ConvertTo-Json|Out-File -LiteralPath $taskStatus -Encoding utf8
-        Invoke-OwnedQa (Join-Path $taskRoot 'packaging\smoke_parquet_release.py') 'parquet-install-upgrade' @($taskInstaller,'--legacy',(Join-Path $taskRoot 'dist\release-v1.5.0\installer.exe'))
+        $taskQaArgs=@($taskInstaller,'--legacy',(Join-Path $taskRoot 'dist\release-v1.5.0\installer.exe'))
+        if($taskInstaller -eq (Join-Path $taskRoot 'dist\release-v2.1.0\installer.exe')){$taskQaArgs+=@('--previous',(Join-Path $taskRoot 'dist\release-v2.0.0\installer.exe'))}
+        Invoke-OwnedQa (Join-Path $taskRoot 'packaging\smoke_parquet_release.py') 'parquet-install-upgrade' $taskQaArgs
         @{phase='complete';fixture_only=$true;success=$true}|ConvertTo-Json|Out-File -LiteralPath $taskStatus -Encoding utf8
         exit 0
     }

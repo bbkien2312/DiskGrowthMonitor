@@ -98,7 +98,7 @@ def test_production_uac_routes_to_columnar_not_legacy(production,monkeypatch):
     monkeypatch.setattr(elevation,'request',lambda action,payload,**kw:calls.append((action,payload)) or {'status':'test'})
     p={'roots':['C:\\'],'engine':'wiztree','mft':True,'strict_browsers':False}
     assert core.scan('daily',p)['status']=='test'
-    assert calls[0][0]=='columnar_scan' and calls[0][1]['profile']==p
+    assert calls[0][0]=='columnar_scan' and calls[0][1]['profile']==config.normalize_profile(p)
     elevation.validate(*calls[0])
     with pytest.raises(PermissionError):core.scan('daily',p,allow_uac=False)
 
@@ -153,6 +153,7 @@ def test_main_gui_native_scan_opens_result_and_releases_cache(production,tmp_pat
     cfg=config.load();cfg['profiles']['daily'].update(roots=[str(root)],engine='native',mft=False);config.save(cfg)
     monkeypatch.setattr(MainWindow,'doctor',lambda self:None)
     monkeypatch.setattr(MainWindow,'refresh_background',lambda self:None)
+    monkeypatch.setattr(MainWindow,'ask_run_profile',lambda *args:'save')
     errors=[];monkeypatch.setattr(QMessageBox,'warning',lambda parent,title,text:errors.append(text))
     app=QApplication.instance() or QApplication([]);window=MainWindow();window.show()
     try:

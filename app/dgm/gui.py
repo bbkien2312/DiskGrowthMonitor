@@ -588,11 +588,18 @@ class Window(QMainWindow):
                 if QMessageBox.question(self, "Công cụ và phạm vi không tương thích", "Bạn đang yêu cầu không đọc/quét Chrome/Edge. WizTree/MFT không bảo đảm điều này. Chuyển lựa chọn trên màn hình sang native để quét? Không thay đổi cấu hình đã lưu.") != QMessageBox.StandardButton.Yes:
                     return
                 self.engine.setCurrentText("native")
-            p, name = self.edited_profile(), self.profile_combo.currentText()
+            p, name = self.scan_profile_for_run(), self.profile_combo.currentText()
+            if p is None:return
             self.status.setText("Đang bắt đầu quét...")
             self.job(lambda worker: scan(name, p, worker.stop, worker.event.emit), self.scan_done, scan_job=True)
         except Exception as exc:
             self.fail(str(exc))
+
+    def scan_profile_for_run(self):
+        return self.edited_profile()
+
+    def prepare_schedule_run(self,spec):
+        return True
 
     def cancel_scan(self):
         if self.scan_worker is not None:
@@ -1058,7 +1065,11 @@ class Window(QMainWindow):
         from .schedule import describe
         caption,_,times=describe(spec).partition(' • ')
         self.schedule_cards[0].set_value(caption,('Giờ: '+times+' • ' if times else '')+spec.get('name',spec['profile']))
-        self.schedule_cards[3].set_value('Quét + đề xuất' if spec.get('cleanup_rules') else 'Chỉ quét','Không tự xóa file; đề xuất mới cần duyệt lại')
+        from .config import profile_caption
+        try:scan_mode=profile_caption(profile(spec['profile']))
+        except ValueError:scan_mode='Không có cấu hình'
+        self.schedule_cards[3].setToolTip('Cấu hình đã lưu: '+spec['profile']+' · '+scan_mode+'\nLịch chạy dùng cấu hình đã lưu, không dùng thay đổi chưa lưu ở Kiểm tra.')
+        self.schedule_cards[3].set_value('Quét + đề xuất' if spec.get('cleanup_rules') else 'Chỉ quét',scan_mode+' • cấu hình đã lưu; không tự xóa file')
 
     def make_background_controls(self, layout,compact=False):
         box=QWidget() if compact else QGroupBox('Trạng thái và điều khiển chạy nền'); group=QVBoxLayout(box)
@@ -1197,7 +1208,10 @@ class Window(QMainWindow):
         blocker=QSignalBlocker(self.schedule_table);prior=self.schedule_table.currentRow();self.schedule_table.setRowCount(len(self.schedule_rows))
         for i, s in enumerate(self.schedule_rows):
             last=s.get('last_result') or {};result={'deferred':'Đợi lượt đang quét kết thúc','running':'Đang chạy','failed':'Lỗi: '+str(last.get('error','')),'complete':'Đã lưu kết quả','partial':'Đã lưu, có giới hạn','cancelled':'Đã dừng'}.get(last.get('status'),'Chưa chạy')
-            values = [s.get('name',s['profile']),s['profile']+(' • quét + đề xuất' if s.get('cleanup_rules') else ' • chỉ quét'),describe(s),'Bật' if s['enabled'] else 'Tắt',local_time(s.get('last_run')),local_time(s['next_run']),result]
+            from .config import profile_caption
+            try:scan_mode=profile_caption(profile(s['profile']))
+            except ValueError:scan_mode='Không có cấu hình'
+            values = [s.get('name',s['profile']),s['profile']+' · '+scan_mode+(' • quét + đề xuất' if s.get('cleanup_rules') else ' • chỉ quét'),describe(s),'Bật' if s['enabled'] else 'Tắt',local_time(s.get('last_run')),local_time(s['next_run']),result]
             for j, value in enumerate(values):
                 cell=QTableWidgetItem(value);cell.setToolTip(value+'\nID: '+s['id']);self.schedule_table.setItem(i,j,cell)
         if self.schedule_rows:self.schedule_table.setCurrentCell(min(max(0,prior),len(self.schedule_rows)-1),0)
@@ -1239,6 +1253,7 @@ class Window(QMainWindow):
     def run_schedule_now(self):
         spec = self.selected_schedule()
         if spec:
+            if not self.prepare_schedule_run(spec):return
             self.profile_combo.setCurrentText(spec["profile"])
             if self.profile_combo.currentText() != spec["profile"]:
                 return

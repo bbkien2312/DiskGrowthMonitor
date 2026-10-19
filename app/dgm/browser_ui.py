@@ -112,6 +112,7 @@ class DetailModel(QAbstractTableModel):
             return self.path_icons['folder' if row.get('kind')=='folder' else 'file']
         if role==SEMANTIC_HINT_ROLE:
             if column==0:return status_hint(row)
+            if row.get('baseline') and column in (4,6):return 'Mốc ban đầu: chưa có mốc trước để tính chênh lệch'
             if column in (2,3) and gui_snapshot_cell(measured,'old' if column==2 else 'new') in ('∅','?','×','—'):
                 return ('Mốc cũ: ' if column==2 else 'Mốc mới: ')+snapshot_cell(measured,'old' if column==2 else 'new')
         if role==Qt.ItemDataRole.AccessibleTextRole and column==0:return status_hint(row)
@@ -136,6 +137,8 @@ class DetailModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.TextAlignmentRole and column in (2, 3, 4, 6):
             return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole):
+            if row.get('baseline') and column in (4,6):
+                return '—' if role==Qt.ItemDataRole.DisplayRole else 'Mốc ban đầu: chưa có mốc trước để tính chênh lệch'
             from datetime import datetime
             from zoneinfo import ZoneInfo
             stamp = lambda v: datetime.fromtimestamp(v, ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M:%S") if v else "—"
@@ -173,6 +176,10 @@ class DiskBrowser(QWidget):
         return getattr(self.owner,'comparison_store',Comparisons)(stop,notify)
 
     def measurement_options(self):return {}
+
+    def tree_measurement(self):return self.measurement.currentData()
+
+    def view_summary(self,summary):return summary
 
     def snapshot_rows(self,rows,profile):return [r for r in rows if r['profile']==profile]
 
@@ -426,11 +433,11 @@ class DiskBrowser(QWidget):
         self.track(self.owner.job(prepare,done))
 
     def add_node(self,row,parent=None):
-        disk=self.measurement.currentData()=='allocated'
+        disk=self.tree_measurement()=='allocated'
         measured=dict(row,before=row.get('allocated_before'),after=row.get('allocated_after')) if disk else row
         delta=row.get('allocated_delta' if disk else 'delta')
         item=QTreeWidgetItem([row["path"] if parent is None else Path(row["path"]).name,gui_snapshot_cell(measured,'new'),
-            ('≈ ' if row.get('unverified_count') and delta is not None else '')+change_text(delta)])
+            '—' if row.get('baseline') else ('≈ ' if row.get('unverified_count') and delta is not None else '')+change_text(delta)])
         item.setToolTip(0,row['path'])
         item.setIcon(0,self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
         item.setToolTip(1,'Chung: '+size(row['after'])+'\nRiêng: '+size(row.get('private_after')))
@@ -451,7 +458,7 @@ class DiskBrowser(QWidget):
 
     def children(self,parent,cursor,replace=False):
         data=parent.data(0,Qt.ItemDataRole.UserRole); generation=self.tree_generation
-        sort='disk_new' if self.measurement.currentData()=='allocated' else 'new'
+        sort='disk_new' if self.tree_measurement()=='allocated' else 'new'
         def fetch(worker):
             cache=self.comparisons(worker.stop)
             try:
@@ -677,7 +684,8 @@ class DiskBrowser(QWidget):
             finally:cache.close()
         def done(result):
             if generation!=self.generation:return
-            page,summary=result;self.model.accept(group,page);self.owner.rows=page["rows"]
+            page,summary=result;summary=self.view_summary(summary)
+            self.model.accept(group,page);self.owner.rows=page["rows"]
             self.render_metrics(summary)
             if not self.detail_columns_fitted:
                 self.fit_detail_columns()

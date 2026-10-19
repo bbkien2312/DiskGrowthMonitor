@@ -12,6 +12,7 @@ import uuid
 
 from .columnar_store import Repository, MemorySession, CapturedPaths, quote
 from .columnar_ingest import rollup_values, insert_records, PATH_KEY_VERSION
+from .comparison_policy import choose_measure
 
 REASONS = {'scope': 'Khác phạm vi/loại trừ', 'browser': 'Không quét Chrome/Edge',
            'coverage': 'Vùng chưa xác minh/quyền đọc', 'legacy': 'Thiếu bằng chứng độ bao phủ',
@@ -297,6 +298,7 @@ class Comparison:
                   'partition_note': 'Chung: có hai mốc. Riêng: chỉ Cũ/Mới; không quét khác với đã xóa. Tổng chỉ cộng file, không cộng thêm folder.',
                   'persistent_database_bytes': 0, 'volume_assumptions': self.volume_assumptions,
                   'default_measure': 'allocated',
+                  'measurement_policy': choose_measure(self.new, self.old),
                   'counts': self.session.rows('SELECT kind,change,presence,COUNT(*) count FROM allocated_result GROUP BY 1,2,3'),
                   'counts_logical': self.session.rows('SELECT kind,change,presence,COUNT(*) count FROM logical_result GROUP BY 1,2,3')}
         for group, clause in (('common', "presence='both'"), ('private', "presence<>'both'"), ('all', 'true')):
@@ -343,8 +345,8 @@ class Comparison:
     def page(self, *, limit=20, cursor=None, sort='abs_delta', direction='desc', root=None,
              recursive=True, section='all', changes='all', kind='all', minimum=0,
              search='', presence='all', folders_only=False, root_keys=None, measure='allocated', reason=None, stop=None):
-        if measure not in ('allocated', 'logical'):
-            raise ValueError('Chỉ số phải là allocated hoặc logical')
+        policy = choose_measure(self.new, self.old, measure)
+        measure = policy['measurement']
         if not 1 <= limit <= 1000 or sort not in SORTS or direction not in ('asc', 'desc'):
             raise ValueError('Trang từ 1–1000 và cột/hướng sắp xếp phải hợp lệ')
         if section not in ('all', 'common', 'private') or presence not in ('all', 'old', 'new', 'both') or kind not in ('all', 'file', 'folder', 'link'):
@@ -389,7 +391,12 @@ class Comparison:
                 raise ValueError('Bộ lọc trạng thái trống')
             clauses.append('r.change IN (' + ','.join('?' for _ in selected) + ')'); parameters.extend(selected)
         if minimum:
-            clauses.append('greatest(coalesce(r.before,0),coalesce(r.after,0))>=?'); parameters.append(minimum)
+            # A missing measurement is not a zero-byte measurement. Keep such
+            # rows visible (and labelled) unless a different filter excludes
+            # them; apply the threshold normally when both present sides are known.
+            clauses.append('(greatest(coalesce(r.before,0),coalesce(r.after,0))>=? OR '
+                           '(r.old_row IS NOT NULL AND r.before IS NULL) OR '
+                           '(r.new_row IS NOT NULL AND r.after IS NULL))'); parameters.append(minimum)
         if search:
             try:
                 term = self.scope_new.keys.key(search)
@@ -435,7 +442,8 @@ class Comparison:
             if offset + len(rows) < total:
                 next_cursor = base64.urlsafe_b64encode(json.dumps({'offset': offset + len(rows), 'signature': signature}).encode()).decode()
             return {'rows': rows, 'cursor': next_cursor, 'total': total, 'loaded': offset + len(rows),
-                    'sort_scope': root or 'Toàn bộ snapshot', 'summary': self._summary, 'measurement': measure}
+                    'sort_scope': root or 'Toàn bộ snapshot', 'summary': self._summary, **policy,
+                    'minimum_note': 'Giữ mục chưa rõ số đo; không coi số đo thiếu là 0 B' if minimum else ''}
 
     def tree(self, root=None, *, limit=100, cursor=None, measure='allocated', stop=None):
         if root is not None:

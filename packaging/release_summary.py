@@ -29,11 +29,13 @@ def main():
         report=json.loads((directory/filename).read_text(encoding='utf-8'))
         if report.get('installer_sha256')!=sha or report.get('version')!=__version__ or report.get('fixture_only') is not True:
             raise RuntimeError('QA report is not for this exact installer: '+filename)
+        if report.get('fixture_removed_after_success') is not True:
+            raise RuntimeError('Successful installer QA fixtures have not been removed: '+filename)
         reports[filename]=len(report['checks'])
     result={'version':__version__,'generated_utc':datetime.now(timezone.utc).isoformat(),
             'installer':{'name':'installer.exe','bytes':args.installer.stat().st_size,'sha256':sha},
             'automated':junit(args.junit),'dpi125':junit(args.dpi125),'dpi150':junit(args.dpi150),
-            'elevated_binary_checks':reports,'fixture_only':True,
+            'elevated_binary_checks':reports,'fixture_only':True,'qa_fixtures_removed':True,
             'scope':'Synthetic/isolated D: fixtures only; no real C: scan/cache deletion or production Task/Service changes. No raw JUnit, username or captured drive history is included.'}
     if args.resume:
         resume=json.loads(args.resume.read_text(encoding='utf-8'))

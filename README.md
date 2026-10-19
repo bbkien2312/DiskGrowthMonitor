@@ -1,14 +1,22 @@
 # Disk Growth Monitor
 
-## 2.0.0 — Parquet + DuckDB
+## 2.1.0 — Parquet + DuckDB
 
-Mở `launch-gui.cmd` với source hoặc `DiskGrowthMonitor.exe` sau khi cài. Bản 2.0.0 có hậu tố **Parquet + DuckDB** trong GUI và bộ cài. Các lệnh chính `scan`, `history`, `compare`, `tree`, `entries`, `export`, `tasks` và worker `schedule run/tick` dùng chung lõi Parquet + DuckDB RAM. Các tab Hệ thống, Dọn dẹp có duyệt, Lịch chạy, Nhật ký, cập nhật và UAC được giữ lại.
+### Quét tay / lịch chạy và số đo thiếu
+
+Quét tay và **Lịch chạy → Chạy ngay** dùng cấu hình đã lưu như worker Task/Service. Nếu cấu hình đang sửa chưa lưu, GUI hỏi **Lưu và chạy / Dùng cấu hình đã lưu / Hủy**. Tab lịch hiển thị công cụ và MFT bật/tắt của cấu hình đã lưu; quyền Admin của app không tự biến `/admin=0` thành MFT.
+
+GUI ưu tiên số đo **Chiếm trên đĩa**. Nếu một mốc thiếu toàn bộ cấp phát theo file nhưng có kích thước file, cả phép xem tự chuyển sang **Kích thước file**, ghi rõ mốc thiếu và không gọi Logical là Windows đã dùng. Người dùng vẫn có thể chọn xem trên đĩa với giá trị chưa rõ. CLI `compare`, `entries`, `tree` mặc định `--measure auto`, hỗ trợ `--measure allocated` / `--measure logical`. Lọc, sort, thống kê trạng thái, cây và phân trang cùng dùng chỉ số đang hiển thị. Khi xem hai lượt mới nhất độc lập, tooltip cột Mới của cây ghi rõ chỉ số của riêng cặp đó.
+
+Ngưỡng dung lượng chỉ loại mục đã biết số đo nhỏ hơn ngưỡng; mục thiếu số đo vẫn được giữ, có ghi chú, không âm thầm coi là 0 B. Mốc đầu hiển thị dung lượng Mới, Cũ/±/± Đĩa là `—`, trạng thái **Mốc ban đầu**, không tính tăng từ 0 B. Mốc cũ không cần ghi lại để so sánh kích thước file; số đo cấp phát còn thiếu không được lấy từ lần quét hiện tại để điền ngược.
+
+Mở `launch-gui.cmd` với source hoặc `DiskGrowthMonitor.exe` sau khi cài. Bản 2.1.0 có hậu tố **Parquet + DuckDB** trong GUI và bộ cài. Các lệnh chính `scan`, `history`, `compare`, `tree`, `entries`, `export`, `tasks` và worker `schedule run/tick` dùng chung lõi Parquet + DuckDB RAM. Các tab Hệ thống, Dọn dẹp có duyệt, Lịch chạy, Nhật ký, cập nhật và UAC được giữ lại.
 
 Thanh dưới tự tính chiều cao theo font/DPI, không dùng lại chiều cao 42px gây cắt nội dung. **Chi tiết thời gian / kết quả** mở vùng cuộn riêng, mặc định thu gọn. Loading ghi rõ công đoạn: thu thập → đọc/chuẩn hóa/hardlink/tổng hợp → ghi/kiểm chứng Parquet → so sánh → nạp cây/bảng. Luồng quét tự so sánh chỉ đạt 100% khi đã nạp kết quả. Báo cáo ghi thời gian từng bước, tổng luồng và số mục tăng/giảm/mới/mất/không đổi/không quét/chưa xác định **toàn cặp mốc**, không chỉ số dòng đang tải. Timing dùng đồng hồ đơn điệu; phần trăm là mốc công đoạn, không đoán tốc độ hoàn tất.
 
 **GUI chính giữ nguyên bố cục đã duyệt**, không dùng màn hình rút gọn của preview. `main_ui.py` kế thừa cửa sổ cũ, `DiskBrowser` / `HistoryPanel` / `TaskPanel`; `columnar_gui_backend.py` nối dữ liệu Parquet vào model cũ. Còn đầy đủ tab Chung/Riêng, bốn tile Cũ/Mới/Chênh lệch/Toàn phạm vi chia Chung–Riêng, chú giải, tooltip có điều kiện, icon, context menu, phím tắt, cây độc lập và dropdown 20/50/100/200/500/1000. Sắp xếp/lọc áp dụng toàn tập trước khi phân trang; GUI giữ lại phiên RAM khi tải thêm/đổi bộ lọc, đóng phiên không xóa snapshot. Preview chỉ để chẩn đoán, không phải GUI thay thế.
 
-- Mặc định dùng **Trên đĩa (Allocated)** và GiB cơ số 1024. Logical là chế độ phụ; không dùng Logical làm Windows Used. Tổng/Used/Trống lịch sử lấy từ số đo đã lưu, số hiện tại hiển thị riêng. Thiếu số đo để chưa rõ; không gán phần dư cho file nhỏ.
+- Ưu tiên **Trên đĩa (Allocated)** và GiB cơ số 1024; tự chuyển sang Logical có thông báo nếu một mốc thiếu toàn bộ cấp phát. Không dùng Logical làm Windows Used. Tổng/Used/Trống lịch sử lấy từ số đo đã lưu, số hiện tại hiển thị riêng. Thiếu số đo để chưa rõ; không gán phần dư cho file nhỏ.
 - So sánh giữ phiên DuckDB trong RAM; sort/filter toàn tập rồi mới lấy 20/100/1000 mục. Snapshot Parquet là metadata nén, không có nội dung file; không dựng lại chỉ mục SQLite chứa hàng triệu file khi mở/so sánh. Các chức năng tương thích như lịch chạy/đề xuất vẫn dùng kho metadata nhỏ hiện có; không đưa file records mới vào đó.
 - Trên D:, app dùng **nguyên kho preview đã được duyệt** tại `data/parquet-preview/data/columnar-preview`, giữ ID các mốc và không tạo bản sao. App-home chưa có kho thử dùng `data/columnar`. Nút xóa mốc chỉ xóa metadata Parquet; không xóa file thật hay nguồn JSONL cũ.
 - Tab Lịch sử giữ bảng mốc, bảng so sánh, tóm tắt và lựa chọn nhiều dòng. Nút **Nhập mốc JSONL cũ…** chuyển theo yêu cầu, chỉ một lần; có thể dừng/tiếp tục, nguồn cũ giữ nguyên. SQLite rất cũ cần chuyển sang JSONL bằng công cụ tương thích trước. Không tự chuyển/xóa SQLite/JSONL lúc khởi động bản chính này.

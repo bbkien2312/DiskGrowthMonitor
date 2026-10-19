@@ -1,10 +1,15 @@
-Disk Growth Monitor 2.0.0 - Parquet + DuckDB - Windows x64
+Disk Growth Monitor 2.1.0 - Parquet + DuckDB - Windows x64
 
 Private Python/Qt runtime is bundled under .venv.
 New snapshots use checksummed ZSTD Parquet metadata; file contents are never backed up.
 Comparisons use private DuckDB RAM sessions with bounded spill, removed when closed.
 Interrupted jobs have small JSON checkpoints; complete tool exports can be resumed, incomplete scans restart.
-Disk allocation is the default display. Logical path size is separate and can exceed volume capacity due to hardlinks.
+Disk allocation is preferred. If a capture has no per-file allocation, the view automatically uses logical size with an explicit notice.
+Logical path size is not Windows Used and can exceed volume capacity due to hardlinks.
+Unknown measurements are retained under size filters, never silently treated as zero.
+The first capture shows New sizes; Old and deltas are unavailable until a previous capture exists.
+Manual and scheduled scans use saved profiles; the GUI asks before using unsaved changes.
+Task highest privileges and the profile's MFT switch are separate settings.
 GUI startup loads saved milestones/summaries only, not full history or a comparison.
 Legacy JSONL history is imported explicitly once from History; source logs are retained.
 Older SQLite can be converted to JSONL with the compatibility tool, then imported.

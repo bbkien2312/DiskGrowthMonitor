@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import time
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer,Qt
 from PySide6.QtWidgets import QLabel,QHBoxLayout,QMessageBox
 
 from .gui import Window as FeatureWindow
@@ -14,12 +14,19 @@ from .columnar_gui_backend import CatalogStore,Sessions
 from .columnar_jobs import Jobs
 from .config import load,save
 from . import production_core as core
+from .comparison_policy import choose_measure
 
 
 class ColumnarBrowser(DiskBrowser):
     """Original widgets/model, with backend-specific data/presentation only."""
     def __init__(self,owner):
+        self._measurement_pair=None;self._forced_measurement=False
         super().__init__(owner)
+        self.measurement_notice=QLabel();self.measurement_notice.setWordWrap(True)
+        self.measurement_notice.setObjectName('measurementNotice')
+        self.measurement_notice.setStyleSheet('background:#fff5da;color:#715214;border:1px solid #ead6a3;border-radius:4px;padding:3px 7px;')
+        self.measurement_notice.hide()
+        self.layout().insertWidget(self.layout().indexOf(self.info),self.measurement_notice)
         self.units.blockSignals(True)
         self.units.setCurrentIndex(int(owner.preferences.values.get('units/columnar-binary',True)))
         self.units.blockSignals(False)
@@ -32,8 +39,41 @@ class ColumnarBrowser(DiskBrowser):
     def options(self):return dict(super().options(),measure=self.measurement.currentData())
 
     def compare(self):
+        pair=self.selected_tree_ids()
+        if pair:
+            old,new=pair
+            self.configure_measurement(self.owner.repo.get(new),self.owner.repo.get(old) if old else None)
         if self.newer.currentData():self.owner.start_comparison_progress()
         super().compare()
+
+    def configure_measurement(self,newer,older=None):
+        pair=(older['id'] if older else None,newer['id'])
+        if self._measurement_pair!=pair:
+            self._forced_measurement=False;self._measurement_pair=pair
+        requested=self.owner.preferences.values.get('measurement/mode','allocated')
+        policy=choose_measure(newer,older,requested if self._forced_measurement or requested=='logical' else 'auto')
+        self.measurement.blockSignals(True)
+        self.measurement.setCurrentIndex(self.measurement.findData(policy['measurement']))
+        self.measurement.blockSignals(False)
+        self.model.measurement=policy['measurement']
+        self.model.headerDataChanged.emit(Qt.Orientation.Horizontal,0,8)
+        self.measurement_policy=policy
+        self.show_measurement_notice()
+
+    def show_measurement_notice(self):
+        if not hasattr(self,'measurement_notice'):return
+        note=getattr(self,'measurement_policy',{}).get('measurement_note','')
+        if note:note+=' Ngưỡng dung lượng vẫn giữ mục chưa rõ số đo.'
+        self.measurement_notice.setText(note);self.measurement_notice.setVisible(bool(note))
+
+    def measurement_changed(self,*args):
+        self._forced_measurement=True
+        pair=getattr(self,'ids',None) or self.selected_tree_ids()
+        if pair:
+            older,newer=pair
+            self.measurement_policy=choose_measure(self.owner.repo.get(newer),self.owner.repo.get(older) if older else None,self.measurement.currentData())
+            self.show_measurement_notice()
+        super().measurement_changed(*args)
 
     def cancel_loading(self):
         super().cancel_loading()
@@ -41,7 +81,18 @@ class ColumnarBrowser(DiskBrowser):
         self.owner.status_panel.cancel_flow()
         self.owner.scan_progress.setFormat('%p% • Đã yêu cầu dừng tải; giữ các mốc lịch sử')
 
-    def measurement_options(self):return {'measure':self.measurement.currentData()}
+    def tree_measurement(self):return getattr(self,'_tree_measure',self.measurement.currentData())
+
+    def measurement_options(self):return {'measure':self.tree_measurement()}
+
+    def refresh_tree(self,previous,newer_id,pair_id=None):
+        requested=self.measurement.currentData()
+        policy=choose_measure(self.owner.repo.get(newer_id),self.owner.repo.get(previous) if previous else None,
+                              requested if self._forced_measurement or requested=='logical' else 'auto')
+        self._tree_measure=policy['measurement']
+        super().refresh_tree(previous,newer_id,pair_id)
+        self.tree.headerItem().setToolTip(1,('Chiếm trên đĩa' if self._tree_measure=='allocated' else 'Kích thước file')+
+            ' tại mốc mới của cặp dùng cho cây.\n'+policy['measurement_note'])
 
     def snapshot_rows(self,rows,profile):
         # Keep this profile's latest first, but include adopted/imported mốc
@@ -52,7 +103,7 @@ class ColumnarBrowser(DiskBrowser):
         super().add_node(row,parent)
         item=parent.child(parent.childCount()-1) if parent else self.tree.topLevelItem(self.tree.topLevelItemCount()-1)
         from .disk_measurements import exact
-        disk=self.measurement.currentData()=='allocated'
+        disk=self.tree_measurement()=='allocated'
         value=row.get('allocated_after' if disk else 'after')
         item.setToolTip(1,('Chiếm trên đĩa' if disk else 'Kích thước file')+' toàn nhánh tại mốc mới: '+exact(value)+
             '\nGồm Chung và Riêng; không cộng số này thêm vào tổng file.')
@@ -67,17 +118,33 @@ class ColumnarBrowser(DiskBrowser):
             if (row['older'],row['newer'])==selected:
                 summary=json.loads(row['summary'])
                 if summary.get('disks_new') is not None:
+                    self.configure_measurement(summary['newer'],summary.get('older'))
                     self.render_metrics(summary)
                     self.info.setText('Tóm tắt đã lưu • '+self.result_caption+' • Bấm So sánh để nạp cây và chi tiết.');return
         self.info.setText('Đã nạp danh sách mốc • Bấm So sánh để đọc Parquet; không dựng lại chỉ mục lúc mở app.')
 
-    def render_metrics(self,summary):
+    def view_summary(self,summary):
         summary=dict(summary)
+        # Saved/startup summaries can be re-rendered without a fresh query.
+        # Keep the physical counts when switching to/from the logical view.
+        summary.setdefault('counts_allocated',summary.get('counts',[]))
         if self.measurement.currentData()=='logical' and 'counts_logical' in summary:
             summary['counts']=summary['counts_logical']
-            for group in ('common','private'):
-                summary[group+'_counts']=[r for r in summary['counts'] if (r['presence']=='both')==(group=='common')]
+        else:summary['counts']=summary['counts_allocated']
+        for group in ('common','private'):
+            summary[group+'_counts']=[r for r in summary['counts'] if (r['presence']=='both')==(group=='common')]
+        return summary
+
+    def render_metrics(self,summary):
+        summary=self.view_summary(summary)
         super().render_metrics(summary)
+        if not summary.get('older'):
+            self.metrics[0].set_parts('DUNG LƯỢNG CŨ','—','—','Chưa có mốc','Chưa có mốc')
+            self.metrics[2].set_parts('CHÊNH LỆCH','—','—','Mốc ban đầu','Mốc ban đầu')
+            self.metrics[2].setToolTip('Chưa có mốc trước để tính tăng/giảm. Dung lượng Mới là số đo tại lần quét đầu, không phải tăng từ 0 B.')
+        if self.measurement.currentData()=='logical':
+            for card,title in zip(self.metrics[:3],('KÍCH THƯỚC FILE CŨ','KÍCH THƯỚC FILE MỚI','CHÊNH LỆCH · FILE')):
+                card.set_parts(title,card.value.text(),card.private_value.text(),card.note.text(),card.private_note.text())
         from .presentation import size
         lines=[]
         for row in summary.get('disks_new',[]):
@@ -218,6 +285,37 @@ class MainWindow(FeatureWindow):
     browser_type=ColumnarBrowser
     history_type=ColumnarHistory
     task_type=ColumnarTasks
+
+    def ask_run_profile(self,name,saved,edited):
+        from .config import profile_caption
+        box=QMessageBox(self);box.setWindowTitle('Chọn cấu hình quét trước khi chạy')
+        box.setText(f'Cấu hình {name} đang có thay đổi chưa lưu.\n'
+                    f'Đã lưu: {profile_caption(saved)}\nĐang chọn: {profile_caption(edited)}\n'
+                    'Quét tay và lịch chạy đều dùng cấu hình đã lưu. Bạn muốn lưu thay đổi trước khi chạy?')
+        box.setDetailedText(json.dumps({'Đã lưu':saved,'Đang chọn':edited},ensure_ascii=False,indent=2))
+        save_button=box.addButton('Lưu và chạy',QMessageBox.ButtonRole.AcceptRole)
+        stored_button=box.addButton('Dùng cấu hình đã lưu',QMessageBox.ButtonRole.ActionRole)
+        box.addButton('Hủy',QMessageBox.ButtonRole.RejectRole);box.setDefaultButton(save_button)
+        box.exec()
+        return 'save' if box.clickedButton() is save_button else 'saved' if box.clickedButton() is stored_button else 'cancel'
+
+    def resolve_run_profile(self,name):
+        from .config import profile
+        saved=profile(name)
+        if self.profile_combo.currentText()==name and self.profile_dirty():
+            choice=self.ask_run_profile(name,saved,self.edited_profile())
+            if choice=='cancel':return None
+            if choice=='save':
+                if not self.save_profile(name=name):return None
+                saved=profile(name)
+                self.refresh_schedules()
+        return saved
+
+    def scan_profile_for_run(self):
+        return self.resolve_run_profile(self.profile_combo.currentText())
+
+    def prepare_schedule_run(self,spec):
+        return self.resolve_run_profile(spec['profile']) is not None
 
     def __init__(self):
         self._scan_pipeline=False;self._loading_result=False;self._detail_ready=False;self._tree_ready=False

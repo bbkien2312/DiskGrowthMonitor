@@ -268,7 +268,7 @@ def scan_status():
 
 
 @app.command("entries")
-def entries(scan_id: int, minimum_mb: float = 10, kind: str = "all", search: str = "", limit: int = 1000, offset: int = 0,measure:str='allocated'):
+def entries(scan_id: int, minimum_mb: float = 10, kind: str = "all", search: str = "", limit: int = 1000, offset: int = 0,measure:str='auto'):
     if core.enabled():
         with core.query(scan_id,baseline=True) as query:
             output(core.page(query,offset=offset,limit=limit,minimum=int(minimum_mb*1_000_000)+1,kind=kind,search=search,measure=measure))
@@ -285,7 +285,7 @@ def compare(newer: int, older: Optional[int] = None, kind: str = "all", search: 
             minimum_mb: float = 10, root: Optional[str] = None, recursive: bool = True,
             cursor: Optional[str] = None, baseline: bool = False,common:bool=typer.Option(False,'--common',help='Tương thích cũ: luôn tự chia Chung/Riêng'),
             section:str=typer.Option('all',help='all / common (hai mốc) / private (một mốc)'),reason:Optional[str]=None,
-            presence:str=typer.Option('all',help='all / both / old / new: mốc có bản ghi'),measure:str='allocated'):
+            presence:str=typer.Option('all',help='all / both / old / new: mốc có bản ghi'),measure:str=typer.Option('auto',help='auto / allocated / logical; auto ưu tiên trên đĩa, báo rõ khi dùng kích thước file')):
     if core.enabled():
         if minimum_mb<0:raise typer.BadParameter('Ngưỡng không âm')
         with core.query(newer,older,baseline=baseline,notify=admin_progress) as query:
@@ -340,7 +340,7 @@ def overview(newer: int, older: Optional[int] = None,common:bool=typer.Option(Fa
 
 
 @app.command("tree")
-def tree(profile: str = "daily", root: Optional[str] = None, cursor: Optional[str] = None,newer:Optional[int]=None,older:Optional[int]=None,limit:int=100,measure:str='allocated'):
+def tree(profile: str = "daily", root: Optional[str] = None, cursor: Optional[str] = None,newer:Optional[int]=None,older:Optional[int]=None,limit:int=100,measure:str='auto'):
     if core.enabled():
         rows=core.history(profile)
         ident=newer if newer is not None else (rows[0]['id'] if rows else None)

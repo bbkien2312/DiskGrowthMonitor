@@ -1,3 +1,12 @@
+# Disk Growth Monitor 2.1.0 — Parquet + DuckDB — 19/10/2026
+
+- Quét tay và lịch chạy dùng cấu hình đã lưu; khi sửa chưa lưu, hỏi Lưu và chạy / Dùng cấu hình đã lưu / Hủy. Lịch hiển thị công cụ và MFT bật/tắt, không nhầm quyền Admin với lựa chọn MFT.
+- So sánh các mốc MFT bật/tắt: tự chọn Kích thước file nếu một mốc thiếu toàn bộ cấp phát, thông báo rõ chỉ số và mốc thiếu. Không dùng Logical làm Windows Used hay điền ngược số đo hiện tại vào lịch sử cũ.
+- Sửa bộ lọc dung lượng làm mất mục chưa rõ số đo. Cùng đường dẫn vẫn thuộc Chung dù thiếu cấp phát; không suy thành file 0 B hay file đã xóa.
+- Mốc đầu có dung lượng Mới; Cũ/±/± Đĩa là dấu —, trạng thái Mốc ban đầu. Không tính tăng giả từ 0 B.
+- Cây, bảng, thống kê và thanh trạng thái đồng nhất chỉ số. Khi xem Logical, tile ghi Kích thước file; giữ cả hai bộ đếm trạng thái khi đổi chế độ hoặc mở tóm tắt đã lưu.
+- Giữ schema Parquet hiện tại và lịch sử cũ; không cần quét lại hoặc chuẩn hóa lại để đối chiếu phần kích thước file đã lưu. Nâng cấp tại chỗ giữ cấu hình/lịch sử và runtime riêng.
+
 # Disk Growth Monitor 2.0.0 — Parquet + DuckDB — 19/10/2026
 
 - Giữ nguyên GUI đầy đủ, đổi lõi sang Parquet ZSTD và DuckDB RAM; CLI/lịch chạy dùng chung. Không dựng lại SQLite chứa file records khi mở hoặc so sánh. Sort/filter toàn tập trước khi phân trang, giữ phiên khi tải thêm.

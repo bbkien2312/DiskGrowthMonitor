@@ -7,12 +7,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from dgm import __version__
 
-parser=argparse.ArgumentParser();parser.add_argument('installer',type=Path);parser.add_argument('--legacy',type=Path)
+parser=argparse.ArgumentParser();parser.add_argument('installer',type=Path);parser.add_argument('--legacy',type=Path);parser.add_argument('--previous',type=Path)
 args=parser.parse_args();project=Path(__file__).resolve().parents[1];installer=args.installer.resolve()
-base=Path(tempfile.mkdtemp(prefix='parquet-200-smoke-',dir=project/'data')).resolve()
+base=Path(tempfile.mkdtemp(prefix='parquet-'+__version__.replace('.','')+'-smoke-',dir=project/'data')).resolve()
 assert base.is_relative_to((project/'data').resolve())
 target=base/'Installed App';fixture=base/'files';fixture.mkdir()
 environment=os.environ.copy()
@@ -81,6 +82,36 @@ jobs=cli('tasks','list','--all');completed=next(r for r in jobs if r['snapshots'
 resumed=cli('tasks','resume',completed['id']);assert resumed[0]['id']==first['scan_id']
 report['checks'].append('frozen JSON checkpoint can reopen an already-complete snapshot without rescanning')
 
+# Captured records only: emulate walk -> MFT -> scheduled walk. The frozen
+# executable must compare these without scanning or writing any real C: files.
+from dgm.columnar_ingest import import_entries,metadata_for
+from dgm.columnar_store import Repository
+from dgm import config
+parity_home=base/'Mixed MFT history';parity_repo=Repository(parity_home/'data/columnar')
+source_home=config.ROOT
+try:
+    # The ingestion home must match the frozen CLI's --home. The editable
+    # source home would correctly exclude this entire D: fixture as app data.
+    config.ROOT=parity_home
+    for number in (1,2,3):
+        records=[{'path':str(fixture/f'saved-{i:02}.bin'),'parent':'','kind':'file',
+            'logical':25_000_000+number*100+i,'allocated':20_000_000+i if number==2 else None,
+            'created':1700000000.,'modified':1700000001.,'identity':'','attrs':0,'status':'ok','note':'QA captured record'} for i in range(40)]
+        snapshot=import_entries(records,metadata_for([str(fixture)],profile='daily',engine='wiztree',mft=number==2,
+            started=f'2026-10-19T13:2{number}:00+00:00'),repository=parity_repo)
+        assert snapshot['summary']['files']==40,'Fixture paths were unexpectedly excluded'
+finally:config.ROOT=source_home
+for old,new in ((1,2),(1,3),(2,3)):
+    mixed=cli('--home',parity_home,'compare',str(new),'--older',str(old),'--kind','file')
+    assert mixed['measurement']=='logical' and mixed['automatic_measurement'] and mixed['total']==40, {k:mixed[k] for k in ('measurement','automatic_measurement','total')}
+    assert all(r['delta']==(new-old)*100 and r['presence']=='both' for r in mixed['rows'])
+baseline=cli('--home',parity_home,'entries','1','--kind','file')
+assert baseline['total']==40 and baseline['measurement']=='logical'
+assert all(r['before'] is None and r['after']>10_000_000 and r['delta'] is None and r['change']=='first_scan' for r in baseline['rows'])
+unknown=cli('--home',parity_home,'compare','3','--older','1','--measure','allocated','--kind','file')
+assert unknown['total']==40 and all(r['after'] is None for r in unknown['rows'])
+report['checks'].append('frozen CLI compares all three walk/MFT pairs using labelled logical fallback; first snapshot has sizes without invented deltas, explicit unknown disk measurements survive the threshold')
+
 before=history_hashes(target);cfg_hash=digest(target/'data/config.json')
 install(installer,target)
 assert history_hashes(target)==before and digest(target/'data/config.json')==cfg_hash
@@ -128,10 +159,45 @@ if args.legacy:
     update_report['checks'].append(f'real {oldversion} installer/history upgrade, no source deletion; explicit one-time JSONL -> Parquet import compares correctly')
     execute([legacy/'unins000.exe','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART']);assert (legacy/'data/columnar/catalog.json').exists()
 
+if args.previous:
+    previous=base/'Previous Parquet App';install(args.previous.resolve(),previous);exe=previous/'dgm.exe'
+    oldversion=cli('doctor',exe=exe)['app_version']
+    cli('profile','set','daily','--root',fixture,'--engine','native',exe=exe)
+    prior1=cli('scan',exe=exe);prior2=cli('scan',exe=exe)
+    prior_history=history_hashes(previous);prior_cfg=digest(previous/'data/config.json')
+    coordinate(previous,{'executable':str(exe),'arguments':[]})
+    assert cli('doctor',exe=exe)['app_version']==__version__
+    assert history_hashes(previous)==prior_history and digest(previous/'data/config.json')==prior_cfg
+    prior_compare=cli('compare',str(prior2['scan_id']),'--older',str(prior1['scan_id']),'--minimum-mb','0',exe=exe)
+    assert prior_compare['summary']['partition_valid']
+    assert all(r['delta']==0 for r in prior_compare['rows'] if r['kind']=='file')
+    update_report['checks'].append(f'real {oldversion} Parquet installer upgrade preserves every history/config hash; existing snapshots compare with no migration or rescan')
+    execute([previous/'unins000.exe','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART']);assert (previous/'data/columnar/catalog.json').exists()
+
 assert cli('uninstall-check')['safe_to_uninstall']
 execute([target/'unins000.exe','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'])
 assert history_hashes(target)==before and (target/'data/config.json').is_file() and not (target/'dgm.exe').exists()
 report['checks'].append('uninstall removes only installed payload; Parquet, config, legacy logs and journals are retained')
+# Keep only result/install logs from a successful QA run, not another copy of
+# the runtime, cached installers or synthetic scan history in the source tree.
+log_archive=installer.parent/'fixture-logs';log_archive.mkdir(exist_ok=True)
+for log in base.glob('*.log'):shutil.copy2(log,log_archive/log.name)
+assert base.parent==(project/'data').resolve() and base.name.startswith('parquet-'+__version__.replace('.','')+'-smoke-')
+assert not any(p.is_symlink() or getattr(p,'is_junction',lambda:False)() for p in [base,*base.rglob('*')])
+for filename,value in (('release-test-results.json',report),('inplace-update-test-results.json',update_report)):
+    value['fixture_removed_after_success']=False
+    (installer.parent/filename).write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8')
+# Inno's final cleanup process may still hold _unins-done.tmp briefly after
+# its parent exits. Wait for that handle; never kill it or ignore a failed cleanup.
+for attempt in range(80):
+    try:
+        if base.exists():shutil.rmtree(base)
+        break
+    except OSError:
+        if attempt==79:raise
+        time.sleep(.25)
+assert not base.exists()
+report['fixture_removed_after_success']=update_report['fixture_removed_after_success']=True
 for filename,value in (('release-test-results.json',report),('inplace-update-test-results.json',update_report)):
     (installer.parent/filename).write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8')
 print(json.dumps({'fresh_checks':len(report['checks']),'update_checks':len(update_report['checks']),'fixture':str(base)},indent=2))
