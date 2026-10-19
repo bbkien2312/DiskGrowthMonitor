@@ -3,6 +3,7 @@ setlocal
 cd /d "%~dp0"
 set PYTHONUTF8=1
 set PYTHONNOUSERSITE=1
+set DGM_SOURCE=1
 set DGM_HOME=%~dp0
 if not exist "%~dp0data\tmp" mkdir "%~dp0data\tmp"
 set TEMP=%~dp0data\tmp

@@ -221,7 +221,13 @@ def test_real_four_engines_agree_on_one_owned_fixture(isolated):
         assert result['status'] in ('complete','partial'),result
     baseline=results[0]
     for result in results[1:]:
-        assert (result['files'],result['logical'],result['allocated'])==(baseline['files'],baseline['logical'],baseline['allocated']),results
+        assert (result['files'],result['logical'])==(baseline['files'],baseline['logical']),results
+        # Non-MFT WizTree exports synthetic sequence IDs for each path,
+        # including hardlinks. Do not reopen files to fabricate identity.
+        if result is results[1]:
+            assert result['allocated'] is None and result['allocated_unknown_files']==3
+        else:
+            assert result['allocated']==baseline['allocated']
         c=Comparisons();pair=c.prepare(baseline['scan_id'],result['scan_id'])
-        assert all(row['delta']==0 and row['allocated_delta']==0 for row in c.page(pair)['rows'])
+        assert all(row['delta']==0 and row['allocated_delta'] in (0,None) for row in c.page(pair)['rows'])
         c.close()

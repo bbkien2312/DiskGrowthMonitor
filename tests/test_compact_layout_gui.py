@@ -142,7 +142,8 @@ def test_long_progress_and_expanded_notes_do_not_grow_result_cards(gui,isolated)
     assert all(card.width()<=size[0] for card,size in zip(w.browser.metrics,before))
     for key in ('profile','scan','compare'):
         box=w.help_boxes[key];assert box.scroll.height()<=48
-    assert w.status.height()<30 and w.scan_progress.width()>w.width()*.8
+    assert w.status.height()>=w.status.fontMetrics().height() and w.scan_progress.width()>w.width()*.8
+    assert w.status.geometry().bottom()<w.status_panel.height()
     scroll=w.scan_page_scroll;scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum());settle(app)
     assert 0<=rect_in(w.browser.load_button,scroll.viewport()).top()<scroll.viewport().height()
     capture(w,'compact-expanded-help')

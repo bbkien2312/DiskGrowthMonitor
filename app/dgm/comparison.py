@@ -702,6 +702,13 @@ class Comparisons(Presence):
             'allocated':row.get('allocated_after') if row['new_revision'] else row.get('allocated_before'),
             'kind':row['kind'],'created':row['created'],'modified':row['modified'],'status':row.get('status',raw['status'])}
 
+    def roots(self,pair,roots,**_):
+        rows=[]
+        for root in roots:
+            records=self.db.execute("SELECT c.*,p.path,pr.common_before,pr.common_after,pr.private_before,pr.private_after,pr.unverified_count FROM source.paths p INDEXED BY paths_key JOIN diff_rows c ON c.path_id=p.id LEFT JOIN folder_parts pr ON pr.pair_id=c.pair_id AND pr.path_id=c.path_id WHERE c.pair_id=? AND p.path_key=?",(pair,comparison_path_key(root))).fetchmany(2)
+            if len(records)==1:rows.append(dict(records[0]))
+        return rows
+
     def summary(self, pair):
         return json.loads(self.db.execute("SELECT summary FROM pairs WHERE id=?", (pair,)).fetchone()[0])
 

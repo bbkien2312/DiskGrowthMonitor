@@ -201,7 +201,7 @@ def wiztree_entries(policy, config, stop, notify):
             notify("info", {"message": "Đang nhập kết quả WizTree vào lịch sử..."})
             from .config import volume_identity
             volume_id=checkpoint.row['sources'][str(index)].get('volume_id') if checkpoint else volume_identity(root)
-            identity_prefix = f"wiz:{volume_id}:" if policy.p.get("mft", False) else ""
+            identity_prefix = f"wiz:{volume_id}:"
             with output.open(encoding="utf-8-sig", newline="") as f:
                 total_bytes=output.stat().st_size;read_bytes=0
                 def lines():
@@ -278,18 +278,18 @@ def wiztree_entries(policy, config, stop, notify):
                                                 'export_capacity':int(row['drivecapacity']) if row.get('drivecapacity') else None,
                                                 'export_free':int(row['freespace']) if row.get('freespace') else None,
                                                 'export_used':int(row['usedspace']) if row.get('usedspace') else None})
-                        if policy.p.get("mft", False):
-                            # MFT exports are already metadata snapshots. Stat-ing every
-                            # path again defeats the fast engine and changes timestamps.
-                            record = next((value for key,value in row.items() if value and key.replace(' ','').replace('.','').replace('_','') in ('mftrecordnumber','mftrecordno','mftrecno')), "")
-                            entry["identity"] = identity_prefix + record if record else ""
-                            if is_link and not record:
-                                entry['allocated']=None
-                                entry['note']+='; thiếu MFT ID để đối soát cấp phát hardlink'
-                            yield entry
-                        else:
-                            from .engines import enrich
-                            yield enrich(entry)
+                        # Both MFT and directory-walk CSVs are captured snapshots.
+                        # Reopening every exported path is slow and changes the
+                        # measurement to a later instant. Missing fields stay unknown.
+                        record = next((value for key,value in row.items() if value and key.replace(' ','').replace('.','').replace('_','') in ('mftrecordnumber','mftrecordno','mftrecno')), "")
+                        entry["identity"] = identity_prefix + record if record and policy.p.get('mft',False) else ""
+                        if kind=='file' and not policy.p.get('mft',False):
+                            entry['note']+=f"; cấp phát CSV={entry['allocated']}; ID walk là số thứ tự, không khử hardlink an toàn"
+                            entry['allocated']=None
+                        elif kind=='file' and not record:
+                            entry['allocated']=None
+                            entry['note']+='; thiếu MFT ID để đối soát cấp phát hardlink'
+                        yield entry
                     except ValueError as exc:
                         raise ValueError(f"CSV WizTree không tương thích: {exc}") from exc
                     count += 1

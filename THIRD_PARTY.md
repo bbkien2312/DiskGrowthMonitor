@@ -10,6 +10,8 @@ Dependencies are resolved and pinned in uv.lock. No third-party code is copied i
 - Send2Trash: https://github.com/arsenetar/send2trash — BSD.
 - APScheduler: https://github.com/agronholm/apscheduler — MIT.
 - ijson: https://github.com/ICRAR/ijson — see license included in the package; used for streaming large exports.
+- DuckDB: https://github.com/duckdb/duckdb — MIT; Parquet reader/query engine in private memory, pinned in uv.lock.
+- NumPy: https://github.com/numpy/numpy — BSD-3-Clause; dependency of the DuckDB Python UDF fallback. Retain its bundled library notices too.
 - python-dateutil: https://github.com/dateutil/dateutil — dual BSD/Apache.
 - pywin32: https://github.com/mhammond/pywin32 — see upstream license.
 - PyInstaller: https://github.com/pyinstaller/pyinstaller — GPL with bootloader exception; inspect current distribution requirements.

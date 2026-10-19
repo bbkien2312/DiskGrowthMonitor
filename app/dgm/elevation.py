@@ -129,13 +129,13 @@ class PromptLock:
 def validate(action,payload):
     if not isinstance(payload,dict):raise ValueError('Yêu cầu Admin phải là object')
     keys={
-        'admin-probe':set(),'scan':{'name','profile'},'system-check':{'tool'},
+        'admin-probe':set(),'scan':{'name','profile'},'columnar_scan':{'name','profile'},'system-check':{'tool'},
         'cleanup-plan':{'rules','update_done','days'},
         'cleanup-apply':{'plan_id','confirmation','plan_digest'},
         'background-control':{'kind','action'},
     }
     if action not in keys or set(payload)!=keys[action]:raise ValueError('Thao tác/tham số Admin không được phép')
-    if action=='scan':
+    if action in ('scan','columnar_scan'):
         p=payload['profile']
         if not isinstance(payload['name'],str) or not payload['name'] or not isinstance(p,dict) or not p.get('roots'):raise ValueError('Cấu hình quét không hợp lệ')
         if p.get('engine','native') not in ('native','wiztree','windirstat','gdu'):raise ValueError('Engine không hợp lệ')
@@ -210,7 +210,7 @@ def _clean(folder):
 def request(action,payload,stop=None,notify=None):
     stop=stop or threading.Event();notify=notify or (lambda *a:None)
     payload=json.loads(canonical(payload))
-    if action=='scan' and isinstance(payload,dict) and isinstance(payload.get('profile'),dict):
+    if action in ('scan','columnar_scan') and isinstance(payload,dict) and isinstance(payload.get('profile'),dict):
         payload['profile']['roots']=[str(Path(r).absolute()) for r in payload['profile'].get('roots',[])]
     validate(action,payload)
     if stop.is_set():raise ElevationCancelled('Đã hủy tác vụ trước khi xin quyền Admin.')
@@ -317,6 +317,9 @@ def dispatch(action,payload,stop,notify):
                 'note':'Chỉ kiểm tra quyền tác vụ. Không quét ổ, không chạy DISM, không xóa; GUI vẫn giữ quyền ban đầu.'}
     if action=='scan':
         from .scanner import scan
+        return scan(payload['name'],payload['profile'],stop,notify,allow_uac=False)
+    if action=='columnar_scan':
+        from .production_core import scan
         return scan(payload['name'],payload['profile'],stop,notify,allow_uac=False)
     if action=='system-check':
         from .diagnostics import system_check

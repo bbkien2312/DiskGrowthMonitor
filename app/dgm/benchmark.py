@@ -2,7 +2,7 @@ import json
 import threading
 import time
 import psutil
-from .scanner import scan
+from .schedule import scan
 from .store import Store, now
 from .platform_ops import reset_measurements, measurements
 from .task_journal import tracked,CURRENT
@@ -69,16 +69,24 @@ def benchmark(name, p, engines=("native", "wiztree"), repeats=3, notify=None, ca
                 run_status=result.get('status','failed')
                 if result.get('before_start'):
                     results.append({'engine':engine,'status':'cancelled','error':result.get('message','Đã hủy cấp quyền')});cancel.set();continue
+                if result['status']=='cancelled':
+                    results.append({'engine':engine,'status':'cancelled','job_id':result.get('job_id')});cancel.set();continue
                 signature = (result["files"], result["folders"], result.get("logical"), result.get("allocated"))
                 if engine == "native" and result["status"] == "complete":
                     reference = signature
-                s = Store()
-                previous = s.previous(result["scan_id"])
                 # Execute the compare query as part of the end-to-end measurement.
                 compare_started=time.perf_counter()
-                if result["status"] in ("complete", "partial"):
-                    s.compare(previous, result["scan_id"], limit=1000)
-                s.close()
+                if result.get('backend')=='parquet':
+                    from .production_core import query
+                    if result['status'] in ('complete','partial'):
+                        with query(result['scan_id']) as comparison:comparison.page(limit=1000)
+                else:
+                    s = Store()
+                    try:
+                        previous = s.previous(result["scan_id"])
+                        if result["status"] in ("complete", "partial"):
+                            s.compare(previous, result["scan_id"], limit=1000)
+                    finally:s.close()
                 compare_seconds=time.perf_counter()-compare_started
                 cpu = sum(current.cpu_times()[:2]) - cpu_start
                 io = current.io_counters()

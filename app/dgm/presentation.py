@@ -7,6 +7,7 @@ import json
 STATUS = {"running": "Đang xử lý", "complete": "Hoàn tất", "partial": "Hoàn tất • có giới hạn", "cancelled": "Đã dừng", "failed": "Lỗi"}
 CHANGES = {"first_scan": "Mốc ban đầu", "grown": "Tăng", "shrunk": "Giảm", "new": "Thêm mới", "missing": "Mất đi / không còn thấy", "same": "Không đổi", "unknown": "Chưa xác định", "modified": "Đã sửa", "replaced": "Bị thay thế", "moved": "Đổi tên / di chuyển", "moved_from": "Đã chuyển đi"}
 _binary=False
+_size_formatter=None
 CHANGES['private']='Dữ liệu cũ • cần mở lại so sánh'
 CHANGES['not_scanned']='Không quét ở mốc kia'
 CHANGES['partial']='Có phần chưa rõ'
@@ -56,6 +57,11 @@ def set_units(binary=False):
     _binary=bool(binary)
 
 
+def set_size_formatter(formatter=None):
+    global _size_formatter
+    _size_formatter=formatter
+
+
 def whole(value):
     """Presentation-only, conventional .5 rounds away from zero."""
     return int(Decimal(str(value)).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
@@ -72,6 +78,7 @@ def display_json(value):
 
 
 def size(value):
+    if _size_formatter is not None:return _size_formatter(value,'binary' if _binary else 'decimal')
     if value is None:
         return "—"
     n = Decimal(str(value))

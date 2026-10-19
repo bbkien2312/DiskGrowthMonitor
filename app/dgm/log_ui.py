@@ -27,7 +27,7 @@ class LogPanel(QWidget):
         layout=QVBoxLayout(self);layout.addWidget(text_label('Nhật ký theo công việc','pageTitle'))
         self.cards=cards(layout,[(level,'0','Trong phần log đang lọc') for level in ('ERROR','WARNING','INFO','DEBUG')])
         from .task_ui import TaskPanel
-        self.tasks=TaskPanel(owner);layout.addWidget(self.tasks)
+        self.tasks=getattr(owner,'task_type',TaskPanel)(owner);layout.addWidget(self.tasks)
         row=QHBoxLayout()
         self.level=QComboBox();self.level.addItems(["Tất cả",*LEVELS]);row.addWidget(QLabel("Mức log"));row.addWidget(self.level)
         self.operation=QComboBox();self.operation.addItem('Mọi công việc');row.addWidget(self.operation)

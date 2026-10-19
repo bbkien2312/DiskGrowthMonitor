@@ -10,10 +10,19 @@ from zoneinfo import ZoneInfo
 from dateutil.relativedelta import relativedelta
 from .config import ROOT, home, load, save, profile
 from .platform_ops import run, system_tool
-from .scanner import scan
 from .store import Store, now
 
 TASK = "DiskGrowthMonitor-Local"
+
+
+def scan(*args, **kwargs):
+    # Resolve at execution time; Task/Service and Run now use the same backend.
+    from .production_core import enabled
+    if enabled():
+        from .production_core import scan as execute
+    else:
+        from .scanner import scan as execute
+    return execute(*args, **kwargs)
 
 
 def next_time(spec, after=None):

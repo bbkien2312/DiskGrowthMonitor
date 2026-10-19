@@ -168,6 +168,9 @@ def storage_report():
             for path in files_in(folder):
                 rel=path.relative_to(root);parts=rel.parts
                 if parts[0]=='logs':group='Log'
+                elif path.suffix=='.parquet':group='Snapshot Parquet nén'
+                elif 'columnar' in parts or 'columnar-preview' in parts:
+                    group='Phiên so sánh RAM / tạm Parquet' if 'work' in parts else 'Journal / export Parquet' if 'jobs' in parts else 'Catalog / tóm tắt Parquet'
                 elif parts[1]=='history':group='Lịch sử JSONL nén / metadata'
                 elif parts[1]=='cleanup':group='Metadata đề xuất dọn nén'
                 elif parts[1]=='tasks':group='Điểm tiếp tục / tệp trung gian tác vụ'

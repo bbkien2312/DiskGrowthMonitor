@@ -2,6 +2,7 @@
 from bisect import bisect_right
 from collections import OrderedDict
 import json
+import time
 from pathlib import Path
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal, QEvent
 from PySide6.QtGui import QColor, QFont, QPen, QShortcut, QKeySequence
@@ -165,6 +166,16 @@ class DetailModel(QAbstractTableModel):
 
 
 class DiskBrowser(QWidget):
+    def store(self,**kwargs):
+        return getattr(self.owner,'scan_store',Store)(**kwargs)
+
+    def comparisons(self,stop=None,notify=None):
+        return getattr(self.owner,'comparison_store',Comparisons)(stop,notify)
+
+    def measurement_options(self):return {}
+
+    def snapshot_rows(self,rows,profile):return [r for r in rows if r['profile']==profile]
+
     def __init__(self, owner):
         super().__init__(); self.owner = owner; self.generation = 0; self.tree_generation = 0; self.detail_worker = None; self.loading_workers=set()
         self.detail_jobs=set();self.restore_target=0;self.query_options={};self.result_help_pending=False
@@ -300,10 +311,10 @@ class DiskBrowser(QWidget):
 
     def refresh(self, profile, *, load_tree=True):
         tree_ids=None
-        store=Store(readonly=True)
+        store=self.store(readonly=True)
         try:
             all_rows=sorted(store.scans(),key=lambda r:(r["started"],r["id"]),reverse=True)
-            rows=[r for r in all_rows if r['profile']==profile]
+            rows=self.snapshot_rows(all_rows,profile)
             prior=self.newer.currentData(); old=self.older.currentData(); changed=profile!=self.profile
             self.profile=profile; self.newer.clear(); self.older.clear(); self.older.addItem("Tự động: lượt hợp lệ trước mốc mới",None)
             self.older.addItem("Mốc ban đầu: không so với lượt cũ",0)
@@ -341,7 +352,7 @@ class DiskBrowser(QWidget):
         if not selected:
             self.info.setText('Chưa có lượt hợp lệ. Xem các lượt đã lưu tại Lịch sử.');return
         older,newer=selected
-        store=Store(readonly=True)
+        store=self.store(readonly=True)
         try:
             current=[store.scan(older) if older else None,store.scan(newer)]
         finally:store.close()
@@ -370,7 +381,7 @@ class DiskBrowser(QWidget):
         newer=self.newer.currentData()
         if not newer:return None
         owned=store is None
-        store=store or Store(readonly=True)
+        store=store or self.store(readonly=True)
         try:
             selected=self.older.currentData()
             older=store.previous(newer) if selected is None else selected or None
@@ -389,8 +400,9 @@ class DiskBrowser(QWidget):
             elif selected:self.refresh_tree(*selected)
 
     def refresh_tree(self, previous, newer_id, pair_id=None):
+        tree_started=time.perf_counter()
         self.tree_generation+=1; generation=self.tree_generation; self.tree_ids=(previous,newer_id); self.tree.clear(); self.tree_pair=None
-        store=Store(readonly=True)
+        store=self.store(readonly=True)
         try:
             prior=store.scan(previous) if previous else None
             latest=store.scan(newer_id)
@@ -400,19 +412,17 @@ class DiskBrowser(QWidget):
         roots=list(dict.fromkeys((json.loads(prior['config'])['roots'] if prior else [])+json.loads(latest['config'])['roots']))
         common=self.common_scope.isChecked() and self.tree_mode.currentData()=='selected'
         def prepare(worker):
-            cache=Comparisons(worker.stop,worker.event.emit)
+            cache=self.comparisons(worker.stop,worker.event.emit)
             try:
                 pair=pair_id or cache.prepare(previous,newer_id)
-                rows=[]
-                for root in roots:
-                    records=cache.db.execute("SELECT c.*,p.path,pr.common_before,pr.common_after,pr.private_before,pr.private_after,pr.unverified_count FROM source.paths p INDEXED BY paths_key JOIN diff_rows c ON c.path_id=p.id LEFT JOIN folder_parts pr ON pr.pair_id=c.pair_id AND pr.path_id=c.path_id WHERE c.pair_id=? AND p.path_key=?",(pair,comparison_path_key(root))).fetchmany(2)
-                    if len(records)==1: rows.append(dict(records[0]))
+                rows=cache.roots(pair,roots,**self.measurement_options())
                 return pair,rows
             finally: cache.close()
         def done(value):
             if generation!=self.tree_generation:return
             self.tree_pair,rows=value
             for row in rows:self.add_node(row)
+            if hasattr(self.owner,'tree_loaded'):self.owner.tree_loaded(self.tree_ids,time.perf_counter()-tree_started)
         self.track(self.owner.job(prepare,done))
 
     def add_node(self,row,parent=None):
@@ -443,10 +453,10 @@ class DiskBrowser(QWidget):
         data=parent.data(0,Qt.ItemDataRole.UserRole); generation=self.tree_generation
         sort='disk_new' if self.measurement.currentData()=='allocated' else 'new'
         def fetch(worker):
-            cache=Comparisons(worker.stop)
+            cache=self.comparisons(worker.stop)
             try:
                 pair=data['pair']
-                return cache.page(pair,root=data["path"],recursive=False,folders_only=True,limit=20,cursor=cursor,sort=sort)
+                return cache.page(pair,root=data["path"],recursive=False,folders_only=True,limit=20,cursor=cursor,sort=sort,**self.measurement_options())
             finally:cache.close()
         def done(page):
             if generation!=self.tree_generation:return
@@ -513,7 +523,7 @@ class DiskBrowser(QWidget):
         if not newer:
             for metric in self.metrics: metric.setText("—")
             self.info.setText("Chưa có lượt hợp lệ. Các lượt lỗi/đã dừng xem tại Lịch sử.");return
-        store=Store(readonly=True)
+        store=self.store(readonly=True)
         try:
             selected=self.older.currentData()
             older=store.previous(newer) if selected is None else selected or None
@@ -542,7 +552,7 @@ class DiskBrowser(QWidget):
         self.info.setText(("Cũ: "+scan_name(a)+" → Mới: " if a else "Mốc ban đầu → Mới: ")+scan_name(b)+' • '+b['engine']+(' • Có giới hạn dữ liệu' if uncertain else ''))
         self.info.setToolTip(("Cũ: "+scan_label(a)+" → " if a else "Mốc ban đầu • ")+"Mới: "+scan_label(b)+disk+warnings)
         def prepare(worker):
-            cache=Comparisons(worker.stop,worker.event.emit)
+            cache=self.comparisons(worker.stop,worker.event.emit)
             try:return cache.prepare(older,newer)
             finally:cache.close()
         def done(pair):
@@ -653,6 +663,8 @@ class DiskBrowser(QWidget):
         append=group==len(self.model.starts)
         if append and self.detail_worker is not None:return
         if group not in self.model.anchors:return
+        page_started=time.perf_counter()
+        if hasattr(self.owner,'detail_loading'):self.owner.detail_loading(group,self.pair_id)
         generation=self.generation;pair=self.pair_id;cursor=self.model.anchors[group]
         count=self.page_size.currentData() if append else self.model.lengths[group]
         if append and self.restore_target>self.model.loaded:count=min(count,self.restore_target-self.model.loaded)
@@ -660,7 +672,7 @@ class DiskBrowser(QWidget):
         if append:self.load_button.setEnabled(False)
         accepted=[False]
         def fetch(worker):
-            cache=Comparisons(worker.stop,worker.event.emit)
+            cache=self.comparisons(worker.stop,worker.event.emit)
             try:return cache.page(pair,**options),cache.summary(pair)
             finally:cache.close()
         def done(result):
@@ -707,6 +719,8 @@ class DiskBrowser(QWidget):
                 pending_row=self.pending_open[1];start=self.model.starts[group]
                 if start<=pending_row<start+len(page["rows"]):
                     self.pending_open=None;self._dispatch_open(self.model.row_at(pending_row))
+            if hasattr(self.owner,'detail_loaded'):
+                self.owner.detail_loaded(self.ids,summary,page,time.perf_counter()-page_started)
         worker=self.owner.job(fetch,done)
         if append:self.detail_worker=worker
         self.track_detail(worker)

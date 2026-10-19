@@ -46,6 +46,7 @@ def defaults() -> dict:
             "storage_reserve_mb":1024,"update_backup_keep":1,
             "source_archive_limit_mb":0,"source_archive_retention_days":90,
             "history_format":"jsonl","history_auto_migrate":True,"resume_limit_mb":512,
+            "scan_backend":"columnar",
             "engines": {"wiztree": r"C:\Program Files\WizTree\WizTree64.exe", "windirstat": "", "gdu": ""},
             "profiles": {"daily": {"roots": ["C:\\"], "excludes": [], "strict_browsers": False, "engine": "wiztree", "mft": True}},
             "schedules": [], "alerts": {"free_gb": 10, "growth_gb": 2},

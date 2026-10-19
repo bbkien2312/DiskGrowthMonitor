@@ -10,10 +10,18 @@ def ai_question(scan_id=None, plan_id=None, anonymize=True):
     content = {"purpose": "Đánh giá dung lượng và đề xuất dọn Windows. Không đưa lệnh xóa mù; phân loại cần giữ/có thể dọn/cần kiểm tra thêm.",
                "constraints": "Không đề xuất xóa thủ công WinSxS, DriverStore, Windows Installer; giữ dữ liệu cá nhân, project và .venv. Không đọc Chrome/Edge."}
     if scan_id:
-        s = Store()
-        content["snapshot"] = s.scan(scan_id)
-        content["top_changes"] = s.compare(s.previous(scan_id), scan_id, limit=30)
-        s.close()
+        from .production_core import enabled
+        if enabled():
+            from .production_core import query
+            with query(scan_id) as comparison:
+                content['snapshot']=comparison.summary()
+                content['top_changes']=comparison.page(kind='file',limit=30)['rows']
+        else:
+            s = Store()
+            try:
+                content["snapshot"] = s.scan(scan_id)
+                content["top_changes"] = s.compare(s.previous(scan_id), scan_id, limit=30)
+            finally:s.close()
     if plan_id:
         from .cleanup import get_plan
         from .cleanup import plan_page

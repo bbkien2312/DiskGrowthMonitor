@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Optional
 import typer
+from . import production_core as core
 
 app = typer.Typer(help="Theo dõi dung lượng Windows — CLI/GUI dùng chung dữ liệu", no_args_is_help=True, add_completion=False)
 profiles = typer.Typer(help="Phạm vi và engine quét")
@@ -22,10 +23,15 @@ app.add_typer(ai, name="ai")
 app.add_typer(app_updates, name='app-update')
 app.add_typer(storage_app,name='storage')
 app.add_typer(tasks_app,name='tasks')
+from .columnar_cli import app as columnar_app
+app.add_typer(columnar_app, name='fast')
 
 
 @tasks_app.command('list')
 def tasks_list(all:bool=False):
+    if core.enabled():
+        from .columnar_jobs import Jobs
+        output([r for r in Jobs(core.repository()).list() if all or r['state']!='complete']);return
     from .task_journal import list_tasks
     output(list_tasks(all))
 
@@ -34,23 +40,36 @@ def tasks_list(all:bool=False):
 def tasks_limit(megabytes:int):
     if not 1<=megabytes<=100000:raise typer.BadParameter('Giới hạn từ 1 đến 100000 MB')
     from .config import load,save
-    cfg=load();cfg['resume_limit_mb']=megabytes;save(cfg);output({'resume_limit_mb':megabytes})
+    cfg=load();cfg['resume_limit_mb']=megabytes
+    if core.enabled():cfg['columnar_limits']={**cfg.get('columnar_limits',{}),'source_mb':megabytes}
+    save(cfg);output({'resume_limit_mb':megabytes})
 
 
 @tasks_app.command('show')
 def tasks_show(ident:str):
+    if core.enabled():
+        from .columnar_jobs import Jobs
+        output(Jobs(core.repository()).get(ident));return
     from .task_journal import read
     output(read(ident))
 
 
 @tasks_app.command('resume')
 def tasks_resume(ident:str):
+    if core.enabled():
+        from .columnar_jobs import Jobs
+        output(Jobs(core.repository()).execute(ident,notify=admin_progress));return
     from .task_journal import resume
     output(resume(ident,notify=admin_progress))
 
 
 @tasks_app.command('discard')
 def tasks_discard(ident:str,yes:bool=typer.Option(False,'--yes')):
+    if core.enabled():
+        from .columnar_jobs import Jobs
+        if yes or typer.confirm('Bỏ journal/export của tác vụ Parquet? Giữ lịch sử và file thật.'):
+            output(Jobs(core.repository()).discard(ident))
+        return
     from .task_journal import discard
     if not yes and not typer.confirm('Bỏ điểm tiếp tục và tệp trung gian riêng của tác vụ? Không xóa lịch sử hay file đã quét.'):
         raise typer.Exit()
@@ -77,6 +96,7 @@ def storage_cleanup(keep:Optional[int]=None,yes:bool=typer.Option(False,'--yes')
 
 @storage_app.command('compact-cache')
 def storage_compact(yes:bool=typer.Option(False,'--yes')):
+    if core.enabled():output(core.repository().cleanup_abandoned());return
     from .storage_maintenance import compact_comparison_cache
     if not yes and not typer.confirm('Thu gọn cache SQLite, giữ kết quả và lịch sử? Cần đủ chỗ tạm.'):
         raise typer.Exit()
@@ -85,6 +105,7 @@ def storage_compact(yes:bool=typer.Option(False,'--yes')):
 
 @storage_app.command('clear-index')
 def storage_clear_index(yes:bool=typer.Option(False,'--yes')):
+    if core.enabled():output(core.repository().cleanup_abandoned());return
     from .history_backend import clear_indexes
     if not yes and not typer.confirm('Xóa chỉ mục tạm? Log lịch sử giữ nguyên; lần so sánh sau cần đọc lại log.'):
         raise typer.Exit()
@@ -111,6 +132,37 @@ def storage_retire_legacy(yes:bool=typer.Option(False,'--yes')):
     if not yes and not typer.confirm('Xác minh lại các log và bỏ đúng SQLite cũ không thay đổi?'):
         raise typer.Exit()
     output(retire_legacy(notify=admin_progress))
+
+
+@storage_app.command('parquet')
+def storage_parquet():
+    from .columnar_jobs import Jobs
+    jobs=Jobs(core.repository())
+    output({**jobs.repo.footprint(),'job_source_bytes':jobs.source_bytes(),'root':str(jobs.repo.root)})
+
+
+@storage_app.command('clear-work')
+def storage_clear_work():
+    output(core.repository().cleanup_abandoned())
+
+
+@storage_app.command('migrate-columnar')
+def storage_migrate_columnar(scan_id:Optional[list[int]]=typer.Option(None,'--id'),
+                             all_scans:bool=typer.Option(False,'--all'),yes:bool=typer.Option(False,'--yes')):
+    plan=core.legacy_plan()
+    if not scan_id and not all_scans:output(plan);return
+    if scan_id and all_scans:raise typer.BadParameter('Chọn --id hoặc --all')
+    if not yes and not typer.confirm('Nhập các mốc JSONL sang Parquet một lần, giữ nguồn cũ?'):return
+    output(core.migrate_legacy(scan_id,notify=admin_progress))
+
+
+@app.command('import-csv')
+def import_csv_command(source:Path,root:list[str]=typer.Option(...,'--root'),timezone:str=typer.Option(...,'--timezone'),
+                       mft:bool=typer.Option(False,'--mft')):
+    from .columnar_jobs import Jobs
+    jobs=Jobs(core.repository())
+    job=jobs.create('csv',{'source':str(source.absolute()),'roots':root,'timezone':timezone,'mft':mft})
+    output(jobs.execute(job['id'],notify=admin_progress))
 
 
 def output(data):
@@ -164,12 +216,22 @@ def profile_set(name: str, root: list[str] = typer.Option(..., "--root"), exclud
 
 
 @app.command("scan")
-def scan_command(profile: str = "daily", engine: Optional[str] = None):
+def scan_command(profile: str = "daily", engine: Optional[str] = None,
+                 root:list[str]=typer.Option([],'--root'),exclude:list[str]=typer.Option([],'--exclude'),
+                 mft:Optional[bool]=typer.Option(None,'--mft/--no-mft'),
+                 strict_browsers:Optional[bool]=typer.Option(None,'--strict-browsers/--include-browsers')):
     from .config import profile as get_profile
-    from .scanner import scan
+    if core.enabled():
+        scan=core.scan
+    else:
+        from .scanner import scan
     p = get_profile(profile)
     if engine:
         p["engine"] = engine
+    if root:p['roots']=root
+    if exclude:p['excludes']=exclude
+    if mft is not None:p['mft']=mft
+    if strict_browsers is not None:p['strict_browsers']=strict_browsers
     def notify(event, data):
         if event in ("started", "info"):
             typer.echo(f"{event}: {data}", err=True)
@@ -185,6 +247,7 @@ def scan_command(profile: str = "daily", engine: Optional[str] = None):
 
 @app.command("history")
 def history(profile: Optional[str] = None):
+    if core.enabled():output(core.history(profile));return
     from .store import Store
     from .presentation import scan_label
     s = Store()
@@ -205,7 +268,11 @@ def scan_status():
 
 
 @app.command("entries")
-def entries(scan_id: int, minimum_mb: float = 10, kind: str = "all", search: str = "", limit: int = 1000, offset: int = 0):
+def entries(scan_id: int, minimum_mb: float = 10, kind: str = "all", search: str = "", limit: int = 1000, offset: int = 0,measure:str='allocated'):
+    if core.enabled():
+        with core.query(scan_id,baseline=True) as query:
+            output(core.page(query,offset=offset,limit=limit,minimum=int(minimum_mb*1_000_000)+1,kind=kind,search=search,measure=measure))
+        return
     from .store import Store
     s = Store()
     output(s.entries(scan_id, int(minimum_mb * 1_000_000) + 1, kind, search, limit, offset))
@@ -218,7 +285,15 @@ def compare(newer: int, older: Optional[int] = None, kind: str = "all", search: 
             minimum_mb: float = 10, root: Optional[str] = None, recursive: bool = True,
             cursor: Optional[str] = None, baseline: bool = False,common:bool=typer.Option(False,'--common',help='Tương thích cũ: luôn tự chia Chung/Riêng'),
             section:str=typer.Option('all',help='all / common (hai mốc) / private (một mốc)'),reason:Optional[str]=None,
-            presence:str=typer.Option('all',help='all / both / old / new: mốc có bản ghi')):
+            presence:str=typer.Option('all',help='all / both / old / new: mốc có bản ghi'),measure:str='allocated'):
+    if core.enabled():
+        if minimum_mb<0:raise typer.BadParameter('Ngưỡng không âm')
+        with core.query(newer,older,baseline=baseline,notify=admin_progress) as query:
+            filters={'reason':reason} if reason is not None else {}
+            output(core.page(query,offset=offset,cursor=cursor,limit=limit,sort=sort,direction=direction,
+                minimum=int(minimum_mb*1_000_000),kind=kind,changes=changes,search=search,root=root,
+                recursive=recursive,section=section,presence=presence,measure=measure,**filters))
+        return
     from .store import Store
     from .comparison import Comparisons
     s = Store(readonly=True)
@@ -242,6 +317,7 @@ def compare(newer: int, older: Optional[int] = None, kind: str = "all", search: 
 
 @app.command("comparison-history")
 def comparison_history():
+    if core.enabled():output(core.comparison_history());return
     from .comparison import Comparisons
     cache=Comparisons()
     try: output(cache.history())
@@ -250,6 +326,9 @@ def comparison_history():
 
 @app.command("overview")
 def overview(newer: int, older: Optional[int] = None,common:bool=typer.Option(False,'--common')):
+    if core.enabled():
+        with core.query(newer,older,notify=admin_progress) as query:output(query.summary())
+        return
     from .store import Store
     from .comparison import Comparisons
     store=Store(readonly=True)
@@ -261,7 +340,15 @@ def overview(newer: int, older: Optional[int] = None,common:bool=typer.Option(Fa
 
 
 @app.command("tree")
-def tree(profile: str = "daily", root: Optional[str] = None, cursor: Optional[str] = None):
+def tree(profile: str = "daily", root: Optional[str] = None, cursor: Optional[str] = None,newer:Optional[int]=None,older:Optional[int]=None,limit:int=100,measure:str='allocated'):
+    if core.enabled():
+        rows=core.history(profile)
+        ident=newer if newer is not None else (rows[0]['id'] if rows else None)
+        if ident is None:raise ValueError('Chưa có mốc Parquet của cấu hình này; nhập lịch sử cũ trước nếu cần')
+        with core.query(ident,older) as query:
+            output(query.page(root=root,recursive=False,folders_only=True,sort='new',limit=limit,cursor=cursor,measure=measure)
+                   if root else query.tree(limit=limit,measure=measure))
+        return
     from .store import Store
     from .comparison import Comparisons
     store=Store(readonly=True)
@@ -288,6 +375,7 @@ def tree(profile: str = "daily", root: Optional[str] = None, cursor: Optional[st
 
 @app.command("snapshot-rebuild")
 def snapshot_rebuild(scan_id: int, confirmed: bool = False):
+    if core.enabled():raise typer.BadParameter('Mốc Parquet bất biến; quét mới hoặc nhập lại nguồn, không phục hồi log dở vào ID này')
     from .recovery import rebuild
     result=rebuild(scan_id,confirmed=confirmed);output(result)
     if result['status']=='cancelled': raise typer.Exit(130)
@@ -310,6 +398,10 @@ def normalization_ids(scan_ids,all_legacy):
 
 @app.command('snapshot-audit')
 def snapshot_audit(scan_id:Optional[list[int]]=typer.Option(None,'--id'),all_legacy:bool=False):
+    if core.enabled():
+        repo=core.repository();ids=scan_id or [r['id'] for r in repo.list()]
+        output([{'id':ident,'checksum_verified':bool(repo.verify(repo.get(ident))),
+                 'ingestion':repo.get(ident).get('ingestion_check'),'warnings':repo.get(ident).get('warnings',[])} for ident in ids]);return
     from .normalization import Normalizations
     ids=normalization_ids(scan_id,all_legacy);norm=Normalizations()
     try:output([norm.inspect(ident,force=True) for ident in ids])
@@ -319,6 +411,7 @@ def snapshot_audit(scan_id:Optional[list[int]]=typer.Option(None,'--id'),all_leg
 @app.command('snapshot-normalize')
 def snapshot_normalize(scan_id:Optional[list[int]]=typer.Option(None,'--id'),all_legacy:bool=False,
                        yes:bool=typer.Option(False,'--yes')):
+    if core.enabled():raise typer.BadParameter('Parquet chuẩn hóa một lần khi nhập/quét; không ghi đè mốc cũ. Dùng storage migrate-columnar để nhập JSONL cũ.')
     from .normalization import Normalizations
     ids=normalization_ids(scan_id,all_legacy);norm=Normalizations()
     try:
@@ -332,6 +425,7 @@ def snapshot_normalize(scan_id:Optional[list[int]]=typer.Option(None,'--id'),all
 
 @app.command('snapshot-original')
 def snapshot_original(scan_id:list[int]=typer.Option(...,'--id'),yes:bool=typer.Option(False,'--yes')):
+    if core.enabled():raise typer.BadParameter('Mốc Parquet giữ nguyên bản đã nhập. Nguồn JSONL cũ chưa bị xóa; không đổi lớp chuẩn hóa qua ID Parquet.')
     from .normalization import Normalizations
     ids=normalization_ids(scan_id,False)
     if not yes and not typer.confirm('Dùng lại bản gốc cho các lượt đã chọn?'):raise typer.Exit()
@@ -350,6 +444,9 @@ def source_cache_clear(yes:bool=typer.Option(False,'--yes')):
 
 @app.command("comparison-delete")
 def comparison_delete(pair_id: int):
+    if core.enabled():
+        if typer.confirm('Xóa tóm tắt so sánh này? Giữ các mốc và file thật.'):output(core.delete_comparison(pair_id))
+        return
     from .comparison import Comparisons
     cache=Comparisons()
     try:
@@ -360,6 +457,7 @@ def comparison_delete(pair_id: int):
 
 @app.command("comparison-cache-clear")
 def comparison_cache_clear():
+    if core.enabled():output(core.repository().cleanup_abandoned());return
     from .comparison import Comparisons
     if not typer.confirm("Xóa toàn bộ cache so sánh? Snapshot lịch sử vẫn được giữ và cache sẽ được tạo lại khi cần."):
         raise typer.Exit()
@@ -371,6 +469,8 @@ def comparison_cache_clear():
 
 @app.command("history-clear")
 def history_clear():
+    if core.enabled():
+        raise typer.BadParameter('Dùng snapshots-delete --all để xóa mốc Parquet có xác nhận; không xóa nguồn JSONL/SQLite cũ')
     from .comparison import Comparisons
     from .store import Store
     store=Store(readonly=True)
@@ -393,6 +493,7 @@ def history_clear():
 
 @app.command("export")
 def export(scan_id: int, destination: Path):
+    if core.enabled():output(core.export(scan_id,destination));return
     from .store import Store
     if destination.exists():
         raise typer.BadParameter("File đã tồn tại; chọn tên mới để tránh ghi đè")
@@ -581,6 +682,11 @@ def log_events(source:str='app.log',level:str='',operation:str='',search:str='',
 
 @app.command("snapshot-delete")
 def snapshot_delete(scan_id: int):
+    if core.enabled():
+        repo=core.repository();row=repo.get(scan_id)
+        if typer.confirm(f"Xóa metadata Parquet #{row['id']}? File thật và nguồn JSONL cũ giữ nguyên."):
+            output(repo.delete([scan_id]))
+        return
     from .store import Store
     s = Store()
     row = s.scan(scan_id)
@@ -597,6 +703,14 @@ def snapshot_delete(scan_id: int):
 @app.command("snapshots-delete")
 def snapshots_delete(scan_id: Optional[list[int]] = typer.Option(None,"--id",help="ID lượt quét; lặp --id để chọn nhiều"),
                      all_scans: bool = typer.Option(False,"--all",help="Xóa toàn bộ lịch sử quét")):
+    if core.enabled():
+        if all_scans and scan_id:raise typer.BadParameter('Dùng --all hoặc --id, không đồng thời')
+        repo=core.repository();ids=[r['id'] for r in repo.list()] if all_scans else sorted(set(scan_id or []))
+        if not ids:raise typer.BadParameter('Chỉ định ID hoặc --all')
+        for ident in ids:repo.get(ident)
+        if not typer.confirm(f'Xóa {len(ids)} mốc Parquet? Không xóa file thật hoặc nguồn lịch sử cũ.'):return
+        if all_scans and typer.prompt('Nhập XOA LICH SU để tiếp tục')!='XOA LICH SU':return
+        output(repo.delete(ids));return
     from .store import Store
     from .presentation import scan_name
     if all_scans and scan_id:
@@ -868,13 +982,25 @@ def main():
     from .startup_admin import preflight
     preflight()
     from .elevation import ElevationCancelled
+    from .platform_ops import ProcessCancelled
     for stream in (sys.stdout, sys.stderr):
         if stream is not None and hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     try:
         app()
+    except KeyboardInterrupt:
+        typer.echo('Đã yêu cầu dừng tác vụ; có thể tiếp tục qua fast jobs/resume.', err=True)
+        raise SystemExit(130)
+    except ProcessCancelled as exc:
+        typer.echo(str(exc) or 'Đã dừng an toàn; xem fast jobs để tiếp tục.',err=True)
+        raise SystemExit(130)
     except ElevationCancelled as exc:
         typer.echo(str(exc),err=True);raise SystemExit(130)
     except (ValueError, RuntimeError, OSError) as exc:
         typer.echo(str(exc), err=True)
         raise SystemExit(1)
+    except Exception as exc:
+        if type(exc).__module__ == '_duckdb':
+            typer.echo('Lõi Parquet không hoàn tất: '+str(exc)+'\nNguồn giữ nguyên; kiểm tra ngân sách RAM/tạm rồi thử lại.',err=True)
+            raise SystemExit(1)
+        raise

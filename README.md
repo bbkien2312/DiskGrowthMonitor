@@ -1,5 +1,40 @@
 # Disk Growth Monitor
 
+## 2.0.0 — Parquet + DuckDB
+
+Mở `launch-gui.cmd` với source hoặc `DiskGrowthMonitor.exe` sau khi cài. Bản 2.0.0 có hậu tố **Parquet + DuckDB** trong GUI và bộ cài. Các lệnh chính `scan`, `history`, `compare`, `tree`, `entries`, `export`, `tasks` và worker `schedule run/tick` dùng chung lõi Parquet + DuckDB RAM. Các tab Hệ thống, Dọn dẹp có duyệt, Lịch chạy, Nhật ký, cập nhật và UAC được giữ lại.
+
+Thanh dưới tự tính chiều cao theo font/DPI, không dùng lại chiều cao 42px gây cắt nội dung. **Chi tiết thời gian / kết quả** mở vùng cuộn riêng, mặc định thu gọn. Loading ghi rõ công đoạn: thu thập → đọc/chuẩn hóa/hardlink/tổng hợp → ghi/kiểm chứng Parquet → so sánh → nạp cây/bảng. Luồng quét tự so sánh chỉ đạt 100% khi đã nạp kết quả. Báo cáo ghi thời gian từng bước, tổng luồng và số mục tăng/giảm/mới/mất/không đổi/không quét/chưa xác định **toàn cặp mốc**, không chỉ số dòng đang tải. Timing dùng đồng hồ đơn điệu; phần trăm là mốc công đoạn, không đoán tốc độ hoàn tất.
+
+**GUI chính giữ nguyên bố cục đã duyệt**, không dùng màn hình rút gọn của preview. `main_ui.py` kế thừa cửa sổ cũ, `DiskBrowser` / `HistoryPanel` / `TaskPanel`; `columnar_gui_backend.py` nối dữ liệu Parquet vào model cũ. Còn đầy đủ tab Chung/Riêng, bốn tile Cũ/Mới/Chênh lệch/Toàn phạm vi chia Chung–Riêng, chú giải, tooltip có điều kiện, icon, context menu, phím tắt, cây độc lập và dropdown 20/50/100/200/500/1000. Sắp xếp/lọc áp dụng toàn tập trước khi phân trang; GUI giữ lại phiên RAM khi tải thêm/đổi bộ lọc, đóng phiên không xóa snapshot. Preview chỉ để chẩn đoán, không phải GUI thay thế.
+
+- Mặc định dùng **Trên đĩa (Allocated)** và GiB cơ số 1024. Logical là chế độ phụ; không dùng Logical làm Windows Used. Tổng/Used/Trống lịch sử lấy từ số đo đã lưu, số hiện tại hiển thị riêng. Thiếu số đo để chưa rõ; không gán phần dư cho file nhỏ.
+- So sánh giữ phiên DuckDB trong RAM; sort/filter toàn tập rồi mới lấy 20/100/1000 mục. Snapshot Parquet là metadata nén, không có nội dung file; không dựng lại chỉ mục SQLite chứa hàng triệu file khi mở/so sánh. Các chức năng tương thích như lịch chạy/đề xuất vẫn dùng kho metadata nhỏ hiện có; không đưa file records mới vào đó.
+- Trên D:, app dùng **nguyên kho preview đã được duyệt** tại `data/parquet-preview/data/columnar-preview`, giữ ID các mốc và không tạo bản sao. App-home chưa có kho thử dùng `data/columnar`. Nút xóa mốc chỉ xóa metadata Parquet; không xóa file thật hay nguồn JSONL cũ.
+- Tab Lịch sử giữ bảng mốc, bảng so sánh, tóm tắt và lựa chọn nhiều dòng. Nút **Nhập mốc JSONL cũ…** chuyển theo yêu cầu, chỉ một lần; có thể dừng/tiếp tục, nguồn cũ giữ nguyên. SQLite rất cũ cần chuyển sang JSONL bằng công cụ tương thích trước. Không tự chuyển/xóa SQLite/JSONL lúc khởi động bản chính này.
+- Nhật ký → **Tác vụ đang chạy / dang dở → Tiếp tục** hiển thị các journal mới trong khung công việc cũ. Export đã hoàn tất được kiểm tra và dùng lại; quét chưa xong chạy lại từ đầu. Dừng/đóng GUI chờ worker kết thúc an toàn; Task/Service có khóa quét chung. Không tự cài lại hoặc thay đăng ký Task/Service trong bước tích hợp source.
+- Lịch sử so sánh chỉ lưu tóm tắt JSON (tối đa 500 cặp), không lưu bản sao toàn bộ bảng diff. **Hệ thống → Dung lượng app → Đóng phiên RAM / dọn tạm** đóng phiên đang mở và dọn đúng các phiên đã chết, giữ snapshot.
+
+CLI tương đương (qua `launch-cli.cmd` hoặc `dgm` trong runtime riêng):
+
+```text
+dgm scan --profile daily
+dgm scan --engine native --root D:\ThuMucThu --no-mft
+dgm history
+dgm compare 5 --older 4 --minimum-mb 0 --sort new --limit 20
+dgm compare 5 --older 4 --minimum-mb 0 --sort new --limit 100 --offset 20
+dgm compare 5 --older 4 --measure logical
+dgm tree --newer 5 --older 4
+dgm comparison-history
+dgm storage migrate-columnar
+dgm storage migrate-columnar --all --yes
+dgm storage parquet
+dgm storage clear-work
+dgm tasks list
+```
+
+Cursor chi tiết thuộc phiên đang mở, không mang qua hai tiến trình CLI; dùng `--offset` với cùng bộ lọc để lấy trang tiếp theo trong lệnh mới. `scan_backend: "legacy"` chỉ dành cho tương thích/kiểm thử lịch sử cũ. Các phần bên dưới mô tả những release đã phát hành và có thể khác source hiện tại.
+
 ## Bản 1.5.0 — tiếp tục tác vụ, đối soát và mở lịch sử nhẹ
 
 Thêm dừng–lưu–tiếp tục, đối soát dung lượng vật lý, màu so sánh và khởi động nhẹ từ metadata. GUI/CLI dùng chung dữ liệu; nâng cấp giữ lịch sử, cấu hình và log.
@@ -26,7 +61,7 @@ Checkpoint nằm trong `data/tasks/<task-id>/`: JSON tiến độ, metadata `.js
 
 [Tải bộ cài Windows x64 v1.5.0](https://github.com/bbkien2312/DiskGrowthMonitor/releases/tag/v1.5.0) · [Mã nguồn](https://github.com/bbkien2312/DiskGrowthMonitor)
 
-**Bản mới nhất: 1.5.0.** Tải `installer.exe` và đối chiếu `SHA256SUMS.txt` trong GitHub Release. GUI yêu cầu UAC Admin ngay khi mở, không chỉ khi cài; hủy UAC thì app không mở dữ liệu.
+**Release cũ 1.5.0.** Tải `installer.exe` và đối chiếu `SHA256SUMS.txt` trong GitHub Release tương ứng. GUI yêu cầu UAC Admin ngay khi mở, không chỉ khi cài; hủy UAC thì app không mở dữ liệu.
 
 ## Bản 1.4.0 — giao diện rõ ràng, dọn dẹp có duyệt
 

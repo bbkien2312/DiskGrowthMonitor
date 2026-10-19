@@ -4,7 +4,7 @@ param([Parameter(Mandatory=$true)][string]$Installer,
 $ErrorActionPreference='Stop'
 $taskRoot=Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $taskInstaller=[System.IO.Path]::GetFullPath($Installer)
-$taskExpected=@((Join-Path $taskRoot 'dist\release-v1.2.0\installer.exe'),(Join-Path $taskRoot 'dist\preview-chung-rieng\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.3.0\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.3.1\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.4.0\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.5.0\installer.exe'))
+$taskExpected=@((Join-Path $taskRoot 'dist\release-v1.2.0\installer.exe'),(Join-Path $taskRoot 'dist\preview-chung-rieng\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.3.0\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.3.1\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.4.0\installer.exe'),(Join-Path $taskRoot 'dist\release-v1.5.0\installer.exe'),(Join-Path $taskRoot 'dist\release-v2.0.0\installer.exe'))
 if($taskInstaller -notin $taskExpected){throw 'Only an explicitly allowed app-owned preview installer may be tested.'}
 if((Get-FileHash -LiteralPath $taskInstaller -Algorithm SHA256).Hash -ne $ExpectedSha256){throw 'Preview checksum changed.'}
 $taskOutput=Split-Path -Parent $taskInstaller
@@ -31,6 +31,12 @@ function Invoke-OwnedQa([string]$Script,[string]$LogName,[string[]]$Arguments) {
 }
 try {
     if(-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'Administrator approval required.'}
+    if($taskInstaller -eq (Join-Path $taskRoot 'dist\release-v2.0.0\installer.exe')){
+        @{phase='parquet-install-upgrade';fixture_only=$true}|ConvertTo-Json|Out-File -LiteralPath $taskStatus -Encoding utf8
+        Invoke-OwnedQa (Join-Path $taskRoot 'packaging\smoke_parquet_release.py') 'parquet-install-upgrade' @($taskInstaller,'--legacy',(Join-Path $taskRoot 'dist\release-v1.5.0\installer.exe'))
+        @{phase='complete';fixture_only=$true;success=$true}|ConvertTo-Json|Out-File -LiteralPath $taskStatus -Encoding utf8
+        exit 0
+    }
     if($OnlyInPlace){
         $taskFresh=Get-Content -LiteralPath (Join-Path $taskOutput 'release-test-results.json') -Raw | ConvertFrom-Json
         if($taskFresh.installer_sha256 -ne $ExpectedSha256 -or $taskFresh.fixture_only -ne $true){throw 'Fresh install must already pass for this exact installer.'}

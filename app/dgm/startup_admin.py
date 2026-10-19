@@ -21,6 +21,8 @@ def gui_requested(arguments,*,frozen=False):
         if arg=='--home':next(args,None);continue
         if arg.startswith('--home=') or arg=='--debug':continue
         if arg.startswith('-'):return False
+        if arg == 'fast':
+            return next(args, None) == 'gui'
         return arg=='gui'
     return frozen
 

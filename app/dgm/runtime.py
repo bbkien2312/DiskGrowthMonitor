@@ -25,6 +25,17 @@ def managed_executable():
 
 def forward_managed():
     if getattr(sys,'frozen',False) or os.environ.get('DGM_SOURCE')=='1' or any(arg.startswith('_app-update-') for arg in sys.argv):return
+    # An editable source checkout is authoritative, including after UAC strips
+    # environment variables. Never send its new main commands to old binaries.
+    if home()==Path(__file__).resolve().parents[2] and (home()/'pyproject.toml').is_file() and (home()/'app/dgm/production_core.py').is_file():return
+    # UAC can rebuild the environment. The explicit preview command must stay
+    # on source even if DGM_SOURCE/DGM_HOME were not inherited by pythonw.
+    arguments=iter(sys.argv[1:])
+    for argument in arguments:
+        if argument=='--home':next(arguments,None);continue
+        if argument.startswith('--home=') or argument=='--debug':continue
+        if argument=='fast':return
+        break
     exe=managed_executable()
     if exe:
         if 'gui' in sys.argv[1:]:exe=exe.with_name('DiskGrowthMonitor.exe')

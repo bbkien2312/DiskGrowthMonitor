@@ -7,7 +7,8 @@ from dgm import startup_admin as startup
 @pytest.mark.parametrize('args,frozen,wanted',[
     (['gui'],False,True),(['--home','D:/gui','doctor'],False,False),
     (['--home','D:/App With Spaces','--debug','gui','--tray'],False,True),
-    (['--help'],False,False),(['schedule','agent'],True,False),([],True,True),([],False,False)])
+    (['--help'],False,False),(['schedule','agent'],True,False),([],True,True),([],False,False),
+    (['--home','D:/preview','fast','gui'],False,True),(['fast','history'],False,False)])
 def test_gui_detection_does_not_elevate_headless_or_confuse_home(args,frozen,wanted):
     assert startup.gui_requested(args,frozen=frozen)==wanted
 
@@ -54,3 +55,12 @@ def test_gui_build_requires_admin_but_console_does_not():
     gui=next(line for line in spec.splitlines() if line.startswith('gui=EXE'))
     cli=next(line for line in spec.splitlines() if line.startswith('cli=EXE'))
     assert 'uac_admin=True' in gui and 'uac_admin=True' not in cli
+
+
+def test_preview_stays_on_source_when_uac_drops_environment(monkeypatch):
+    from dgm import runtime
+    monkeypatch.delenv('DGM_SOURCE',raising=False)
+    monkeypatch.setattr(sys,'frozen',False,raising=False)
+    monkeypatch.setattr(sys,'argv',['dgm','--home','D:/preview','fast','gui'])
+    monkeypatch.setattr(runtime,'managed_executable',lambda:pytest.fail('Preview must not forward to old binary'))
+    assert runtime.forward_managed() is None

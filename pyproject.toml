@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "disk-growth-monitor"
-version = "1.5.0"
-description = "Local Windows disk history and reviewed cleanup, with equivalent CLI and GUI"
+version = "2.0.0"
+description = "Disk Growth Monitor - Parquet + DuckDB, equivalent CLI and GUI"
 requires-python = ">=3.12,<3.13"
-dependencies = ["PySide6-Essentials>=6.8,<7", "typer>=0.15,<1", "psutil>=6,<8", "Send2Trash>=1.8,<3", "APScheduler>=3.11,<4", "python-dateutil>=2.9,<3", "pywin32>=308; sys_platform == 'win32'", "tzdata>=2025.1", "ijson>=3.4,<4"]
+dependencies = ["PySide6-Essentials>=6.8,<7", "typer>=0.15,<1", "psutil>=6,<8", "Send2Trash>=1.8,<3", "APScheduler>=3.11,<4", "python-dateutil>=2.9,<3", "pywin32>=308; sys_platform == 'win32'", "tzdata>=2025.1", "ijson>=3.4,<4", "duckdb==1.5.6", "numpy>=2.2,<3"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "pyinstaller>=6,<7"]

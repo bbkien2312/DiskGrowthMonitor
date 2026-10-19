@@ -26,7 +26,9 @@ def test_live_export_cancel_on_import_then_restart(isolated, monkeypatch, engine
         result = real(entry); stop.set(); return result
     monkeypatch.setattr(engines, "enrich", cancel)
     p = {"roots": [str(root)], "engine": engine, "strict_browsers": False, "mft": False}
-    result = scan("fixture", p, stop)
+    def progress(event,data):
+        if engine=='wiztree' and event=='overview':stop.set()
+    result = scan("fixture", p, stop, notify=progress)
     assert result["status"] == "cancelled", result
     assert not (home() / "data/worker.lock").exists()
     monkeypatch.setattr(engines, "enrich", real)

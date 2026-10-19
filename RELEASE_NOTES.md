@@ -1,3 +1,13 @@
+# Disk Growth Monitor 2.0.0 — Parquet + DuckDB — 19/10/2026
+
+- Giữ nguyên GUI đầy đủ, đổi lõi sang Parquet ZSTD và DuckDB RAM; CLI/lịch chạy dùng chung. Không dựng lại SQLite chứa file records khi mở hoặc so sánh. Sort/filter toàn tập trước khi phân trang, giữ phiên khi tải thêm.
+- Khôi phục Chung/Riêng, bốn tile, tooltip, chú giải, icon, màu hàng, phím tắt, menu, dropdown 20–1000 và cây hai chế độ. Mốc profile nguồn/preview vẫn chọn được.
+- Sửa thanh trạng thái dưới bị cắt do chiều cao cũ 42px; tính theo font/DPI. Thêm nút mở/thu gọn thời gian và kết quả, vùng cuộn riêng không che trạng thái/tiến độ.
+- Loading nói rõ công đoạn, ghi thời gian thu thập/nhập/chuẩn hóa/ghi/so sánh/nạp bảng; báo cáo tăng/giảm/mới/mất/không đổi/không quét/chưa xác định toàn cặp. Tự so sánh sau quét không bị nhầm là vẫn quét; 100% sau khi nạp kết quả.
+- Allocated/GiB là mặc định; Logical phụ, đối soát Windows cùng mốc. Giữ unknown, không ép số hay gán phần dư cho file nhỏ.
+- JSON checkpoint/timing nhỏ; nguồn export hoàn chỉnh dùng tiếp sau kiểm checksum, quét dở chạy lại. Không sao lưu nội dung file, không tự xóa mốc.
+- Nâng cấp giữ nguồn lịch sử/config/log cũ; JSONL nhập một lần theo yêu cầu trong Lịch sử, SQLite cũ có công cụ tương thích. Không tự chuyển/xóa nguồn cũ lúc mở app. Tên hiển thị có hậu tố Parquet + DuckDB; giữ AppId và installer.exe để tương thích cập nhật tại chỗ.
+
 # Disk Growth Monitor 1.5.0 — 18/10/2026
 
 - Khởi động không tự so sánh hoặc nạp toàn bộ JSONL; nạp mốc/tóm tắt từ catalog, kể cả khi cây lưu chế độ hai lượt mới nhất. Chi tiết chỉ dựng khi người dùng yêu cầu.

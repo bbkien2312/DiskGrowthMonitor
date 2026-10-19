@@ -13,6 +13,7 @@ class StoragePanel(QGroupBox):
         self.refresh_button=owner.button('Đo dung lượng',self.refresh,row)
         self.cleanup_button=owner.button('Dọn backup / installer',self.preview_cleanup,row)
         self.compact_button=owner.button('Thu gọn cache SQLite',self.compact,row)
+        if hasattr(owner,'sessions'):self.compact_button.setText('Đóng phiên RAM / dọn tạm')
         row.addStretch();layout.addLayout(row)
         logrow=QHBoxLayout()
         self.migrate_button=owner.button('Chuyển lịch sử sang JSONL nén',self.migrate,logrow)
@@ -108,6 +109,8 @@ class StoragePanel(QGroupBox):
 
     def clear_index(self):
         if not self.idle():return
+        if hasattr(self.owner,'sessions'):
+            self.compact();return
         from .history_backend import clear_indexes
         if QMessageBox.question(self,'Bỏ chỉ mục tạm','Chỉ xóa SQLite tạm, giữ log lịch sử nén và tóm tắt. '
             'Lần so sánh sau cần đọc lại log. Tiếp tục?',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.Cancel,
@@ -162,7 +165,11 @@ class StoragePanel(QGroupBox):
 
     def save_policy(self):
         if not self.idle():return
-        cfg=load();cfg.update(update_backup_keep=self.keep.value(),storage_reserve_mb=self.reserve.value());save(cfg)
+        cfg=load();cfg.update(update_backup_keep=self.keep.value(),storage_reserve_mb=self.reserve.value())
+        if hasattr(self.owner,'sessions'):
+            cfg['columnar_limits']={**cfg.get('columnar_limits',{}),'reserve_mb':self.reserve.value()}
+            self.owner.repo.limits['reserve_mb']=self.reserve.value()
+        save(cfg)
         self.owner.status.setText('Đã lưu giới hạn backup và dung lượng dự phòng; không xóa lịch sử.');self.refresh()
 
     def preview_cleanup(self):
@@ -187,6 +194,11 @@ class StoragePanel(QGroupBox):
 
     def compact(self):
         if not self.idle():return
+        if hasattr(self.owner,'sessions'):
+            self.owner.clear_comparison()
+            result=self.owner.repo.cleanup_abandoned()
+            self.owner.status.setText(f"Đã đóng phiên so sánh RAM, dọn {size(result['removed_bytes'])} tạm của phiên đã chết; lịch sử giữ nguyên.")
+            self.refresh();return
         if QMessageBox.question(self,'Thu gọn cache SQLite','Trả trang trống của cache về ổ đĩa, giữ lịch sử và kết quả so sánh. '
             'Có thể cần thời gian và dung lượng tạm; app kiểm tra trước khi chạy. Tiếp tục?',
             QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.Cancel,QMessageBox.StandardButton.Cancel)!=QMessageBox.StandardButton.Yes:return

@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.5.0"
+  #define AppVersion "2.0.0"
 #endif
 #define SourceRoot AddBackslash(SourcePath) + ".."
 #ifndef InstallerOutputDir
@@ -8,9 +8,9 @@
 
 [Setup]
 AppId={{8F156E32-B0A2-4C97-AE5D-7808676FAF11}
-AppName=Disk Growth Monitor
+AppName=Disk Growth Monitor - Parquet + DuckDB
 AppVersion={#AppVersion}
-AppVerName=Disk Growth Monitor {#AppVersion}
+AppVerName=Disk Growth Monitor {#AppVersion} - Parquet + DuckDB
 AppPublisher=bbkien2312
 AppPublisherURL=https://github.com/bbkien2312/DiskGrowthMonitor
 AppSupportURL=https://github.com/bbkien2312/DiskGrowthMonitor/issues
@@ -113,7 +113,7 @@ begin
   if CurStep = ssPostInstall then begin
     if PortableMode then PortableValue := 'true' else PortableValue := 'false';
     SaveStringToFile(ExpandConstant('{app}\installed-app.json'),
-      '{"app":"DiskGrowthMonitor","version":"{#AppVersion}","update_protocol":1,"portable":' + PortableValue +
+      '{"app":"DiskGrowthMonitor","version":"{#AppVersion}","edition":"Parquet + DuckDB","update_protocol":1,"portable":' + PortableValue +
       ',"runtime":"private bundled .venv","preserve_on_uninstall":["data","logs",".venv/tools"]}', False);
   end;
 end;

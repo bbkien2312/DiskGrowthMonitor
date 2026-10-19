@@ -66,6 +66,8 @@ class Worker(QThread):
 
 class Window(QMainWindow):
     closed=Signal()
+    scan_store=staticmethod(Store)
+    comparison_store=staticmethod(Comparisons)
     def __init__(self):
         from .branding import application_icon, set_taskbar_identity
         set_taskbar_identity()
@@ -74,15 +76,15 @@ class Window(QMainWindow):
         icon=application_icon();QApplication.instance().setWindowIcon(icon);self.setWindowIcon(icon)
         # Large legacy path indexes are upgraded by cancellable background jobs,
         # not before the first window can be painted.
-        s = Store(migrate_keys=False); s.close()
+        s = self.scan_store(migrate_keys=False); s.close()
         font_path = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Fonts/segoeui.ttf"
         if font_path.exists():
             QFontDatabase.addApplicationFont(str(font_path))
             QApplication.instance().setFont(QFont("Segoe UI", 10))
         symbol_font=font_path.with_name('seguisym.ttf')
         if symbol_font.exists():QFontDatabase.addApplicationFont(str(symbol_font))
-        from . import __version__
-        self.setWindowTitle(f"Disk Growth Monitor {__version__} — Theo dõi ổ đĩa")
+        from . import __version__,__edition__
+        self.setWindowTitle(f"Disk Growth Monitor {__version__} — {__edition__}")
         screen=QApplication.primaryScreen().availableGeometry()
         self.setMinimumSize(min(640,max(320,screen.width()-24)),min(480,max(240,screen.height()-48)))
         self.resize(min(1440,screen.width()-24),min(940,screen.height()-48))
@@ -121,23 +123,19 @@ class Window(QMainWindow):
         self.tabs.setCornerWidget(title,Qt.Corner.TopRightCorner)
         self.workspace_splitter=QSplitter(Qt.Orientation.Vertical)
         self.workspace_splitter.addWidget(self.tabs);layout.addWidget(self.workspace_splitter,1)
-        status_host=QWidget();status_layout=QVBoxLayout(status_host);status_layout.setContentsMargins(0,0,0,0);status_layout.setSpacing(2)
-        status_host.setMinimumHeight(42)
-        status_row=QHBoxLayout();status_row.addWidget(self.status,1)
-        self.admin_stop_button=self.button('Dừng tác vụ Admin',self.cancel_admin,status_row)
-        self.admin_stop_button.setToolTip('Gửi yêu cầu dừng cho đúng tác vụ này. DISM được chờ kết thúc an toàn; không cưỡng bức tắt.')
-        self.admin_stop_button.hide();status_layout.addLayout(status_row)
-        status_layout.addWidget(self.scan_progress)
         self.completed_steps=QLabel();self.completed_steps.setWordWrap(True)
         self.completed_steps.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.completed_steps.setStyleSheet('color:#325572;background:#edf3f6;padding:6px;border-radius:4px;')
-        self.completed_steps.hide()
-        self.status_scroll=QScrollArea();self.status_scroll.setWidgetResizable(True);self.status_scroll.setMinimumHeight(24)
-        self.status_scroll.setWidget(self.completed_steps);status_layout.addWidget(self.status_scroll,1);self.status_scroll.hide()
-        self.workspace_splitter.addWidget(status_host)
+        from .status_ui import StatusPanel
+        self.status_panel=StatusPanel(self,self.status,self.scan_progress,self.completed_steps)
+        self.status_scroll=self.status_panel.scroll;self.status_details_button=self.status_panel.toggle
+        self.admin_stop_button=self.button('Dừng tác vụ Admin',self.cancel_admin,self.status_panel.row)
+        self.admin_stop_button.setToolTip('Gửi yêu cầu dừng cho đúng tác vụ này. DISM được chờ kết thúc an toàn; không cưỡng bức tắt.')
+        self.admin_stop_button.hide()
+        self.workspace_splitter.addWidget(self.status_panel)
         self.workspace_splitter.setCollapsible(0,False);self.workspace_splitter.setCollapsible(1,False)
-        saved=self.preferences.values.get('splitter/status-v2',[self.height()-80,68])
-        self.workspace_splitter.setSizes([max(200,self.height()-min(saved[1],110)),min(saved[1],110)])
+        saved=self.preferences.values.get('splitter/status-v3',[self.height()-80,self.status_panel.minimumHeight()])
+        self.workspace_splitter.setSizes([max(200,self.height()-saved[1]),max(self.status_panel.minimumHeight(),saved[1])])
         self.workspace_splitter.setStretchFactor(0,1);self.workspace_splitter.setStretchFactor(1,0)
         self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.setCentralWidget(outer)
@@ -197,6 +195,7 @@ class Window(QMainWindow):
 
     def resizeEvent(self,event):
         super().resizeEvent(event)
+        if hasattr(self,'status_panel'):self.status_panel.fit_height()
         if hasattr(self,'browser'):
             # Explanations scroll inside their own box. Essential controls and
             # the table footer never disappear just because help auto-opens.
@@ -236,6 +235,7 @@ class Window(QMainWindow):
         worker = Worker(fn)
         self.workers.append(worker)
         def event_message(event,data):
+            if hasattr(self,'accept_progress_event') and not self.accept_progress_event(worker,event,data):return
             if event=='task-progress':
                 if data.get('task')=='tree':return
                 if self.scan_worker is not None and not scan_job:return
@@ -289,7 +289,7 @@ class Window(QMainWindow):
         self.stop_button.setEnabled(busy)
         if busy and not self._scan_ui_busy:
             self.task_progress_id=None;self.scan_progress.setRange(0,100);self.scan_progress.setValue(0)
-            self.scan_progress.setFormat('0% • Chuẩn bị lượt quét');self.completed_steps.clear();self.completed_steps.hide();self.status_scroll.hide();self.last_scan_brief=''
+            self.scan_progress.setFormat('0% • Chuẩn bị lượt quét');self.status_panel.legacy_details('');self.last_scan_brief=''
         self._scan_ui_busy=busy
 
     def set_admin_busy(self,busy):
@@ -319,13 +319,14 @@ class Window(QMainWindow):
         self.preferences.set("splitter/scan-v3", self.scan_splitter.sizes())
         self.preferences.set('splitter/status-v1',self.workspace_splitter.sizes())
         self.preferences.set('splitter/status-v2',self.workspace_splitter.sizes())
+        self.preferences.set('splitter/status-v3',self.workspace_splitter.sizes())
 
     def reset_layout(self):
         for key, (table, widths) in self.column_specs.items():
             self.preferences.set("columns/" + key, widths)
             interactive_columns(table, widths, self.preferences, key)
         self.scan_splitter.setSizes([sum(self.tree.default_widths())+8, 850]); self.tree.fit_columns()
-        self.workspace_splitter.setSizes([max(200,self.height()-80),68])
+        self.status_panel.fit_height()
         self.status.setText("Đã khôi phục chiều rộng cột mặc định.")
 
     def show_text(self, value, title="Kết quả"):
@@ -347,8 +348,7 @@ class Window(QMainWindow):
             self.status.setText(data.get('stage','')+(' • '+data['detail'] if data.get('detail') else ''))
             items=data.get('completed',[])
             prefix=self.last_scan_brief+'\n' if self.last_scan_brief and data.get('task') in ('comparison','details') else ''
-            self.completed_steps.setText(prefix+'Đã xong: '+' • '.join(items));self.completed_steps.setToolTip(self.completed_steps.text());self.completed_steps.setVisible(bool(prefix or items))
-            self.status_scroll.setVisible(bool(prefix or items))
+            self.status_panel.legacy_details(prefix+'Đã xong: '+' • '.join(items))
             return
         if event=='uac-state':
             self.set_admin_busy(data['phase']!='done')
@@ -378,7 +378,7 @@ class Window(QMainWindow):
         elif event == "started":
             if self.scan_worker is not None:
                 self.scan_progress.setFormat('%p% • Đã tạo mốc quét')
-            s=Store(readonly=True)
+            s=self.scan_store(readonly=True)
             try:label=scan_name(s.scan(data['scan_id']))
             finally:s.close()
             self.scope_note.setText(f"Công cụ thực tế: {data['engine']} • {label}")
@@ -467,7 +467,7 @@ class Window(QMainWindow):
         self.button("Lịch chạy",lambda:self.tabs.setCurrentIndex(3),background_controls)
         background_controls.addStretch()
         from .browser_ui import DiskBrowser
-        self.browser = DiskBrowser(self); layout.addWidget(self.browser, 1)
+        self.browser = getattr(self,'browser_type',DiskBrowser)(self); layout.addWidget(self.browser, 1)
         self.older, self.newer = self.browser.older, self.browser.newer
         self.tree, self.table, self.scan_splitter = self.browser.tree, self.browser.table, self.browser.splitter
         self.kind, self.change, self.search = self.browser.kind, self.browser.change, self.browser.search
@@ -583,7 +583,7 @@ class Window(QMainWindow):
         if self.scan_worker is not None:
             return
         try:
-            from .scanner import scan
+            from .schedule import scan
             if self.strict.isChecked() and self.engine.currentText() != "native":
                 if QMessageBox.question(self, "Công cụ và phạm vi không tương thích", "Bạn đang yêu cầu không đọc/quét Chrome/Edge. WizTree/MFT không bảo đảm điều này. Chuyển lựa chọn trên màn hình sang native để quét? Không thay đổi cấu hình đã lưu.") != QMessageBox.StandardButton.Yes:
                     return
@@ -635,7 +635,7 @@ class Window(QMainWindow):
             self.scan_progress.setFormat(f"100% • Đã lưu {result['files']:,} file")
         else:
             self.scan_progress.setRange(0, 100); self.scan_progress.setFormat('%p% • '+status)
-        store=Store(readonly=True)
+        store=self.scan_store(readonly=True)
         try:
             try: label=scan_name(store.scan(result['scan_id']))
             except ValueError: label="Lượt quét"
@@ -648,8 +648,7 @@ class Window(QMainWindow):
         self.status.setToolTip(result.get('coverage_note',''))
         if result.get('completed_steps'):
             self.last_scan_brief=f"Lượt quét vừa chạy: {outcome} • tổng {size(result.get('logical'))} • đã tổng hợp dung lượng và lưu lịch sử/data/log."
-            self.completed_steps.setText(self.last_scan_brief+'\nĐã xong: '+' • '.join(result['completed_steps']));self.completed_steps.setToolTip(self.completed_steps.text());self.completed_steps.show()
-            self.status_scroll.show()
+            self.status_panel.legacy_details(self.last_scan_brief+'\nĐã xong: '+' • '.join(result['completed_steps']))
         self.refresh_history()
         if result["status"] in ("complete", "partial"):
             self.newer.setCurrentIndex(self.newer.findData(result["scan_id"]))
@@ -727,7 +726,7 @@ class Window(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "Xuất snapshot", f"scan-{scan_id}.csv", "CSV (*.csv)")
         if path:
             def export(_):
-                s=Store(readonly=True)
+                s=self.scan_store(readonly=True)
                 try:s.export(scan_id,path)
                 finally:s.close()
                 return path
@@ -736,15 +735,15 @@ class Window(QMainWindow):
     def delete_snapshot(self):
         scan_id = self.newer.currentData()
         if not scan_id:return
-        store=Store(readonly=True)
+        store=self.scan_store(readonly=True)
         try: label=scan_label(store.scan(scan_id))
         finally: store.close()
         if QMessageBox.question(self, "Xóa lượt quét", f"Xóa metadata của {label} và các cache so sánh phụ thuộc? Không xóa file đã quét, cấu hình hay log.") == QMessageBox.StandardButton.Yes:
             def remove(_):
-                cache=Comparisons()
+                cache=self.comparison_store()
                 try:cache.delete_for_scan(scan_id)
                 finally:cache.close()
-                s=Store()
+                s=self.scan_store()
                 try:s.delete_scan(scan_id)
                 finally:s.close()
                 return True
@@ -1279,7 +1278,7 @@ class Window(QMainWindow):
 
     def make_history(self):
         from .history_ui import HistoryPanel
-        layout=self.add_tab("Lịch sử"); self.history_panel=HistoryPanel(self); layout.addWidget(self.history_panel)
+        layout=self.add_tab("Lịch sử"); self.history_panel=getattr(self,'history_type',HistoryPanel)(self); layout.addWidget(self.history_panel)
 
     def show_history(self):
         self.history_panel.ensure_loaded(); self.tabs.setCurrentIndex(5)
@@ -1335,7 +1334,12 @@ def start(tray=False,smoke_test=False):
             from .storage_maintenance import cleanup_updates
             cleanup_updates()
         except (OSError,ValueError,RuntimeError):pass
-    window = Window()
+    from .production_core import enabled
+    if enabled():
+        from .main_ui import MainWindow
+        window = MainWindow()
+    else:
+        window = Window()
     window.closed.connect(app.quit)
     if not tray:
         window.show()

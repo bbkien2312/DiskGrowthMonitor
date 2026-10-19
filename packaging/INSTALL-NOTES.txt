@@ -1,14 +1,16 @@
-Disk Growth Monitor 1.5.0 - Windows x64
+Disk Growth Monitor 2.0.0 - Parquet + DuckDB - Windows x64
 
 Private Python/Qt runtime is bundled under .venv.
-New histories use checksummed metadata-only JSONL.gz; file contents are never backed up.
-SQLite indexes are temporary and removed after the last app/CLI process exits.
-Interrupted jobs have bounded JSON checkpoints; complete capture metadata can be resumed, incomplete scans restart.
+New snapshots use checksummed ZSTD Parquet metadata; file contents are never backed up.
+Comparisons use private DuckDB RAM sessions with bounded spill, removed when closed.
+Interrupted jobs have small JSON checkpoints; complete tool exports can be resumed, incomplete scans restart.
 Disk allocation is the default display. Logical path size is separate and can exceed volume capacity due to hardlinks.
 GUI startup loads saved milestones/summaries only, not full history or a comparison.
-Legacy SQLite history is converted once and retired only after verification.
-Explicit history_format=sqlite or history_auto_migrate=false opts out of automatic conversion.
-Interrupted/failed conversion preserves the original; this step does not remove backups or source CSV.
+Legacy JSONL history is imported explicitly once from History; source logs are retained.
+Older SQLite can be converted to JSONL with the compatibility tool, then imported.
+No automatic deletion/conversion of legacy history on startup. Interrupted/failed imports preserve the source.
+The original full GUI is retained, including Common/Private details, metric tiles and variable-size paging.
+The footer has a Show/Hide timing/result report and separates collection, import/save, comparison and table loading.
 No global Python, pip, System PATH, Task Scheduler job or Windows Service is installed.
 Choose an empty folder, preferably on D: to avoid consuming C: space.
 The editable source folder must not be overwritten by this installer.

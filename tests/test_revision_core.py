@@ -209,6 +209,7 @@ def test_mft_task_install_requests_scoped_elevation(isolated, monkeypatch):
     cfg = load(); cfg["profiles"]["daily"]["mft"] = True; save(cfg)
     calls = []
     monkeypatch.setattr(background, "is_admin", lambda: False)
+    monkeypatch.setattr(background, "status", lambda: {'task':{'installed':False}})
     monkeypatch.setattr(background, "elevated", lambda kind, action: calls.append((kind, action)) or {"installed": True})
     assert background.control("task", "install")["installed"]
     assert calls == [("task", "install")]

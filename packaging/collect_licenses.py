@@ -8,7 +8,7 @@ import sys
 root=Path(__file__).resolve().parent.parent
 destination=root/'build/licenses';destination.mkdir(parents=True,exist_ok=True)
 names=['PySide6-Essentials','shiboken6','typer','psutil','Send2Trash','APScheduler','pywin32','python-dateutil',
-       'tzdata','ijson','tzlocal','six','rich','shellingham','annotated-doc','markdown-it-py','mdurl','Pygments','colorama']
+       'tzdata','ijson','tzlocal','six','rich','shellingham','annotated-doc','markdown-it-py','mdurl','Pygments','colorama','duckdb','numpy']
 notices=[]
 for name in names:
     distribution=metadata.distribution(name);copied=[]

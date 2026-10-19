@@ -95,7 +95,10 @@ def test_help_and_packages_and_no_config_write(gui):
     assert w.package_table.rowCount() >= 10
     assert not w.package_table.item(0, 0).icon().isNull()
     assert (home() / "data/config.json").read_bytes() == before
-    assert w.table.height() >= 180
+    # The footer must keep a full-height progress font. Short screens may use
+    # the original 132px detail minimum instead of clipping the bottom controls.
+    assert w.table.height() >= 132
+    assert w.status.geometry().bottom()<w.status_panel.height()
 
 
 def test_async_compare_clear_baseline_and_positive_delta(gui, isolated):

@@ -362,6 +362,7 @@ def stage(path):
         if log_mode():
             folder=home()/'data/history'
             session['preserved_logs']={str(p.relative_to(folder)):file_digest(p) for p in folder.rglob('*') if p.is_file()}
+        session['preserved_columnar']=columnar_manifest()
         session['config_sha256']=file_digest(backup/'config.json') if (backup/'config.json').exists() else None
         installer=Path(session['installer'])
         if installer.stat().st_size!=session['release']['size'] or file_digest(installer)!=session['release']['sha256']: raise ValueError('Installer đã thay đổi trước khi cài')
@@ -369,6 +370,24 @@ def stage(path):
         return {'prepared':True,'backup':str(backup)}
     except BaseException as exc:
         save_session(path,session,phase='failed',error=str(exc)); raise
+
+
+def columnar_manifest():
+    """Hash persistent metadata only; no duplicate Parquet backup or RAM spill."""
+    from .columnar_store import safe_path
+    result={}
+    for root in (home()/'data/columnar',home()/'data/parquet-preview/data/columnar-preview'):
+        if not (root/'catalog.json').exists():continue
+        safe_path(root,beneath=home())
+        files=[root/'catalog.json',root/'comparisons.json']
+        files+=list((root/'snapshots').glob('*.parquet'))
+        files+=list((root/'jobs').glob('*/*'))
+        for path in files:
+            if not path.exists():continue
+            safe_path(path,beneath=root)
+            if not path.is_file():continue
+            result[path.relative_to(home()).as_posix()]=file_digest(path)
+    return result
 
 
 def finish(path, success=False):
@@ -382,6 +401,10 @@ def finish(path, success=False):
         success=False; errors.append('Phiên bản sau cài không khớp Release')
     if success:
         try:
+            for relative,digest in session.get('preserved_columnar',{}).items():
+                from .columnar_store import safe_path
+                captured=safe_path(home()/relative,beneath=home())
+                if file_digest(captured)!=digest:raise RuntimeError('Metadata Parquet thay đổi/mất sau cập nhật: '+relative)
             for relative,digest in session.get('preserved_logs',{}).items():
                 log_path=home()/'data/history'/relative
                 if log_path.resolve()!=log_path.absolute() or not inside(log_path,home()/'data/history') or file_digest(log_path)!=digest:

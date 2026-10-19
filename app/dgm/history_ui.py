@@ -10,6 +10,10 @@ from .panel_widgets import cards,text_label
 
 
 class HistoryPanel(QWidget):
+    def store(self,**kwargs):return getattr(self.owner,'scan_store',Store)(**kwargs)
+
+    def comparisons(self,stop=None,notify=None):return getattr(self.owner,'comparison_store',Comparisons)(stop,notify)
+
     def __init__(self,owner):
         super().__init__();self.owner=owner;self.scan_rows=[];self.pair_rows=[]
         self.loaded=False;self.dirty=True;self.refresh_worker=None;self.revision=0
@@ -103,7 +107,7 @@ class HistoryPanel(QWidget):
         if not self.require_idle():return
         if QMessageBox.question(self,"Xóa cache so sánh","Xóa toàn bộ chỉ mục/tóm tắt so sánh đã lưu? Snapshot lịch sử quét vẫn giữ nguyên và so sánh sẽ được tạo lại khi cần.")!=QMessageBox.StandardButton.Yes:return
         def clear(_):
-            cache=Comparisons()
+            cache=self.comparisons()
             try:cache.clear_all()
             finally:cache.close()
             return True
@@ -121,10 +125,10 @@ class HistoryPanel(QWidget):
         phrase,ok=QInputDialog.getText(self,"Xác nhận xóa lịch sử","Nhập XOA LICH SU để tiếp tục")
         if not ok or phrase.strip()!="XOA LICH SU":return
         def clear(_):
-            cache=Comparisons()
+            cache=self.comparisons()
             try:cache.clear_all()
             finally:cache.close()
-            store=Store()
+            store=self.store()
             try:store.clear_scans()
             finally:store.close()
             return True
@@ -180,10 +184,10 @@ class HistoryPanel(QWidget):
             phrase,ok=QInputDialog.getText(self,"Xác nhận xóa toàn bộ","Nhập XOA LICH SU để tiếp tục")
             if not ok or phrase.strip()!="XOA LICH SU":return
         def remove(worker):
-            cache=Comparisons(worker.stop,worker.event.emit)
+            cache=self.comparisons(worker.stop,worker.event.emit)
             try:cache.delete_for_scans(ids)
             finally:cache.close()
-            store=Store()
+            store=self.store()
             try:return store.delete_scans(ids)
             finally:store.close()
         def done(count):
@@ -202,11 +206,11 @@ class HistoryPanel(QWidget):
         selected_pair=selected_pair.data(Qt.ItemDataRole.UserRole) if selected_pair else None
         scrolls=[table.verticalScrollBar().value() for table in (self.scans,self.pairs)]
         def read(worker):
-            store=Store(readonly=True)
+            store=self.store(readonly=True)
             try:scans=store.scans()
             finally:store.close()
             from .history_backend import comparison_history
-            pairs=comparison_history()
+            pairs=getattr(self.owner,'comparison_history',comparison_history)()
             from .storage_metrics import app_footprint
             return scans,pairs,app_footprint()
         def done(data):
@@ -290,7 +294,7 @@ class HistoryPanel(QWidget):
             if index<0:return
             row=self.pair_rows[index];older=row["older"];newer=row["newer"]
             self.owner.browser.common_scope.setChecked(bool(json.loads(row['summary'] or '{}').get('common_scope')))
-            store=Store(readonly=True)
+            store=self.store(readonly=True)
             try:profile=store.scan(newer)["profile"]
             except ValueError:self.info.setText("Snapshot chi tiết đã được dọn; chỉ còn tóm tắt lịch sử.");return
             finally:store.close()
@@ -312,7 +316,7 @@ class HistoryPanel(QWidget):
         pair=self.pair_rows[index]["id"]
         if QMessageBox.question(self,"Xóa tóm tắt","Chỉ xóa tóm tắt/cache cặp so sánh này, không xóa snapshot hay file thật. Tiếp tục?")!=QMessageBox.StandardButton.Yes:return
         def remove(_):
-            cache=Comparisons()
+            cache=self.comparisons()
             try:
                 cache.delete(pair)
             finally:cache.close()
