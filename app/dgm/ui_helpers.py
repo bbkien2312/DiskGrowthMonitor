@@ -204,7 +204,7 @@ class MetricCard(QWidget):
         for note in (self.note,self.private_note):note.setFixedHeight(2*note.fontMetrics().height())
         margins=self.layout().contentsMargins()
         padding=margins.top()+margins.bottom()+self.layout().spacing()+2*self.value_boxes[0].layout().spacing()
-        self.setFixedHeight(self.caption.fontMetrics().height()+self.common_heading.fontMetrics().height()+
+        self.setFixedHeight(self.caption.fontMetrics().height()+(0 if getattr(self,'_single',False) else self.common_heading.fontMetrics().height())+
                             value_height+2*self.note.fontMetrics().height()+padding)
 
     def event(self,event):
@@ -219,7 +219,8 @@ class MetricCard(QWidget):
     def refresh_notes(self):
         numeric_width=max(label.fontMetrics().horizontalAdvance(line) for label in (self.value,self.private_value)
                           for line in (label.text().splitlines() or ['—']))
-        self.setMinimumWidth(max(265 if self.property('tone')=='summary' else 210,2*numeric_width+34))
+        self.setMinimumWidth(max(265 if self.property('tone')=='summary' else 180 if getattr(self,'_single',False) else 210,
+            numeric_width+20 if getattr(self,'_single',False) else 2*numeric_width+34))
         for value,note in ((self.value,self.note),(self.private_value,self.private_note)):
             # Fill the already allocated column, but never impose a fixed
             # minimum width: a long note cannot make the card/window wider.
@@ -240,6 +241,14 @@ class MetricCard(QWidget):
         self._text='\n'.join((caption,'Chung: '+common,common_note,'Riêng: '+private,private_note))
 
     def text(self): return self._text
+
+    def set_single(self,caption,value,note=''):
+        self._single=True
+        self.set_parts(caption,value,'',note,'')
+        self.common_heading.hide();self.private_heading.hide()
+        self.value_boxes[1].hide();self.parts.layout().itemAt(1).widget().hide()
+        self._text='\n'.join((caption,value,note))
+        self.refresh_dimensions()
 
 
 class FittedTree(QTreeWidget):

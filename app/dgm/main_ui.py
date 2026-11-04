@@ -15,18 +15,35 @@ from .columnar_jobs import Jobs
 from .config import load,save
 from . import production_core as core
 from .comparison_policy import choose_measure
+from .delta_accounting import COMPARISON_VERSION
 
 
 class ColumnarBrowser(DiskBrowser):
     """Original widgets/model, with backend-specific data/presentation only."""
     def __init__(self,owner):
-        self._measurement_pair=None;self._forced_measurement=False
+        self._measurement_pair=None;self._forced_measurement=False;self.unified=True
         super().__init__(owner)
         self.measurement_notice=QLabel();self.measurement_notice.setWordWrap(True)
         self.measurement_notice.setObjectName('measurementNotice')
         self.measurement_notice.setStyleSheet('background:#fff5da;color:#715214;border:1px solid #ead6a3;border-radius:4px;padding:3px 7px;')
         self.measurement_notice.hide()
         self.layout().insertWidget(self.layout().indexOf(self.info),self.measurement_notice)
+        self.sections.hide()
+        self.model.header_labels[4]='± File'
+        controls=self.presence.parentWidget().layout()
+        for i in range(controls.count()):
+            row=controls.itemAt(i).layout()
+            if row is not None and row.indexOf(self.presence)>=0:
+                row.addStretch(1);break
+        self.presence.setToolTip('Lọc hiện diện: Cả hai / Chỉ Cũ / Chỉ Mới. Không thay đổi tổng cây hoặc thống kê.')
+        self.reason.setToolTip('Lý do chưa xác minh: khác phạm vi, loại trừ, lỗi đọc hoặc dữ liệu thiếu. Không đồng nghĩa đã xóa.')
+        for column,hint in {0:'TT: trạng thái; ↑ tăng, ↓ giảm, + thêm, − mất, ? chưa rõ, ≈ chưa quy rõ nguyên nhân.',
+            2:'Cũ: số đo lưu trong mốc cũ; — chưa có mốc, × không có, ∅ không quét, ? thiếu số đo.',
+            3:'Mới: số đo lưu trong mốc mới; không đọc kích thước file hiện tại.',
+            4:'± File: chênh kích thước file ghi nhận. Chỉ Cũ đóng góp âm; chỉ Mới đóng góp dương. Không phải Windows đã dùng.',
+            6:'± Đĩa: chênh cấp phát ghi nhận, không chỉ file có ở cả hai mốc. Hardlink có thể chuyển nơi quy byte; tổng ổ chỉ tính một lần.'}.items():
+            self.model.header_hints[column]=hint
+        self.legend_toggle.setToolTip('Giải thích trạng thái, ký hiệu và màu. Chỉ xuất hiện một mốc chưa đủ để khẳng định thêm/xóa thật.')
         self.units.blockSignals(True)
         self.units.setCurrentIndex(int(owner.preferences.values.get('units/columnar-binary',True)))
         self.units.blockSignals(False)
@@ -36,15 +53,17 @@ class ColumnarBrowser(DiskBrowser):
         if self.reason.findData('volume')<0:self.reason.addItem(REASONS['volume'],'volume')
         self.tree.headerItem().setToolTip(1,'Chiếm trên đĩa tại mốc mới của cặp đang dùng cho cây')
 
-    def options(self):return dict(super().options(),measure=self.measurement.currentData())
+    def options(self):return dict(super().options(),measure=self.measurement.currentData(),section='all')
 
     def compare(self):
         pair=self.selected_tree_ids()
         if pair:
             old,new=pair
             self.configure_measurement(self.owner.repo.get(new),self.owner.repo.get(old) if old else None)
+        self.auto_baseline=False;self.model.private=False
         if self.newer.currentData():self.owner.start_comparison_progress()
         super().compare()
+        self.model.private=False
 
     def configure_measurement(self,newer,older=None):
         pair=(older['id'] if older else None,newer['id'])
@@ -106,7 +125,9 @@ class ColumnarBrowser(DiskBrowser):
         disk=self.tree_measurement()=='allocated'
         value=row.get('allocated_after' if disk else 'after')
         item.setToolTip(1,('Chiếm trên đĩa' if disk else 'Kích thước file')+' toàn nhánh tại mốc mới: '+exact(value)+
-            '\nGồm Chung và Riêng; không cộng số này thêm vào tổng file.')
+            '\nGồm mọi file ghi nhận trong nhánh; không cộng folder thêm lần nữa.')
+        item.setToolTip(2,'± = tổng nhánh Mới − Cũ, gồm cả file chỉ có ở một mốc.\n'+
+            ('Có phần chưa xác minh nguyên nhân; không khẳng định mọi mục vắng là đã xóa.' if row.get('attribution_uncertain') else 'Tính theo byte gốc, không theo các số đã làm tròn.'))
 
     def units_changed(self):
         self.owner.preferences.set('units/columnar-binary',self.units.currentData())
@@ -137,16 +158,39 @@ class ColumnarBrowser(DiskBrowser):
 
     def render_metrics(self,summary):
         summary=self.view_summary(summary)
-        super().render_metrics(summary)
-        if not summary.get('older'):
-            self.metrics[0].set_parts('DUNG LƯỢNG CŨ','—','—','Chưa có mốc','Chưa có mốc')
-            self.metrics[2].set_parts('CHÊNH LỆCH','—','—','Mốc ban đầu','Mốc ban đầu')
-            self.metrics[2].setToolTip('Chưa có mốc trước để tính tăng/giảm. Dung lượng Mới là số đo tại lần quét đầu, không phải tăng từ 0 B.')
-        if self.measurement.currentData()=='logical':
-            for card,title in zip(self.metrics[:3],('KÍCH THƯỚC FILE CŨ','KÍCH THƯỚC FILE MỚI','CHÊNH LỆCH · FILE')):
-                card.set_parts(title,card.value.text(),card.private_value.text(),card.note.text(),card.private_note.text())
-        from .presentation import size
+        self.current_summary=summary
+        self.show_measurement_notice()
+        if summary.get('scope_compatible') is False:
+            self.measurement_notice.setText(self.measurement_notice.text()+' Khác phạm vi/loại trừ: ± ghi nhận không đồng nghĩa dung lượng ổ tăng/giảm do file. Xem ± Ổ riêng.')
+            self.measurement_notice.show()
+        from .presentation import size,local_time
+        from .comparison_visuals import gui_change_text,gui_change_color
+        mode=self.measurement.currentData();baseline=not summary.get('older')
+        title='Cấp phát file' if mode=='allocated' else 'Kích thước file'
+        for index,side in ((0,'old'),(1,'new')):
+            totals=summary.get('full_'+side+'_totals') or {}
+            value=totals.get(mode);unknown=totals.get(mode+'_unknown_files',0)
+            text='—' if index==0 and baseline else size(value) if not unknown else 'Chưa rõ' if unknown>=totals.get('files',0) else '≥ '+size(totals.get(mode+'_known'))
+            self.metrics[index].set_single('CŨ' if index==0 else 'MỚI',text,
+                'Chưa có mốc' if index==0 and baseline else title+(f' · {unknown:,} thiếu số đo' if unknown else ' · toàn phạm vi'))
+            self.metrics[index].setToolTip(title+' của tất cả file tại mốc; không cộng chồng folder.\nByte gốc: '+str(value)+
+                '\nLogical không phải Windows đã dùng. ≥ là phần đã đo, không phải tổng đầy đủ.')
+        delta=summary.get('observed_disk_delta' if mode=='allocated' else 'observed_delta')
+        self.metrics[2].set_single('± GHI NHẬN','—' if baseline else gui_change_text(delta),
+            'Mốc ban đầu' if baseline else 'Theo byte gốc · không trừ số đã rút gọn')
+        self.metrics[2].value.setStyleSheet('color:'+gui_change_color(delta)+';')
+        self.metrics[2].setToolTip('Hiệu tổng số đo hai snapshot, gồm cả đường dẫn chỉ Cũ/Mới.\n'
+            'Không khẳng định mọi mục vắng là đã xóa. Phần đủ bằng chứng được ghi riêng trong Đối soát.\nByte gốc: '+str(delta))
+        counts=summary.get('counts',[])
+        files=sum(r['count'] for r in counts if r['kind']=='file');folders=sum(r['count'] for r in counts if r['kind']=='folder')
+        self.metrics[3].set_single('PHẠM VI',f'{files:,} file · {folders:,} TM','Hai mốc · gồm cả mục chỉ một phía')
+        self.metrics[3].setToolTip('Số đường dẫn trong hợp của hai snapshot; TM = thư mục. Không chỉ các dòng đã tải.\n'
+            'Cây và tổng quan không đổi khi lọc, sắp xếp hoặc tải thêm.')
+        a,b=summary.get('older'),summary.get('newer')
+        self.result_caption=('Cũ #'+str(a['id'])+' → ' if a else 'Mốc đầu → ')+'Mới #'+str(b['id'])
         lines=[]
+        for change in summary.get('disk_changes',[]):
+            if not baseline:lines.append(f"{change['root']} · ± Ổ {gui_change_text(change['used_delta'])} · ± Cấp phát {gui_change_text(change['files_delta'])} · Còn lại {gui_change_text(change['unassigned_delta'])}")
         for row in summary.get('disks_new',[]):
             valid=row['valid']
             line=(f"{row['root']} · Sức chứa {size(row.get('capacity') if valid else None)} · "
@@ -158,13 +202,9 @@ class ColumnarBrowser(DiskBrowser):
         if not lines:lines=['Mốc này chưa ghi đủ số đo Windows; không dùng dung lượng ổ hiện tại để thay.']
         lines.append('Logical là kích thước theo đường dẫn, không phải Windows đã dùng. Tổng chỉ cộng file, không cộng chồng folder.\n'
                      'Phần chưa quy vào file không được gán thành file ≤10 MB hoặc kết luận tăng/giảm.')
-        self.reconciliation_text='\n'.join(lines)
+        self.reconciliation_text='\n'.join(lines)+('\nCũ: '+local_time(a['started']) if a else '')+'\nMới: '+local_time(b['started'])
         self.reconciliation_label.setText(self.result_caption+' • '+lines[0].splitlines()[0])
         self.reconciliation_label.setToolTip(self.reconciliation_text)
-        for index,key in ((0,'old'),(1,'new')):
-            common=summary.get(key+'_totals') or {};private=summary.get('private_'+key+'_totals') or {}
-            self.metrics[index].setToolTip(self.metrics[index].toolTip()+
-                '\nTrên đĩa byte gốc — Chung: '+str(common.get('allocated'))+'; Riêng: '+str(private.get('allocated')))
         self.owner.status_panel.finish_results(summary,self.measurement.currentData())
 
     def show_reconciliation(self):
@@ -172,7 +212,10 @@ class ColumnarBrowser(DiskBrowser):
         if summary:self.owner.show_text({'Tóm tắt':self.reconciliation_text,
             'Số đo ổ tại mốc cũ':summary.get('disks_old'),
             'Số đo ổ tại mốc mới':summary.get('disks_new'),
-            'Chung + Riêng':summary.get('partition_valid')},'Đối soát byte gốc — không quét lại ổ')
+            'Hiệu tổng file':summary.get('observed_disk_delta'),
+            'Đủ bằng chứng':summary.get('verified_allocated_delta'),
+            'Kiểm tra cân bằng':summary.get('balance_checks'),
+            'Cần tính lại chi tiết':summary.get('needs_recompare')},'Đối soát byte gốc — không quét lại ổ')
 
     def cache_cleared(self):
         super().cache_cleared()
@@ -185,11 +228,46 @@ class ColumnarHistory(HistoryPanel):
     """Keep the original history tables, cards, selections and details."""
     def __init__(self,owner):
         super().__init__(owner)
+        for table,labels in ((self.scans,('Lần','Lúc','Phạm vi','Tool','Lưu','File / TM','File / Đĩa','Giây','Δ Log','Độ phủ','Chuẩn','Tùy chọn')),
+                             (self.pairs,('Mốc','Cũ','Mới','±','↑','↓','+','−','Khác','Δ Log'))):
+            for index,label in enumerate(labels):
+                old=table.horizontalHeaderItem(index).text();table.horizontalHeaderItem(index).setText(label)
+                table.horizontalHeaderItem(index).setToolTip(old+' · Số đo giữ theo byte gốc; thời gian UTC+07.')
+        self.summary_cards[0].layout().itemAt(0).widget().setText('± GHI NHẬN')
+        self.summary_cards[1].layout().itemAt(0).widget().setText('CHƯA QUY RÕ')
         row=QHBoxLayout();self.migration=QLabel();self.migration.setWordWrap(True)
         row.addWidget(self.migration,1)
         self.import_button=owner.button('Nhập mốc JSONL cũ…',self.import_missing,row)
         self.layout().insertLayout(2,row)
         self.refresh_migration()
+
+    def render_pair_summary(self,summary):
+        from .comparison_visuals import gui_change_text
+        mode=summary.get('history_measure','allocated')
+        value=summary.get('observed_disk_delta' if mode=='allocated' else 'observed_delta')
+        self.summary_cards[0].set_value(gui_change_text(value),'Hiệu toàn bộ hai mốc · '+('Đĩa' if mode=='allocated' else 'File'))
+        self.summary_cards[1].set_value(f"{summary.get('unverified_all_files',0):,} file",'Chưa xác minh nguyên nhân, không phải thiếu toàn bộ dung lượng')
+        self.scope_note.setText('± ghi nhận gồm mọi file hai mốc; chỉ Cũ/Mới không tự khẳng định xóa/thêm thật. '+
+            ('Chi tiết dùng thuật toán cũ; sẽ tính lại khi mở, giữ nguyên snapshot.' if summary.get('needs_recompare') else 'Đã kiểm tra hiệu tổng bằng đóng góp file.'))
+
+    def selection_details(self):
+        super().selection_details()
+        if self.tabs.currentIndex()!=1:return
+        index=self.pairs.currentRow()
+        if not 0<=index<len(self.pair_rows):return
+        from .presentation import local_time
+        from .comparison_visuals import gui_change_text
+        s=json.loads(self.pair_rows[index]['summary'] or '{}');a,b=s.get('older'),s.get('newer')
+        lines=[('Cũ #'+str(a['id'])+' · '+local_time(a['started'])) if a else 'Chưa có mốc cũ',
+               ('Mới #'+str(b['id'])+' · '+local_time(b['started'])) if b else 'Chưa có mốc mới',
+               '± File: '+gui_change_text(s.get('observed_delta')),
+               '± Cấp phát: '+gui_change_text(s.get('observed_disk_delta')),
+               'Phần cấp phát đủ bằng chứng: '+gui_change_text(s.get('verified_allocated_delta'))]
+        for row in s.get('disk_changes',[]):
+            lines.append(row['root']+' · ± Ổ '+gui_change_text(row['used_delta'])+' · Còn lại '+gui_change_text(row['unassigned_delta']))
+        lines.append('Hiệu tổng ghi nhận không tự khẳng định mọi đường dẫn vắng là đã xóa. Không gán phần còn lại cho file nhỏ.')
+        if s.get('needs_recompare'):lines.append('Chi tiết cũ sẽ tính lại bằng thuật toán mới khi mở, không sửa snapshot.')
+        self.details.setPlainText('\n'.join(lines))
 
     def refresh_migration(self):
         plan=core.legacy_plan(repo=self.owner.repo);self.migration_plan=plan

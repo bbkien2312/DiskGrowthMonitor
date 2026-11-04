@@ -13,6 +13,7 @@ import uuid
 from .columnar_store import Repository, MemorySession, CapturedPaths, quote
 from .columnar_ingest import rollup_values, insert_records, PATH_KEY_VERSION
 from .comparison_policy import choose_measure
+from .delta_accounting import COMPARISON_VERSION, snapshot_changes, disk_changes, same_scope
 
 REASONS = {'scope': 'Khác phạm vi/loại trừ', 'browser': 'Không quét Chrome/Edge',
            'coverage': 'Vùng chưa xác minh/quyền đọc', 'legacy': 'Thiếu bằng chứng độ bao phủ',
@@ -168,7 +169,7 @@ class Comparison:
         modified = 'floor(old_modified)<>floor(new_modified)' if cross else 'old_modified<>new_modified'
         created = 'floor(old_created)<>floor(new_created)' if cross else 'old_created<>new_created'
         baseline = 'false' if self.old else 'true'
-        session.progress(25, 'Ghép toàn bộ đường dẫn trong RAM, tách Chung/Riêng', stage='join')
+        session.progress(25, 'Ghép toàn bộ đường dẫn; giữ cả mục chỉ Cũ hoặc chỉ Mới', stage='join')
         db.execute(f'''CREATE TEMP TABLE comparison AS WITH ambiguous AS (
             SELECT path_key FROM old_source WHERE key_count>1
             UNION SELECT path_key FROM new_source WHERE key_count>1),
@@ -218,10 +219,30 @@ class Comparison:
             coalesce(f.unknown_files,0) unknown_files,coalesce(f.unknown_disk_files,0) unknown_disk_files,
             f.common_before,f.common_after,f.private_before,f.private_after
             FROM comparison c LEFT JOIN folder_parts f ON (CASE WHEN c.is_folder THEN c.path_key END)=f.path_key''')
+        # Display the difference of captured totals, not just the subset whose
+        # addition/deletion is independently proven. Preserve that evidence in
+        # separate fields: absence in an incomplete export is NOT a proven deletion.
+        def observed(before, after):
+            return (f"CASE WHEN {baseline} OR (old_row IS NOT NULL AND {before} IS NULL) "
+                    f"OR (new_row IS NOT NULL AND {after} IS NULL) THEN NULL "
+                    f"ELSE coalesce({after},0)-coalesce({before},0) END")
+        logical_observed=observed('"before"','"after"')
+        disk_observed=observed('allocated_before','allocated_after')
+        db.execute(f'''CREATE TEMP VIEW display_result AS WITH measured AS (
+            SELECT r.* EXCLUDE(delta,allocated_delta),r.delta verified_delta,
+                r.allocated_delta verified_allocated_delta,
+                {logical_observed} delta,{disk_observed} allocated_delta
+            FROM result r)
+            SELECT * EXCLUDE(change),CASE
+                WHEN change IN ('first_scan','unknown','not_scanned','replaced','new','missing') THEN change
+                WHEN is_folder AND unknown_files>0 THEN 'partial'
+                WHEN delta>0 THEN 'grown' WHEN delta<0 THEN 'shrunk'
+                WHEN change='modified' THEN 'modified' ELSE 'same' END change
+            FROM measured''')
         # Keep source bytes untouched; the selected view, filters and ORDER BY
         # must all use the same dimension before LIMIT is applied.
         db.execute('''CREATE TEMP VIEW logical_result AS SELECT r.*,
-            r.before logical_before,r.after logical_after,r.delta logical_delta,r.change logical_change FROM result r''')
+            r.before logical_before,r.after logical_after,r.delta logical_delta,r.change logical_change FROM display_result r''')
         db.execute('''CREATE TEMP VIEW allocated_result AS SELECT r.* EXCLUDE(before,after,delta,change),
             r.before logical_before,r.after logical_after,r.delta logical_delta,r.change logical_change,
             r.allocated_before AS "before",r.allocated_after AS "after",r.allocated_delta AS delta,
@@ -230,8 +251,8 @@ class Comparison:
                  WHEN r.allocated_delta IS NULL THEN 'unknown'
                  WHEN r.allocated_delta>0 THEN 'grown' WHEN r.allocated_delta<0 THEN 'shrunk'
                  WHEN r.change IN ('modified','grown','shrunk','partial') THEN 'modified' ELSE 'same' END change
-            FROM result r''')
-        session.progress(90, 'Đếm trạng thái và kiểm tra Chung + Riêng = toàn bộ', stage='summary')
+            FROM display_result r''')
+        session.progress(90, 'Đối chiếu tổng Mới − Cũ, đóng góp từng file và số đo ổ', stage='summary')
         self._summary = self._overview()
         self._summary['seconds'] = time.perf_counter() - started
         session.progress(100, f"Đã so sánh {self._summary['rows']:,} đường dẫn; sẵn sàng tải chi tiết", stage='done')
@@ -295,7 +316,9 @@ class Comparison:
     def _overview(self):
         db = self.session.db
         result = {'older': self.old, 'newer': self.new, 'rows': db.execute('SELECT COUNT(*) FROM result').fetchone()[0],
-                  'partition_note': 'Chung: có hai mốc. Riêng: chỉ Cũ/Mới; không quét khác với đã xóa. Tổng chỉ cộng file, không cộng thêm folder.',
+                  'comparison_version': COMPARISON_VERSION, 'delta_basis': 'captured-totals',
+                  'scope_compatible':same_scope(self.old,self.new),
+                  'partition_note': 'Tổng gồm mọi file ghi nhận ở Cũ/Mới. Chỉ Cũ/Mới chưa đủ để khẳng định xóa/thêm thật. Không cộng thêm folder.',
                   'persistent_database_bytes': 0, 'volume_assumptions': self.volume_assumptions,
                   'default_measure': 'allocated',
                   'measurement_policy': choose_measure(self.new, self.old),
@@ -334,6 +357,24 @@ class Comparison:
             result['unknown_' + group + '_files'] = unknown
             result['unknown_' + group + '_disk_files'] = unknown_disk
         result['partition_valid'] = result['common_rows'] + result['private_rows'] == result['rows']
+        changes=snapshot_changes(self.old,self.new)
+        result['observed_delta']=changes['logical']
+        result['observed_disk_delta']=changes['allocated']
+        result['balance_checks']={}
+        for dimension,expected in changes.items():
+            # Sum FILE debits/credits, not displayed folder deltas. This also
+            # handles file -> folder replacement without counting its children twice.
+            before='before' if dimension=='logical' else 'allocated_before'
+            after='after' if dimension=='logical' else 'allocated_after'
+            summed=db.execute(f'''SELECT coalesce(SUM(
+                CASE WHEN new_kind='file' THEN coalesce("{after}",0) ELSE 0 END
+                -CASE WHEN old_kind='file' THEN coalesce("{before}",0) ELSE 0 END),0)
+                FROM comparison''').fetchone()[0] if self.old else None
+            valid=None if expected is None else summed==expected
+            result['balance_checks'][dimension]={'snapshot_delta':expected,'file_contributions':summed if expected is not None else None,'valid':valid}
+            if valid is False:raise ValueError('Chênh lệch file không khớp tổng hai mốc; không hiển thị số sai')
+        result['accounting_valid']=None if any(r['valid'] is None for r in result['balance_checks'].values()) else all(r['valid'] for r in result['balance_checks'].values())
+        result['disk_changes']=disk_changes(result.get('disks_old'),result.get('disks_new'),self.old,self.new)
         return result
 
     def summary(self):
@@ -431,12 +472,17 @@ class Comparison:
                 row['source_new'] = self.new['id']
                 row['source_old'] = self.old['id'] if self.old else None
                 row['measurement'] = measure
+                row['delta_basis']='captured-totals'
+                row['attribution_uncertain']=bool(row.get('reason') or (row['is_folder'] and row['unknown_files']))
                 row['partial_delta'] = bool(row['is_folder'] and row['unknown_disk_files' if measure == 'allocated' else 'unknown_files'])
+                if row['reason'] and row['presence']!='both':
+                    side='Cũ' if row['presence']=='old' else 'Mới'
+                    row['reason_text']+=' • Chỉ có bản ghi ở '+side+'; ± là đóng góp vào tổng dữ liệu, không khẳng định thêm/xóa thật.'
                 if measure == 'allocated':
                     notes = [label+' thiếu cấp phát' for side,label in (('old','Cũ'),('new','Mới'))
                              if row[side+'_row'] is not None and row['allocated_before' if side=='old' else 'allocated_after'] is None]
                     if row['partial_delta']:
-                        notes.append('Chênh lệch chỉ gồm phần xác minh được; không khẳng định toàn thư mục tăng/giảm từng ấy')
+                        notes.append('± là tổng Mới − Cũ đã ghi nhận; chưa đủ bằng chứng quy mọi thay đổi thành thêm/xóa thật')
                     row['reason_text'] = ' • '.join([row['reason_text'], *notes]).strip(' •')
             next_cursor = None
             if offset + len(rows) < total:

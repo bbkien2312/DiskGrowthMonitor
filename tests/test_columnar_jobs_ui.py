@@ -119,7 +119,8 @@ def test_fast_unknown_old_volume_alias_and_known_different_volume_not_merged(tmp
     new=captured(when='2026-02-02T00:00:00+00:00')
     with pair(repo,[entry('C:\\data\\a',10)],[entry('C:\\data\\a',20)],a=old,b=new) as compare:
         assert compare.summary()['common_rows']==0
-        assert all(r['delta'] is None and r['reason']=='volume' for r in compare.page()['rows'])
+        assert all(r['verified_allocated_delta'] is None and r['reason']=='volume' for r in compare.page()['rows'])
+        assert compare.summary()['scope_compatible'] is False
 
 
 def test_fast_browser_scope_is_separate_not_false_deletion(tmp_path):
@@ -127,7 +128,8 @@ def test_fast_browser_scope_is_separate_not_false_deletion(tmp_path):
     new=captured(when='2026-01-02T00:00:00+00:00');new['scope']['strict_browsers']=True
     with pair(Repository(tmp_path/'repo'),[entry('C:\\data\\Chrome\\a',10)],[],a=old,b=new) as compare:
         row=compare.page()['rows'][0]
-        assert row['change']=='not_scanned' and row['new_issue']=='browser' and row['delta'] is None
+        assert row['change']=='not_scanned' and row['new_issue']=='browser' and row['verified_allocated_delta'] is None
+        assert row['delta']==-4096 and compare.summary()['scope_compatible'] is False
 
 
 def test_fast_gui_async_load_paging_icons_and_scope(isolated,tmp_path):

@@ -47,7 +47,7 @@ class DetailModel(QAbstractTableModel):
     need_page = Signal(int)
     def __init__(self):
         super().__init__();self.batch_size=20;self.cache_limit=400;self.private=False;self.measurement='allocated'
-        self.path_icons=None
+        self.path_icons=None;self.header_hints={};self.header_labels={}
         self.chunks=OrderedDict();self.anchors={0:None};self.pending=set();self.starts=[];self.lengths=[]
         self.loaded=0;self.next_cursor=None;self.total=0;self.paused=False
 
@@ -73,11 +73,13 @@ class DetailModel(QAbstractTableModel):
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         if role == Qt.ItemDataRole.DisplayRole:
-            return HEADERS[section] if orientation == Qt.Orientation.Horizontal else str(section + 1)
+            return self.header_labels.get(section,HEADERS[section]) if orientation == Qt.Orientation.Horizontal else str(section + 1)
         if orientation==Qt.Orientation.Horizontal and role==Qt.ItemDataRole.ToolTipRole:
+            if section in self.header_hints:return self.header_hints[section]+(('\nĐang xem: '+('Cấp phát trên đĩa' if self.measurement=='allocated' else 'Kích thước file')) if section in (2,3) else '')
             if section in (2,3):return HEADERS[section]+' · '+('Chiếm trên đĩa' if self.measurement=='allocated' else 'Kích thước file')
             return {0:'Trạng thái • xem Ký hiệu & màu',4:'Chênh lệch dung lượng logic',6:'Chênh lệch dung lượng cấp phát trên đĩa'}.get(section,HEADERS[section])
         if orientation==Qt.Orientation.Horizontal and role==SEMANTIC_HINT_ROLE:
+            if section in self.header_hints:return self.header_hints[section]
             return {0:'Trạng thái • xem Ký hiệu & màu',6:'Chênh lệch dung lượng cấp phát trên đĩa'}.get(section)
         if orientation==Qt.Orientation.Horizontal and section in (2,3):
             if role==Qt.ItemDataRole.ForegroundRole:return QColor('#325c8a' if section==2 else '#256d55')
@@ -99,7 +101,7 @@ class DetailModel(QAbstractTableModel):
         row = self.row_at(index.row())
         if row is None:
             return ('Đã dừng tải' if self.paused else 'Đang tải…') if role == Qt.ItemDataRole.DisplayRole and index.column() == 0 else None
-        change=row.get('change','unknown');foreground,background=row_palette(row,self.private);column=index.column()
+        change=row.get('change','unknown');foreground,background=row_palette(row,self.private or row.get('unified',False));column=index.column()
         measured=dict(row,before=row.get('allocated_before'),after=row.get('allocated_after')) if self.measurement=='allocated' else row
         if role==Qt.ItemDataRole.DecorationRole and column==1:
             if self.path_icons is None:
@@ -113,6 +115,7 @@ class DetailModel(QAbstractTableModel):
         if role==SEMANTIC_HINT_ROLE:
             if column==0:return status_hint(row)
             if row.get('baseline') and column in (4,6):return 'Mốc ban đầu: chưa có mốc trước để tính chênh lệch'
+            if column in (4,6) and row.get('delta_basis')=='captured-totals':return row.get('reason_text') or '± là đóng góp vào hiệu tổng hai mốc ghi nhận; không phải chỉ các file trùng đường dẫn.'
             if column in (2,3) and gui_snapshot_cell(measured,'old' if column==2 else 'new') in ('∅','?','×','—'):
                 return ('Mốc cũ: ' if column==2 else 'Mốc mới: ')+snapshot_cell(measured,'old' if column==2 else 'new')
         if role==Qt.ItemDataRole.AccessibleTextRole and column==0:return status_hint(row)
@@ -143,7 +146,7 @@ class DetailModel(QAbstractTableModel):
             from zoneinfo import ZoneInfo
             stamp = lambda v: datetime.fromtimestamp(v, ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M:%S") if v else "—"
             values = [status_symbol(row) if role==Qt.ItemDataRole.DisplayRole else status_hint(row),row['path'],gui_snapshot_cell(measured,'old'),gui_snapshot_cell(measured,'new'),
-                      ('≈ ' if row.get('unverified_count') and row.get('delta') is not None else '')+change_text(row.get('delta')),
+                      ('≈ ' if row.get('unverified_count') and row.get('delta') is not None and row.get('delta_basis')!='captured-totals' else '')+change_text(row.get('delta')),
                       {"file":"File","folder":"Thư mục","link":"Liên kết"}.get(row["kind"],row["kind"]),change_text(row.get('allocated_delta')),
                       stamp(row.get('created')),stamp(row.get('modified'))]
             return values[column]
@@ -437,7 +440,7 @@ class DiskBrowser(QWidget):
         measured=dict(row,before=row.get('allocated_before'),after=row.get('allocated_after')) if disk else row
         delta=row.get('allocated_delta' if disk else 'delta')
         item=QTreeWidgetItem([row["path"] if parent is None else Path(row["path"]).name,gui_snapshot_cell(measured,'new'),
-            '—' if row.get('baseline') else ('≈ ' if row.get('unverified_count') and delta is not None else '')+change_text(delta)])
+            '—' if row.get('baseline') else ('≈ ' if row.get('unverified_count') and delta is not None and row.get('delta_basis')!='captured-totals' else '')+change_text(delta)])
         item.setToolTip(0,row['path'])
         item.setIcon(0,self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
         item.setToolTip(1,'Chung: '+size(row['after'])+'\nRiêng: '+size(row.get('private_after')))
@@ -504,7 +507,7 @@ class DiskBrowser(QWidget):
         count=self.page_size.currentData();self.load_button.setText(f'Tải thêm {count} mục')
         sort=self.query_options.get('sort',self.sort);direction=self.query_options.get('direction',self.direction)
         arrow='↑' if direction=='asc' else '↓'
-        label=HEADERS[SORT_COLUMNS.index({'disk_old':'old','disk_new':'new'}.get(sort,sort))]
+        label=self.model.headerData(SORT_COLUMNS.index({'disk_old':'old','disk_new':'new'}.get(sort,sort)),Qt.Orientation.Horizontal)
         if sort=='delta' and getattr(self,'ids',(1,))[0] is None:label='Mới (mốc đầu)'
         self.page_label.setText(f'Đã mở {self.model.loaded:,}/{self.model.total:,} mục • {label} {arrow} • cache RAM ≤ {self.model.cache_limit:,} dòng')
         root=self.query_options.get('root',self.root)
@@ -714,6 +717,10 @@ class DiskBrowser(QWidget):
                         (' So sánh khác công cụ dùng độ chính xác thời gian chung một giây.' if compatibility.get('cross_engine') else '')+
                         (' Mốc cũ chưa ghi chuẩn đo mới; giữ dữ liệu gốc, chỉ chuẩn hóa phần có thể đối chiếu.' if compatibility.get('legacy_metadata') else '')+
                         (' Vùng chưa đủ bằng chứng có nhãn Chưa xác định, không kết luận file đã xóa.' if compatibility.get('coverage_unverified') else ''))
+                if getattr(self,'unified',False):
+                    self.compare_help.body.setText(pair_text+' • '+engines+'\nMột bảng gồm mọi đường dẫn hai mốc. ± là tổng Mới − Cũ ghi nhận; mục chỉ Cũ đóng góp âm, chỉ Mới đóng góp dương. '+
+                        'Không quét/chưa rõ không đồng nghĩa đã xóa. Cây gồm toàn nhánh, thống kê toàn cặp không đổi theo bộ lọc hoặc số trang. '+
+                        '± File khác Windows đã dùng; Đối soát ghi riêng ± Ổ và phần chưa quy vào file.')
                 self.compare_help.show_transient()
             counts=summary["counts"];changed=sum(r["count"] for r in counts if r["change"] not in ("same","first_scan","moved_from"))
             files=sum(r["count"] for r in counts if r["kind"]=="file");folders=sum(r["count"] for r in counts if r["kind"]=="folder")
@@ -722,6 +729,9 @@ class DiskBrowser(QWidget):
                 restoring=self.restore_target>self.model.loaded and bool(self.model.next_cursor)
                 count_change=lambda key:sum(r['count'] for r in counts if r['change']==key)
                 brief=f"{count_change('grown'):,} tăng • {count_change('shrunk'):,} giảm • {count_change('new'):,} mới • {count_change('missing'):,} mất • {count_change('not_scanned'):,} không quét • {count_change('unknown')+count_change('partial'):,} chưa rõ"
+                if getattr(self,'unified',False):
+                    observed=summary.get('observed_disk_delta' if self.measurement.currentData()=='allocated' else 'observed_delta')
+                    brief='Đã quy: '+brief+' · ± ghi nhận '+change_text(observed)
                 self.owner.status.setText((f'Đang lấy lại {self.model.loaded:,}/{self.restore_target:,} mục theo thứ tự mới…' if restoring else f"Đã tải {self.model.loaded:,}/{page['total']:,} dòng • Toàn phạm vi: {brief} • Δ data/log {storage_delta(summary.get('storage'))}"))
             if self.pending_open and self.pending_open[0]==generation:
                 pending_row=self.pending_open[1];start=self.model.starts[group]

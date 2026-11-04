@@ -69,8 +69,10 @@ def test_fast_unknown_coverage_is_not_deleted_and_does_not_pollute_delta(tmp_pat
         rows = {r['path']: r for r in compare.page(limit=100, measure='logical')['rows']}
         assert rows['C:\\data\\gone']['change'] == 'unknown'
         assert rows['C:\\data\\gone']['new_issue'] == 'coverage'
-        assert rows['C:\\data\\gone']['delta'] is None
-        assert rows['C:\\data']['delta'] == 20
+        assert rows['C:\\data\\gone']['delta'] == -100
+        assert rows['C:\\data\\gone']['verified_delta'] is None
+        assert rows['C:\\data']['delta'] == -80
+        assert rows['C:\\data']['verified_delta'] == 20
         assert rows['C:\\data']['unknown_files'] == 1
 
 
@@ -101,7 +103,8 @@ def test_fast_ambiguous_case_keys_not_many_to_many_join(tmp_path):
     with pair(repo, [entry('C:\\data\\A', 10)], [entry('C:\\data\\A', 20), entry('C:\\data\\a', 30)]) as compare:
         rows = compare.page()['rows']
         assert len(rows) == 3
-        assert all(row['presence'] != 'both' and row['delta'] is None and row['change'] == 'unknown' for row in rows)
+        assert all(row['presence'] != 'both' and row['verified_allocated_delta'] is None and row['change'] == 'unknown' for row in rows)
+        assert sum(row['allocated_delta'] for row in rows)==compare.summary()['observed_disk_delta']
 
 
 def test_fast_captured_exclusions_not_false_missing(tmp_path):
@@ -111,7 +114,8 @@ def test_fast_captured_exclusions_not_false_missing(tmp_path):
     with pair(repo, [entry('C:\\data\\ignored\\a', 20)], [], b=new_meta) as compare:
         row = compare.page()['rows'][0]
         assert row['change'] == 'not_scanned' and row['new_issue'] == 'scope'
-        assert row['delta'] is None
+        assert row['verified_allocated_delta'] is None
+        assert row['allocated_delta']==-4096
 
 
 def test_fast_refuses_reversed_chronology_and_releases_session(tmp_path):

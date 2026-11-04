@@ -16,6 +16,7 @@ from .columnar_ingest import PATH_KEY_VERSION
 from .columnar_store import atomic_json, read_json
 from .disk_measurements import captured_volumes
 from .platform_ops import ProcessCancelled
+from .delta_accounting import COMPARISON_VERSION, snapshot_changes, disk_changes, same_scope
 
 
 def scan_row(scan):
@@ -60,6 +61,15 @@ def summary_row(raw):
         result['verified'+suffix+'_delta']=sum(values) if all(v is not None for v in values) else None
         result['unverified_all'+suffix+'_files']=sum(result['unverified_'+g+suffix+'_files'] for g in ('common','private'))
     a,b=raw.get('older'),raw['newer']
+    changes=snapshot_changes(a,b)
+    result['observed_delta']=changes['logical']
+    result['observed_disk_delta']=changes['allocated']
+    result['disk_changes']=raw.get('disk_changes') or disk_changes(raw.get('disks_old'),raw.get('disks_new'),a,b)
+    result['scope_compatible']=same_scope(a,b)
+    result['needs_recompare']=raw.get('comparison_version')!=COMPARISON_VERSION
+    result['delta_basis']='captured-totals'
+    from .comparison_policy import choose_measure
+    result['history_measure']=choose_measure(b,a)['measurement']
     result['compatibility']={'engines':[s['engine'] for s in (a,b) if s],
         'cross_engine':bool(a and a['engine']!=b['engine']),
         'coverage_unverified':any((s.get('coverage') or {}).get('unknown_roots') for s in (a,b) if s)}
@@ -71,7 +81,7 @@ def summary_row(raw):
 def detail_row(row,pair):
     # The old model switches Cũ/Mới using allocated_* itself. Its ± column is
     # always logical, independent of selected measurement/sort/filter/status.
-    return dict(row,pair_id=pair,path_id=row['item_id'],
+    return dict(row,pair_id=pair,path_id=row['item_id'],unified=True,
         before=row['logical_before'],after=row['logical_after'],delta=row['logical_delta'],
         old_revision=row['old_row'],new_revision=row['new_row'],
         created=row.get('new_created') if row['new_row'] is not None else row.get('old_created'),

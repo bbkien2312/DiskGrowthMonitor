@@ -84,6 +84,12 @@ class StatusPanel(QWidget):
         self.results=('TOÀN CẶP MỐC — '+('Trên đĩa' if mode=='allocated' else 'Logical')+
             f" · {summary.get('rows',0):,} đường dẫn; không chỉ các dòng đã tải.\n"+'\n'.join(parts)+
             '\nKhông quét/chưa xác định không được tính thành file đã xóa; tổng dung lượng chỉ cộng file.')
+        if summary.get('delta_basis')=='captured-totals':
+            from .comparison_visuals import gui_change_text
+            value=summary.get('observed_disk_delta' if mode=='allocated' else 'observed_delta')
+            self.results+='\n± Ghi nhận: '+gui_change_text(value)+' · Tổng Mới − Cũ, gồm mục chỉ một mốc.'
+            for row in summary.get('disk_changes',[]):
+                self.results+='\n'+row['root']+' · ± Ổ '+gui_change_text(row['used_delta'])+' · ± Cấp phát '+gui_change_text(row['files_delta'])+' · Còn lại '+gui_change_text(row['unassigned_delta'])
         if page_time is not None:self.page_time=page_time
         if tree_time is not None:self.tree_time=tree_time
         self.render()

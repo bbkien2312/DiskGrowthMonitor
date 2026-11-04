@@ -89,6 +89,7 @@ def remember_comparison(repo, query):
     summary=query.summary()
     # Summaries only. Never persist a materialized join or per-file diff cache.
     record={'newer':query.new['id'],'older':query.old['id'] if query.old else None,
+        'comparison_version':summary.get('comparison_version'),
         'created':utc_now(),'rows':summary['rows'],'counts':summary['counts'],
         'common_old':summary['common_old'],'common_new':summary['common_new'],
         'private_old':summary['private_old'],'private_new':summary['private_new'],

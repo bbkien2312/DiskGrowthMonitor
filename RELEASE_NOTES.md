@@ -1,3 +1,10 @@
+# Disk Growth Monitor 2.2.0 — Parquet + DuckDB — 04/11/2026
+
+- Tính chênh lệch từ toàn bộ dữ liệu ghi nhận của hai mốc, gồm cả đường dẫn chỉ xuất hiện một phía. Kiểm tra tổng đóng góp của file bằng hiệu hai mốc, không cộng trùng thư mục cha/con.
+- Gộp Chung/Riêng trong bảng chính và thống kê. Cây tính toàn nhánh, tổng không đổi khi lọc hay phân trang. Cột ngắn và tooltip phân biệt kích thước file, cấp phát trên đĩa và các ký hiệu trạng thái.
+- Tách riêng chênh lệch Windows đã dùng, chênh lệch cấp phát đã ghi nhận và phần chưa quy được vào file. Mục thiếu ở một mốc vẫn có thể đóng góp vào hiệu tổng, nhưng không tự được xác nhận là đã thêm/xóa.
+- Giữ nguyên schema Parquet và snapshot cũ. Tóm tắt lưu phiên bản thuật toán; mở lại phép so sánh để tính chi tiết theo bản mới, không cần quét lại.
+
 # Disk Growth Monitor 2.1.0 — Parquet + DuckDB — 19/10/2026
 
 - Quét tay và lịch chạy dùng cấu hình đã lưu; khi sửa chưa lưu, hỏi Lưu và chạy / Dùng cấu hình đã lưu / Hủy. Lịch hiển thị công cụ và MFT bật/tắt, không nhầm quyền Admin với lựa chọn MFT.

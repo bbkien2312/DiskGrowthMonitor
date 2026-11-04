@@ -6,10 +6,30 @@ import shutil
 import threading
 import uuid
 from contextlib import nullcontext
+from tempfile import TemporaryDirectory
 
 from .columnar_store import Repository, atomic_json, read_json, safe_path, owner, alive, sha256, utc_now
 from .columnar_ingest import metadata_for, import_entries, import_wiztree, import_legacy
 from .platform_ops import ProcessCancelled, run, is_admin
+
+
+def filesystem_type(root):
+    import ctypes,os
+    if os.name!='nt':return None
+    name=ctypes.create_unicode_buffer(64)
+    if ctypes.windll.kernel32.GetVolumeInformationW(str(Path(root).anchor),None,0,None,None,None,name,len(name)):
+        return name.value.upper()
+    return None
+
+
+def private_config_supported(executable):
+    """/configfolder is documented for WizTree 4.24+; unknown versions stay cautious."""
+    try:
+        import win32api
+        v=win32api.GetFileVersionInfo(str(executable),'\\')['FileVersionMS']
+        return (v>>16,v&65535)>=(4,24)
+    except Exception:
+        return False
 
 
 class Jobs:
@@ -179,6 +199,8 @@ class Jobs:
                         if self.source_bytes() > self.repo.limits['source_mb'] * 1024 * 1024:
                             exceeded.append(True); tool_stop.set(); return
                 monitor = threading.Thread(target=watch, daemon=True)
+                private_config=TemporaryDirectory(prefix='wiztree-config-',dir=directory) if engine=='wiztree' else None
+                if private_config:command += [f'/configfolder={private_config.name}','/filter=*']
                 monitor.start()
                 try:
                     result = run(command, timeout=1800, stop=tool_stop)
@@ -191,15 +213,24 @@ class Jobs:
                     raise
                 finally:
                     done.set(); monitor.join()
+                    if private_config:private_config.cleanup()
                 if self.source_bytes() > self.repo.limits['source_mb'] * 1024 * 1024:
                     path.unlink(missing_ok=True)
                     raise ValueError('Nguồn export vượt ngân sách tạm')
                 proof = {'file': path.name, 'bytes': path.stat().st_size, 'sha256': sha256(path)}
+                proof.update(root=root,full_mft=bool(engine=='wiztree' and profile.get('mft',True) and is_admin()
+                    and private_config_supported(exe) and Path(root)==Path(Path(root).anchor) and filesystem_type(root)=='NTFS' and not result.stderr.strip()),
+                    unfiltered_private_config=bool(engine=='wiztree'))
                 job['sources'] = [r for r in job['sources'] if r.get('file') != path.name] + [proof]
                 self._save(job)
             sources.append(path)
         notify('progress', {'percent': 25, 'stage':'read_source','message': 'Đã có export hoàn tất; nhập trực tiếp, không stat lại từng đường dẫn'})
         if engine == 'wiztree':
+            covered=[root for root in policy.roots if any(p.get('root')==root and p.get('full_mft') and p.get('unfiltered_private_config') for p in job['sources'])]
+            metadata['coverage']={'source':'wiztree-mft' if covered else 'export','version':2,
+                'covered_roots':covered,'unknown_roots':[root for root in policy.roots if root not in covered],
+                'error_regions':[],'proof':{'completed_export_roots':list(policy.roots),'trusted_mft_roots':covered,
+                    'requires':'checksum, private config supported, NTFS whole volume, admin and no tool warning; not an atomic snapshot'}}
             return import_wiztree(sources, metadata, timezone_name='UTC', repository=self.repo, stop=stop, notify=notify)
         return import_entries(self._external_entries(sources, engine, policy, stop), metadata,
                               repository=self.repo, stop=stop, notify=notify)

@@ -189,12 +189,12 @@ def test_gui_three_pairs_and_baseline_show_sizes_in_tree_and_details(parity_wind
         counts=ui.current_summary['counts_logical']
         grown=sum(r['count'] for r in counts if r['change']=='grown')
         assert f'{grown:,} tăng' in window.status.text()
-        assert ui.metrics[1].caption.text()=='KÍCH THƯỚC FILE MỚI'
+        assert ui.metrics[1].caption.text()=='MỚI'
         if old==0:
-            assert ui.model.private and ui.model.data(ui.model.index(0,0))=='●'
+            assert not ui.model.private and ui.model.data(ui.model.index(0,0))=='●'
             assert ui.model.data(ui.model.index(0,2))=='—'
             assert ui.model.data(ui.model.index(0,4))=='—' and ui.model.data(ui.model.index(0,6))=='—'
-            assert ui.metrics[0].value.text()=='—' and ui.metrics[2].private_value.text()=='—'
+            assert ui.metrics[0].value.text()=='—' and ui.metrics[2].value.text()=='—'
             assert 'Mốc ban đầu' in ui.model.data(ui.model.index(0,4),Qt.ItemDataRole.ToolTipRole)
             assert ui.tree.topLevelItem(0).text(2)=='—'
         else:

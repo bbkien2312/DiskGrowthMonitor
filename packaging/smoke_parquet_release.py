@@ -1,4 +1,4 @@
-"""Elevated 2.x installer QA. All installs/scans/deletes are owned D: fixtures."""
+"""Elevated 2.x installer QA. All installs/scans/deletes are owned project fixtures."""
 import argparse
 import hashlib
 import json
@@ -67,9 +67,11 @@ assert cli('storage','parquet')['persistent_database_bytes']==0
 assert list((target/'data/columnar/snapshots').glob('*.parquet'))
 report['checks'].append('two native D: fixture scans, phase timing journals, exact logical +2000000 bytes, global 20+100+1000 offset paging, folder scope, checksum and partition checks; no persistent record database')
 cli('profile','set','daily','--root',fixture,'--engine','native','--exclude',branch)
-third=cli('scan');private=cli('compare',str(third['scan_id']),'--older',str(second['scan_id']),'--section','private','--kind','file','--minimum-mb','0')
-assert private['total']==1200 and all(r['change']=='not_scanned' and r['delta'] is None for r in private['rows'])
-report['checks'].append('excluded subtree stays private/not-scanned, never a fabricated deletion')
+third=cli('scan');private=cli('compare',str(third['scan_id']),'--older',str(second['scan_id']),'--section','private','--kind','file','--minimum-mb','0','--measure','logical')
+assert private['total']==1200
+assert all(r['change']=='not_scanned' and r['verified_delta'] is None and r['delta']==-r['before'] for r in private['rows'])
+assert private['summary']['scope_compatible'] is False and private['summary']['accounting_valid'] is True
+report['checks'].append('excluded subtree contributes to captured totals but stays not-scanned, never a verified deletion')
 for executable in (target/'dgm.exe',target/'DiskGrowthMonitor.exe'):
     raw=execute([executable,'gui','--smoke-test'])
     if executable.name=='dgm.exe':

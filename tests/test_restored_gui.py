@@ -97,9 +97,10 @@ def test_original_private_details_cards_tooltips_and_independent_tree(restored,m
         summary=ui.current_summary
         assert summary['old_totals']['allocated']==8192 and summary['private_old_totals']['allocated']==4096
         assert summary['new_totals']['allocated']==4096 and summary['private_new_totals']['allocated']==8192
-        assert ui.metrics[0].caption.text()=='DUNG LƯỢNG CŨ' and ui.metrics[2].caption.text()=='CHÊNH LỆCH'
-        assert ui.metrics[3].caption.text()=='TOÀN PHẠM VI'
-        assert all(card.common_heading.text()=='CHUNG' and card.private_heading.text()=='RIÊNG' for card in ui.metrics)
+        assert ui.metrics[0].caption.text()=='CŨ' and ui.metrics[2].caption.text()=='± GHI NHẬN'
+        assert ui.metrics[3].caption.text()=='PHẠM VI'
+        assert not ui.sections.isVisible()
+        assert all(not card.private_value.isVisible() for card in ui.metrics)
         ui.kind.setCurrentIndex(ui.kind.findData('file'));ui.reload();wait(app,window)
         row=ui.model.row_at(0)
         assert row['delta']==900 and row['allocated_delta']==-4096 and row['change']=='shrunk'
@@ -108,9 +109,8 @@ def test_original_private_details_cards_tooltips_and_independent_tree(restored,m
         assert ui.model.data(ui.model.index(0,6),Qt.ItemDataRole.ForegroundRole).name()=='#c62828'
         assert ui.model.data(ui.model.index(0,1),Qt.ItemDataRole.DecorationRole) is not None
         assert ui.sections.tabToolTip(1) and ui.page_size.toolTip() and ui.compare_help.body.text()
-        ui.sections.setCurrentIndex(1);wait(app,window)
-        assert ui.model.total==2
-        byside={ui.model.row_at(i)['presence']:i for i in range(2)}
+        assert ui.model.total==3
+        byside={ui.model.row_at(i)['presence']:i for i in range(3)}
         for side,paper in (('old','#eff0f2'),('new','#e9f7e9')):
             assert ui.model.data(ui.model.index(byside[side],1),Qt.ItemDataRole.BackgroundRole).name()==paper
         ui.presence.setCurrentIndex(ui.presence.findData('old'));wait(app,window)

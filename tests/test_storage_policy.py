@@ -164,7 +164,9 @@ def test_new_cache_incremental_reclamation_and_reserve_estimate(isolated):
     assert cache.db.execute('PRAGMA auto_vacuum').fetchone()[0]==2
     cache.close()
     value=safety.require_space(123)
-    assert value['required_bytes']==1_024_000_123
+    from dgm import config
+    assert config.defaults()['storage_reserve_mb']==1024
+    assert value['required_bytes']==config.load()['storage_reserve_mb']*1_000_000+123
 
 
 def test_parallel_cache_schema_open_rechecks_under_sqlite_write_lock(isolated,monkeypatch):

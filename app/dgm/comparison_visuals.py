@@ -92,6 +92,8 @@ def make_legend(parent):
         'Không quét / chưa rõ không được tính thành 0 B.')
     note.setWordWrap(True);note.setObjectName('legendNote');outer.addWidget(note)
     color_note=QLabel('Riêng: chỉ Cũ nền xám · chỉ Mới nền xanh lá nhạt. Chung: ± và ± Đĩa tăng chữ xanh nước biển, giảm chữ đỏ; mỗi ô theo giá trị riêng. ± luôn là kích thước file, ± Đĩa là cấp phát.')
+    if getattr(parent,'unified',False):
+        color_note.setText('Một bảng: chỉ Cũ nền xám · chỉ Mới nền xanh lá nhạt. ± / ± Đĩa tăng chữ xanh nước biển, giảm chữ đỏ. Dấu ? / ≈ chỉ nguyên nhân chưa quy rõ, không biến đóng góp byte thành 0. Số hiển thị rút gọn; tính theo byte gốc.')
     color_note.setWordWrap(True);color_note.setObjectName('legendNote');outer.addWidget(color_note)
     keys=QLabel('Ctrl+F: lọc đường dẫn   ·   Ctrl+Shift+C: sao chép đường dẫn   ·   Alt+Enter: Properties   ·   F2: đổi tên   ·   Delete: xác nhận xóa')
     keys.setWordWrap(True);keys.setObjectName('legendNote');outer.addWidget(keys)

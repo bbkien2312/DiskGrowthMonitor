@@ -251,11 +251,17 @@ class HistoryPanel(QWidget):
                 other=sum(x["count"] for x in counts if x["change"] not in ("same","first_scan","grown","shrunk","new","missing","moved_from"))
                 delta=new['logical']-old['logical'] if a and new.get('logical') is not None and old.get('logical') is not None else None
                 if 'verified_delta' in summary:delta=summary['verified_delta']
-                scope_label=' [CHUNG / RIÊNG]' if 'private_counts' in summary else ' [CHỈ PHẦN CHUNG]' if summary.get('common_scope') else ''
-                values=[(scan_name(a) if a else "Mốc ban đầu")+" → "+(scan_name(b) if b else "Đang chuẩn bị")+scope_label,size(old.get("logical")),size(new.get("logical")),change_text(delta),tally("grown"),tally("shrunk"),tally("new"),tally("missing"),f"{other:,} • "+("chi tiết đọc lại khi mở" if row["status"]=="archived" else f"Đã lưu {summary.get('rows',0):,} mục so sánh"),storage_delta(summary.get("storage"))]
+                if summary.get('delta_basis')=='captured-totals':delta=summary.get('observed_delta')
+                history_mode=summary.get('history_measure','logical')
+                if history_mode=='allocated':delta=summary.get('observed_disk_delta')
+                scope_label=' [TỔNG GHI NHẬN]' if summary.get('delta_basis')=='captured-totals' else ' [CHUNG / RIÊNG]' if 'private_counts' in summary else ' [CHỈ PHẦN CHUNG]' if summary.get('common_scope') else ''
+                values=[(scan_name(a) if a else "Mốc ban đầu")+" → "+(scan_name(b) if b else "Đang chuẩn bị")+scope_label,size(old.get(history_mode)),size(new.get(history_mode)),change_text(delta),tally("grown"),tally("shrunk"),tally("new"),tally("missing"),f"{other:,} • "+("chi tiết đọc lại khi mở" if row["status"]=="archived" else f"Đã lưu {summary.get('rows',0):,} mục so sánh"),storage_delta(summary.get("storage"))]
                 for j,value in enumerate(values):
                     cell=QTableWidgetItem(value);cell.setToolTip(value+"\n"+storage_tooltip(summary.get("storage")))
-                    if 'private_counts' in summary:
+                    if summary.get('delta_basis')=='captured-totals':
+                        cell.setToolTip(cell.toolTip()+'\nSố đo: '+('Cấp phát trên đĩa' if history_mode=='allocated' else 'Kích thước file')+'\n± = tổng Mới − Cũ ghi nhận; không khẳng định mọi mục vắng là đã xóa.'+
+                            (' Kết quả chi tiết cũ cần tính lại khi mở.' if summary.get('needs_recompare') else ' Đã đối chiếu cân bằng byte.'))
+                    elif 'private_counts' in summary:
                         po=summary.get('private_old_totals') or {};pn=summary.get('private_new_totals') or {}
                         cell.setToolTip(cell.toolTip()+'\nCũ/Mới là toàn bộ số đo; chênh lệch chỉ tính phần đủ bằng chứng của Chung và Riêng. Riêng: cũ '+size(po.get('logical'))+' / mới '+size(pn.get('logical'))+'.')
                     if j==0:cell.setData(Qt.ItemDataRole.UserRole,row['id'])
