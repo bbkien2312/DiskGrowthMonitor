@@ -1,3 +1,10 @@
+# Disk Growth Monitor 2.2.1 — Parquet + DuckDB — 04/11/2026
+
+- Export tạm có hạn mức riêng cho mỗi lượt; kiểm tra dung lượng thực trước khi mở công cụ và trong lúc xuất.
+- Chỉ giữ một điểm tiếp tục mới khi đã xuất đủ nhưng chưa lưu Parquet. Nén và kiểm checksum, đọc trực tiếp từ gzip; điểm cũ mặc định được giữ và không tích thêm CSV.
+- Sau khi ghi snapshot thành công, dọn export của lượt đó. Không tự xóa CSV cũ trước nâng cấp hoặc snapshot lịch sử.
+- Tránh lỗi tải phiên so sánh đã đóng khi mốc thay đổi, làm rõ cảnh báo thiếu chỗ/hạn mức.
+
 # Disk Growth Monitor 2.2.0 — Parquet + DuckDB — 04/11/2026
 
 - Tính chênh lệch từ toàn bộ dữ liệu ghi nhận của hai mốc, gồm cả đường dẫn chỉ xuất hiện một phía. Kiểm tra tổng đóng góp của file bằng hiệu hai mốc, không cộng trùng thư mục cha/con.

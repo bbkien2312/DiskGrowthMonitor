@@ -60,6 +60,12 @@ class Worker(QThread):
             if self.stop.is_set():
                 return
             import logging
+            from .columnar_checkpoints import ExportLimitError
+            from .columnar_store import LowSpaceError
+            if isinstance(exc,(ExportLimitError,LowSpaceError)):
+                logging.getLogger("dgm").warning("%s",exc)
+                self.error.emit(str(exc))
+                return
             logging.getLogger("dgm").exception("GUI worker failed")
             self.error.emit(f"{exc}\n{traceback.format_exc()}")
 
@@ -746,6 +752,11 @@ class Window(QMainWindow):
         try: label=scan_label(store.scan(scan_id))
         finally: store.close()
         if QMessageBox.question(self, "Xóa lượt quét", f"Xóa metadata của {label} và các cache so sánh phụ thuộc? Không xóa file đã quét, cấu hình hay log.") == QMessageBox.StandardButton.Yes:
+            if self.workers:
+                self.status.setText('Chờ tải cây/so sánh hoàn tất rồi xóa mốc.')
+                return
+            self.browser.cancel_loading()
+            self.browser.cache_cleared()
             def remove(_):
                 cache=self.comparison_store()
                 try:cache.delete_for_scan(scan_id)

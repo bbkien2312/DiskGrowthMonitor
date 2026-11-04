@@ -219,12 +219,14 @@ def profile_set(name: str, root: list[str] = typer.Option(..., "--root"), exclud
 def scan_command(profile: str = "daily", engine: Optional[str] = None,
                  root:list[str]=typer.Option([],'--root'),exclude:list[str]=typer.Option([],'--exclude'),
                  mft:Optional[bool]=typer.Option(None,'--mft/--no-mft'),
-                 strict_browsers:Optional[bool]=typer.Option(None,'--strict-browsers/--include-browsers')):
+                 strict_browsers:Optional[bool]=typer.Option(None,'--strict-browsers/--include-browsers'),
+                 replace_checkpoint:Optional[str]=typer.Option(None,'--replace-checkpoint',help='Chỉ thay đúng điểm cũ nếu lượt mới tạo được điểm nén hợp lệ')):
     from .config import profile as get_profile
     if core.enabled():
         scan=core.scan
     else:
         from .scanner import scan
+        if replace_checkpoint is not None:raise typer.BadParameter('Tùy chọn này cần backend Parquet')
     p = get_profile(profile)
     if engine:
         p["engine"] = engine
@@ -235,7 +237,8 @@ def scan_command(profile: str = "daily", engine: Optional[str] = None,
     def notify(event, data):
         if event in ("started", "info"):
             typer.echo(f"{event}: {data}", err=True)
-    result = scan(profile, p, notify=notify)
+    options={'replace_checkpoint':replace_checkpoint} if replace_checkpoint is not None else {}
+    result = scan(profile, p, notify=notify, **options)
     output(result)
     if result["status"] == "failed":
         raise typer.Exit(1)

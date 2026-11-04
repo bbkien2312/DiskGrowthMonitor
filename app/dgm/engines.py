@@ -100,10 +100,11 @@ def gdu_entries(policy, config, stop, notify):
 def gdu_stream(path):
     """Streaming ncdu JSON parser: memory is proportional to directory depth."""
     import ijson
+    from .columnar_checkpoints import open_export
     started = False
     frames = []
     builder = None
-    with Path(path).open("rb") as stream:
+    with open_export(path) as stream:
         for prefix, event, value in ijson.parse(stream):
             if not started:
                 if prefix == "item" and event == "start_array":

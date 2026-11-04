@@ -134,7 +134,13 @@ def validate(action,payload):
         'cleanup-apply':{'plan_id','confirmation','plan_digest'},
         'background-control':{'kind','action'},
     }
-    if action not in keys or set(payload)!=keys[action]:raise ValueError('Thao tác/tham số Admin không được phép')
+    optional=set()
+    if action=='columnar_scan' and 'replace_checkpoint' in payload:
+        ident=payload['replace_checkpoint']
+        if not isinstance(ident,str) or not re.fullmatch('[0-9a-f]{32}',ident):
+            raise ValueError('ID điểm tiếp tục không hợp lệ')
+        optional.add('replace_checkpoint')
+    if action not in keys or set(payload)-optional!=keys[action]:raise ValueError('Thao tác/tham số Admin không được phép')
     if action in ('scan','columnar_scan'):
         p=payload['profile']
         if not isinstance(payload['name'],str) or not payload['name'] or not isinstance(p,dict) or not p.get('roots'):raise ValueError('Cấu hình quét không hợp lệ')
@@ -320,7 +326,8 @@ def dispatch(action,payload,stop,notify):
         return scan(payload['name'],payload['profile'],stop,notify,allow_uac=False)
     if action=='columnar_scan':
         from .production_core import scan
-        return scan(payload['name'],payload['profile'],stop,notify,allow_uac=False)
+        options={key:payload[key] for key in ('replace_checkpoint',) if key in payload}
+        return scan(payload['name'],payload['profile'],stop,notify,allow_uac=False,**options)
     if action=='system-check':
         from .diagnostics import system_check
         return system_check(payload['tool'],allow_uac=False,stop=stop)

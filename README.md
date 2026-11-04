@@ -1,5 +1,13 @@
 # Disk Growth Monitor
 
+## 2.2.1 — Điểm tiếp tục gọn
+
+Hạn mức export áp dụng cho **mỗi lượt đang chạy**, không cộng điểm tiếp tục cũ. App kiểm tra chỗ trống trước khi chạy tool và trong lúc xuất. Khi ghi Parquet thành công, bỏ export; quét chưa đủ các phạm vi thì không giữ dữ liệu dở.
+
+Nếu đã xuất đủ nhưng chưa lưu Parquet, giữ một điểm tiếp tục gzip đã kiểm checksum (mặc định 64 MiB). Nhập lại trực tiếp từ bản nén; không bung CSV lên ổ. Khi không thể nén an toàn và chưa có điểm cũ, giữ một nguồn gốc để bảo vệ khả năng tiếp tục. Lượt sau không tích thêm export nếu đã có điểm giữ. CSV cũ trước nâng cấp vẫn nguyên.
+
+Nhật ký → Quét mới có thể thay đúng một điểm cũ, chỉ sau khi đã kiểm chứng bản nén mới. CLI tương đương: `scan --replace-checkpoint ID`. Mặc định giữ điểm cũ, kể cả Task Scheduler/Service.
+
 ## 2.2.0 — Parquet + DuckDB: bảo toàn chênh lệch
 
 GUI chính gộp Chung/Riêng thành một bảng và một tổng Cũ/Mới/±. Các cột ngắn TT, Cũ, Mới, ± File, ± Đĩa có tooltip; Cũ/Mới theo chỉ số đang chọn, hai cột ± ghi rõ loại số đo. Tổng/cây dùng hiệu toàn bộ dữ liệu hai snapshot, bao gồm đường dẫn chỉ có ở một phía; phần xác minh nguyên nhân thêm/xóa được giữ riêng, không dùng thay tổng. Lọc và phân trang không đổi số tổng.

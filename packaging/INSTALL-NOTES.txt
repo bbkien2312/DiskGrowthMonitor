@@ -1,9 +1,11 @@
-Disk Growth Monitor 2.2.0 - Parquet + DuckDB - Windows x64
+Disk Growth Monitor 2.2.1 - Parquet + DuckDB - Windows x64
 
 Private Python/Qt runtime is bundled under .venv.
 New snapshots use checksummed ZSTD Parquet metadata; file contents are never backed up.
 Comparisons use private DuckDB RAM sessions with bounded spill, removed when closed.
-Interrupted jobs have small JSON checkpoints; complete tool exports can be resumed, incomplete scans restart.
+Temporary exports are limited per active scan and cleaned after successful Parquet publication.
+A complete interrupted export may be kept as one verified gzip checkpoint, read without expansion.
+Existing checkpoints are preserved by default; incomplete exports restart. Legacy retained CSVs are not auto-deleted.
 Disk allocation is preferred. If a capture has no per-file allocation, the view automatically uses logical size with an explicit notice.
 Logical path size is not Windows Used and can exceed volume capacity due to hardlinks.
 Unknown measurements are retained under size filters, never silently treated as zero.

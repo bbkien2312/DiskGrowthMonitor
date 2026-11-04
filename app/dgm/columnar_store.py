@@ -29,7 +29,7 @@ SCHEMA = (
     ('status', 'VARCHAR'), ('note', 'VARCHAR'),
 )
 DEFAULT_LIMITS = {'memory_mb': 768, 'temp_mb': 256, 'source_mb': 512,
-                  'history_mb': 1024, 'reserve_mb': 128, 'threads': 8}
+                  'history_mb': 1024, 'reserve_mb': 128, 'threads': 8, 'checkpoint_mb': 64}
 _locks = {}
 _locks_guard = threading.Lock()
 
@@ -193,6 +193,10 @@ def parent_key(key):
     return volume + '|' + parent
 
 
+class LowSpaceError(RuntimeError):
+    """Insufficient physical space; distinct from a configured export quota."""
+
+
 class Repository:
     def __init__(self, root=None, *, limits=None):
         if root is None:
@@ -278,8 +282,13 @@ class Repository:
 
     def check_space(self, extra=0):
         free = shutil.disk_usage(self.root).free
-        if free < extra + self.limits['reserve_mb'] * 1024 * 1024:
-            raise RuntimeError('Thiếu dung lượng dự phòng; không tự xóa lịch sử để tiếp tục')
+        reserve = self.limits['reserve_mb'] * 1024 * 1024
+        if free < extra + reserve:
+            mib = 1024 * 1024
+            raise LowSpaceError(
+                f'Thiếu dung lượng dự phòng tại {self.root}: còn {free/mib:,.0f} MiB, '
+                f'cần {(extra+reserve)/mib:,.0f} MiB (gồm {reserve/mib:,.0f} MiB dự phòng). '
+                'Không tự xóa lịch sử để tiếp tục.')
 
     def verify(self, scan):
         path = self.path(scan)

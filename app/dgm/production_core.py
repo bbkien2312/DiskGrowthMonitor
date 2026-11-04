@@ -54,7 +54,7 @@ def history(profile=None):
             if profile is None or row['profile'] == profile]
 
 
-def scan(name, profile, stop=None, notify=None, *, allow_uac=True):
+def scan(name, profile, stop=None, notify=None, *, allow_uac=True, replace_checkpoint=None):
     from .config import load, normalize_profile
     from .platform_ops import is_admin, ProcessCancelled
     profile = normalize_profile(profile, load().get('threshold_mb',10))
@@ -62,10 +62,17 @@ def scan(name, profile, stop=None, notify=None, *, allow_uac=True):
         if not allow_uac:
             raise PermissionError('MFT chạy lịch cần quyền Admin; không mở UAC trong worker nền')
         from .elevation import request
-        return request('columnar_scan', {'name': name, 'profile': profile}, stop=stop, notify=notify)
+        payload = {'name': name, 'profile': profile}
+        if replace_checkpoint is not None:
+            payload['replace_checkpoint'] = replace_checkpoint
+        return request('columnar_scan', payload, stop=stop, notify=notify)
     jobs = Jobs(repository())
     started=time.perf_counter()
-    job = jobs.create('scan', {'name': name, 'profile': dict(profile), 'engines': load()['engines']})
+    args = {'name': name, 'profile': dict(profile), 'engines': load()['engines']}
+    if replace_checkpoint is not None:
+        jobs.directory(replace_checkpoint)  # Validate the exact job identifier.
+        args['replace_checkpoint'] = replace_checkpoint
+    job = jobs.create('scan', args)
     try:
         row = jobs.execute(job['id'], stop=stop, notify=notify)[0]
     except ProcessCancelled:

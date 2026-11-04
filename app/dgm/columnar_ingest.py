@@ -367,9 +367,10 @@ def import_entries(entries, metadata, *, repository=None, normalize=True, stop=N
 
 
 def csv_header(path):
+    from .columnar_checkpoints import open_export
     aliases = {'createddate': 'created', 'mftrecno': 'mft record number',
                'mftrecordnumber': 'mft record number', 'lastaccessdate': 'accessed', 'modifieddate': 'modified'}
-    with Path(path).open(encoding='utf-8-sig', newline='') as stream:
+    with open_export(path, 'rt', encoding='utf-8-sig', newline='') as stream:
         reader = csv.reader(stream)
         for _ in range(40):
             start_line = reader.line_num
@@ -386,16 +387,20 @@ def csv_header(path):
     raise ValueError('Không tìm thấy header CSV WizTree')
 
 
-def import_wiztree(path, metadata, *, timezone_name=None, repository=None, stop=None, notify=None):
+def import_wiztree(path, metadata, *, timezone_name=None, repository=None, stop=None, notify=None,
+                   verified_raw_sizes=None):
     if timezone_name is None:
         raise ValueError('Cần chỉ rõ múi giờ CSV (UTC nếu xuất bằng /exportUTCTime=1)')
     ZoneInfo(timezone_name)
     repository = repository or Repository()
     inputs = [safe_path(value) for value in path] if isinstance(path, (list, tuple)) else [safe_path(path)]
-    states = [(value, value.stat(), csv_header(value)) for value in inputs]
-    total_bytes = sum(state.st_size for _, state, _ in states)
+    sizes = verified_raw_sizes or {}
+    if any(value.suffix == '.gz' and value not in sizes for value in inputs):
+        raise ValueError('CSV nén chỉ được nhập từ điểm tiếp tục đã kiểm chứng')
+    total_bytes = sum(sizes[value] if value in sizes else value.stat().st_size for value in inputs)
     if total_bytes > repository.limits['source_mb'] * 1024 * 1024:
         raise ValueError('CSV vượt giới hạn nguồn tạm; tăng ngân sách rõ ràng trước khi nhập')
+    states = [(value, value.stat(), csv_header(value)) for value in inputs]
     started = time.perf_counter()
     with MemorySession(repository, notify=notify) as session, session.operation(stop):
         session.progress(10, 'Đọc CSV WizTree bằng engine native; không mở lại file đã quét', stage='read_source')

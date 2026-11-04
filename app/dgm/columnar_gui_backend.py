@@ -144,6 +144,11 @@ class Sessions:
 class Handle:
     def __init__(self,pool,stop,notify):self.pool=pool;self.stop=stop;self.notify=notify
     def close(self):pass
+    def _query(self,pair):
+        query=self.pool.queries.get(pair)
+        if query is None:
+            raise ProcessCancelled('Phiên so sánh đã đóng hoặc mốc đã đổi. Chọn lại mốc để tải.')
+        return query
     def prepare(self,older,newer,**_):
         key=(older or None,newer)
         with self.pool.operation(self.stop):
@@ -159,7 +164,7 @@ class Handle:
                               'stages':[{'key':'reuse','name':'Dùng lại phiên RAM của cặp mốc','seconds':0,'state':'complete'}]}})
             return key
     def summary(self,pair):
-        with self.pool.operation(self.stop):return summary_row(self.pool.queries[pair].summary())
+        with self.pool.operation(self.stop):return summary_row(self._query(pair).summary())
     def page(self,pair,**options):
         changes=options.get('changes','all')
         if isinstance(changes,(list,tuple)):
@@ -169,13 +174,13 @@ class Handle:
         options['sort']={'disk_old':'allocated_old','disk_new':'allocated_new',
                          'allocated':'allocated_delta','delta':'logical_delta'}.get(sort,sort)
         with self.pool.operation(self.stop):
-            query=self.pool.queries[pair]
+            query=self._query(pair)
             started=time.perf_counter()
             result=query.page(measure=measure,stop=self.stop,**options)
             return dict(result,rows=[detail_row(row,pair) for row in result['rows']],query_seconds=time.perf_counter()-started)
     def roots(self,pair,roots,measure='allocated'):
         with self.pool.operation(self.stop):
-            return [detail_row(r,pair) for r in self.pool.queries[pair].tree(measure=measure,stop=self.stop)['rows']]
+            return [detail_row(r,pair) for r in self._query(pair).tree(measure=measure,stop=self.stop)['rows']]
     def history(self):return self.pool.history()
     def _remove(self,test):
         with self.pool.operation(self.stop):

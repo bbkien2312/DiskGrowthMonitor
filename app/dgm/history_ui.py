@@ -183,6 +183,9 @@ class HistoryPanel(QWidget):
         if all_selected:
             phrase,ok=QInputDialog.getText(self,"Xác nhận xóa toàn bộ","Nhập XOA LICH SU để tiếp tục")
             if not ok or phrase.strip()!="XOA LICH SU":return
+        if not self.require_idle():return
+        self.owner.browser.cancel_loading()
+        self.owner.browser.cache_cleared()
         def remove(worker):
             cache=self.comparisons(worker.stop,worker.event.emit)
             try:cache.delete_for_scans(ids)

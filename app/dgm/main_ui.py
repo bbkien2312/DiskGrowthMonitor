@@ -324,7 +324,8 @@ class ColumnarTasks(TaskPanel):
             state=row['state']
             values=({'scan':'Quét','legacy':'Nhập JSONL','csv':'Nhập WizTree CSV'}[row['operation']],
                 {'complete':'Đã xong','pending':'Chưa chạy','stopped':'Đã dừng','failed':'Lỗi','interrupted':'Dang dở','running':'Đang chạy'}.get(state,state),
-                row.get('error') or ('Đã lưu nguồn đủ' if row.get('sources') else 'Quét dở chạy lại; nguồn đủ dùng tiếp'),
+                ' • '.join(filter(None,(row.get('error'),row.get('checkpoint_note'))))
+                or ('Đã lưu nguồn đủ' if row.get('sources') else 'Quét dở chạy lại; nguồn đủ dùng tiếp'),
                 local_time(row['updated']),row.get('metadata',{}).get('app_version','—'))
             for col,value in enumerate(values):
                 item=QTableWidgetItem(str(value));item.setToolTip(str(value));self.table.setItem(index,col,item)
@@ -344,8 +345,32 @@ class ColumnarTasks(TaskPanel):
     def new_scan(self):
         row=self.selected()
         if not row or row['operation']!='scan' or self.owner.workers:return
-        if QMessageBox.question(self,'Quét mới','Quét lại hiện trạng bằng phạm vi tác vụ này? Giữ mốc và điểm lưu cũ.')==QMessageBox.StandardButton.Yes:
-            args=row['arguments'];self.owner.job(lambda w:core.scan(args['name'],args['profile'],w.stop,w.event.emit),self.owner.scan_done,scan_job=True)
+        box=QMessageBox(self);box.setWindowTitle('Quét mới')
+        box.setText('Quét lại hiện trạng bằng phạm vi này. Snapshot đã lưu luôn được giữ.')
+        keep=box.addButton('Quét mới, giữ điểm cũ',QMessageBox.ButtonRole.AcceptRole)
+        replace=None
+        old=self.owner.jobs.checkpoints()
+        if len(old)==1 and old[0]['id']==row['id']:
+            replace=box.addButton('Thay điểm này nếu cần',QMessageBox.ButtonRole.ActionRole)
+            box.setInformativeText('Chỉ thay điểm cũ nếu lượt mới lỗi sau khi export đủ và tạo được bản nén đã kiểm chứng.')
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(keep);box.exec()
+        chosen=box.clickedButton()
+        if chosen is keep or replace is not None and chosen is replace:
+            args=row['arguments']
+            options={'replace_checkpoint':row['id']} if chosen is replace else {}
+            self.owner.job(lambda w:core.scan(args['name'],args['profile'],w.stop,w.event.emit,**options),self.owner.scan_done,scan_job=True)
+
+    def set_limit(self):
+        from PySide6.QtWidgets import QInputDialog
+        repo=self.owner.jobs.repo
+        value,ok=QInputDialog.getInt(self,'Giới hạn export mỗi lượt',
+            'MiB cho một lượt quét đang chạy. Điểm tiếp tục cũ không trừ vào hạn mức này.',
+            repo.limits['source_mb'],1,100000)
+        if ok:
+            cfg=load();cfg['resume_limit_mb']=value
+            cfg['columnar_limits']={**cfg.get('columnar_limits',{}),'source_mb':value}
+            save(cfg);repo.limits['source_mb']=value
 
     def details(self):
         row=self.selected()
