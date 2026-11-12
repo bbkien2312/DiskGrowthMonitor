@@ -6,12 +6,12 @@ import time
 from pathlib import Path
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal, QEvent
 from PySide6.QtGui import QColor, QFont, QPen, QShortcut, QKeySequence
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit, QPushButton, QCheckBox, QSplitter, QTreeWidget, QTreeWidgetItem, QTableView, QStyledItemDelegate, QTabBar, QStyle, QDialog, QPlainTextEdit, QDialogButtonBox
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit, QPushButton, QCheckBox, QSplitter, QTreeWidget, QTreeWidgetItem, QTableView, QStyledItemDelegate, QTabBar, QStackedWidget, QStyle, QDialog, QPlainTextEdit, QDialogButtonBox
 from .store import Store
 from .config import comparison_path_key
 from .comparison import Comparisons
 from .presentation import size, local_time, scan_label, scan_name, change_text, change_color, CHANGES, storage_delta, row_status, status_colors, snapshot_cell
-from .ui_helpers import StatusFilter, MetricCard, FittedTree, ElidingLabel, SectionLabel
+from .ui_helpers import StatusFilter, MetricCard, FittedTree, ElidingLabel, SectionLabel, CompactNote
 from .comparison_visuals import (visual,status_symbol,status_hint,gui_snapshot_cell,gui_scan_label,make_legend,
     SEMANTIC_HINT_ROLE,row_palette,gui_change_text as change_text,gui_change_color as change_color)
 
@@ -223,9 +223,10 @@ class DiskBrowser(QWidget):
         for label,value in [("Mọi loại","all"),("Thư mục","folder"),("File","file")]: self.kind.addItem(label,value)
         self.recursive=QCheckBox("Gồm thư mục con"); self.recursive.setChecked(True)
         for field in (self.kind,self.change,self.search): filters.addWidget(field,1 if field is self.search else 0)
-        self.units=QComboBox();self.units.addItem('GB (10⁹ B)',False);self.units.addItem('GiB (2³⁰ B)',True)
+        unified=getattr(self,'unified',False)
+        self.units=QComboBox();self.units.addItem('GB (10⁹ B)',False);self.units.addItem('GB (Windows)' if unified else 'GiB (2³⁰ B)',True)
         self.units.setCurrentIndex(int(bool(owner.preferences.values.get('units/binary',False))))
-        self.units.setToolTip('Chỉ đổi cách hiển thị; dữ liệu luôn lưu byte. Windows thường ghi GB nhưng tính theo GiB.')
+        self.units.setToolTip('Chỉ đổi cách hiển thị. GB (Windows) = 1.073.741.824 byte; GB (10⁹ B) = 1.000.000.000 byte.')
         filters.addWidget(self.units);self.units.currentIndexChanged.connect(self.units_changed)
         owner.button('Đối soát',self.show_reconciliation,filters)
         self.measurement=QComboBox();self.measurement.addItem('Chiếm trên đĩa','allocated');self.measurement.addItem('Kích thước file','logical')
@@ -266,18 +267,37 @@ class DiskBrowser(QWidget):
         right=QWidget(); rl=QVBoxLayout(right); rl.setContentsMargins(0,0,0,0);rl.setSpacing(3)
         self.detail_header=QWidget();self.detail_header.setObjectName('paneBar');self.detail_header.setProperty('zone','details')
         detail_header=QHBoxLayout(self.detail_header);detail_header.setContentsMargins(8,3,6,3);detail_header.setSpacing(7)
-        self.scope_label=SectionLabel('Chi tiết: Toàn phạm vi');self.scope_label.setObjectName('paneTitle');detail_header.addWidget(self.scope_label,1)
+        self.scope_label=SectionLabel('Chi tiết: Toàn phạm vi');self.scope_label.setObjectName('paneTitle')
         self.scope_label.setProperty('zone','details')
-        detail_header.addWidget(self.recursive);rl.addWidget(self.detail_header)
+        if unified:
+            self.result_tabs=QTabBar();self.result_tabs.setObjectName('resultTabs')
+            self.result_tabs.setExpanding(False)
+            self.result_tabs.addTab('Chi tiết');self.result_tabs.addTab('Tóm tắt')
+            self.result_tabs.setStyleSheet('QTabBar::tab{padding:4px 9px;border:1px solid #c2dbd0;border-radius:5px;}'
+                                          'QTabBar::tab:selected{background:#fbfffd;color:#245f4d;font-weight:600;}')
+            detail_header.addWidget(self.result_tabs)
+            self.pair_header=CompactNote();self.pair_header.setObjectName('resultPair')
+            self.pair_header.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self.pair_header.setText('Chưa so sánh hai mốc');detail_header.addWidget(self.pair_header,1)
+        else:
+            detail_header.addWidget(self.scope_label,1);detail_header.addWidget(self.recursive)
+        rl.addWidget(self.detail_header)
         self.tree_mode.ensurePolished()
-        header_height=max(38,self.tree_mode.minimumHeight()+6,self.tree_mode.sizeHint().height()+6,self.fontMetrics().height()+18)
+        header_height=max(38,self.tree_mode.minimumHeight()+6,self.tree_mode.sizeHint().height()+6,
+                          self.fontMetrics().height()+18,2*self.fontMetrics().height()+8 if unified else 0)
         for bar in (self.tree_header,self.detail_header):bar.setFixedHeight(header_height)
+        if unified:
+            self.result_stack=QStackedWidget();rl.addWidget(self.result_stack,1)
+            detail_content=QWidget();self.result_stack.addWidget(detail_content)
+            content=QVBoxLayout(detail_content);content.setContentsMargins(0,0,0,0);content.setSpacing(3)
+        else:content=rl
         sectionrow=QHBoxLayout();self.sections=QTabBar();self.sections.addTab('Chung • hai mốc');self.sections.addTab('Riêng • một mốc')
         self.sections.setObjectName('comparisonSections')
         self.sections.setTabToolTip(0,'Có bản ghi ở cả Cũ và Mới; dữ liệu chưa đủ vẫn mang trạng thái Chưa rõ')
         self.sections.setTabToolTip(1,'Chỉ một mốc: phân biệt thêm/mất thật với không quét/chưa rõ')
         self.sections.setStyleSheet('QTabBar::tab{padding:5px 9px;}')
-        sectionrow.addWidget(self.sections,1)
+        sectionrow.addWidget(self.sections,1 if not unified else 0)
+        if unified:sectionrow.addWidget(self.scope_label,1)
         self.presence=QComboBox();self.presence.addItem('Mọi mốc','all');self.presence.addItem('Cả hai','both');self.presence.addItem('Chỉ Cũ','old');self.presence.addItem('Chỉ Mới','new')
         self.presence.setMaximumWidth(105);sectionrow.addWidget(self.presence)
         self.reason=QComboBox();self.reason.addItem('Mọi lý do',None)
@@ -285,7 +305,8 @@ class DiskBrowser(QWidget):
         for key,label in REASONS.items():self.reason.addItem(label,key)
         self.reason.setMaximumWidth(145);self.reason.setMinimumWidth(90);sectionrow.addWidget(self.reason)
         self.reason.setMinimumContentsLength(8);self.reason.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        rl.addLayout(sectionrow)
+        if unified:sectionrow.addWidget(self.recursive)
+        content.addLayout(sectionrow)
         self.model=DetailModel(); self.model.need_page.connect(self.fetch_group)
         self.model.measurement=self.measurement.currentData();self.measurement.currentIndexChanged.connect(self.measurement_changed)
         self.table=QTableView();self.table.setObjectName('comparisonTable'); self.table.setModel(self.model); self.table.setAlternatingRowColors(False); self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
@@ -300,7 +321,7 @@ class DiskBrowser(QWidget):
         self.sections.currentChanged.connect(self.section_changed);self.reason.currentIndexChanged.connect(lambda *_:self.reload())
         self.presence.currentIndexChanged.connect(lambda *_:self.reload())
         self.tree_mode.currentIndexChanged.connect(self.tree_mode_changed)
-        rl.addWidget(self.table,1); self.splitter.addWidget(right)
+        content.addWidget(self.table,1); self.splitter.addWidget(right)
         layout.addWidget(self.splitter,1)
         widths=self.tree.default_widths();left.setMinimumWidth(sum(widths)+8);right.setMinimumWidth(430)
         self.splitter.setSizes(owner.preferences.values.get("splitter/scan-v3",[sum(widths)+8,850]))
@@ -309,14 +330,20 @@ class DiskBrowser(QWidget):
         self.path_user_sized=self.detail_columns_fitted
         self.table.viewport().installEventFilter(self)
         self.table.horizontalHeader().sectionResized.connect(self.detail_column_resized)
-        footer=QHBoxLayout(); self.page_label=ElidingLabel("0 mục");footer.addWidget(self.page_label,1)
-        footer.addWidget(QLabel('Mỗi lượt:'));self.page_size=QComboBox()
+        footer=QHBoxLayout()
+        if unified:
+            self.detail_paging=QWidget()
+            paging=QHBoxLayout(self.detail_paging);paging.setContentsMargins(0,0,0,0)
+            footer.addWidget(self.detail_paging,1)
+        else:paging=footer
+        self.page_label=ElidingLabel("0 mục");paging.addWidget(self.page_label,1)
+        paging.addWidget(QLabel('Mỗi lượt:'));self.page_size=QComboBox()
         for count in PAGE_SIZES:self.page_size.addItem(str(count),count)
         selected=owner.preferences.values.get('details/page-size',20)
         self.page_size.setCurrentIndex(max(0,self.page_size.findData(selected)))
-        self.model.set_batch_size(self.page_size.currentData());footer.addWidget(self.page_size)
+        self.model.set_batch_size(self.page_size.currentData());paging.addWidget(self.page_size)
         self.page_size.setToolTip('Số mục lấy trong lần tải tiếp theo, theo thứ tự của toàn bộ phạm vi đang xem. Không xóa các dòng đã mở.')
-        self.load_button=owner.button("Tải thêm 20 mục",self.load_more,footer); self.load_button.setEnabled(False)
+        self.load_button=owner.button("Tải thêm 20 mục",self.load_more,paging); self.load_button.setEnabled(False)
         self.load_button.setProperty('actionRole','compare')
         self.page_size.currentIndexChanged.connect(self.batch_changed);self.update_page_text()
         self.cancel_button=owner.button("Dừng tải",self.cancel_loading,footer);self.cancel_button.setEnabled(False)
@@ -494,6 +521,7 @@ class DiskBrowser(QWidget):
         else:self.select_scope(data["path"])
 
     def select_scope(self,path):
+        if hasattr(self,'result_tabs'):self.result_tabs.setCurrentIndex(0)
         self.root=path;self.reload()
 
     def section_changed(self,*_):
@@ -522,7 +550,7 @@ class DiskBrowser(QWidget):
         self.page_label.setText(f'Đã mở {self.model.loaded:,}/{self.model.total:,} mục • {label} {arrow} • cache RAM ≤ {self.model.cache_limit:,} dòng')
         root=self.query_options.get('root',self.root)
         scope=str(root) if root else 'Toàn phạm vi'
-        self.scope_label.setText('Chi tiết: '+scope)
+        self.scope_label.setText(('Phạm vi: ' if getattr(self,'unified',False) else 'Chi tiết: ')+scope)
 
     def stop_details(self):
         for worker in list(self.detail_jobs):worker.stop.set()
@@ -709,8 +737,9 @@ class DiskBrowser(QWidget):
             base=getattr(self,'result_caption',self.info.text().split(' • Tổng đã xác định')[0].split('\n')[0])
             unknown=summary.get('unverified_all_files',0)
             if getattr(self,'reconciliation_text',''):
-                self.info.setText(base+' • '+self.reconciliation_text.splitlines()[0])
-                self.info.setToolTip(base+'\n'+self.reconciliation_text)
+                prefix='' if getattr(self,'unified',False) else base+' • '
+                self.info.setText(prefix+self.reconciliation_text.splitlines()[0])
+                self.info.setToolTip(self.reconciliation_text if not prefix else base+'\n'+self.reconciliation_text)
             else:
                 self.info.setText(base+' • Tổng đã xác định '+change_text(summary.get('verified_delta'))+
                     (f' • {unknown:,} file chưa rõ' if unknown else '')+('\n'+disk if disk else ''))
@@ -869,7 +898,7 @@ class DiskBrowser(QWidget):
         layout=QVBoxLayout(dialog);text=QPlainTextEdit();text.setReadOnly(True)
         from .snapshot_scope import REASONS
         issue_text=lambda side:' • '.join(REASONS.get(tag,tag) for tag in set((row.get(side+'_issue') or '').split('|')) if tag) or 'Không ghi nhận vấn đề'
-        summary=getattr(self,'current_summary',{});older=summary.get('older');newer=summary.get('newer')
+        summary=getattr(self,'current_summary',None) or {};older=summary.get('older');newer=summary.get('newer')
         facts={'Trạng thái':row_status(row),'Đường dẫn':row['path'],
                'Lần quét Cũ':scan_name(older) if older else 'Mốc ban đầu','Lần quét Mới':scan_name(newer) if newer else 'Theo cặp đang chọn',
                'Số đo Cũ':snapshot_cell(row,'old'),'Số đo Mới':snapshot_cell(row,'new'),

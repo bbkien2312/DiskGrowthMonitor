@@ -1,3 +1,10 @@
+# Disk Growth Monitor 2.3.0 — Parquet + DuckDB — 12/11/2026
+
+- Thanh Chi tiết ghi rõ mã mốc, ngày giờ và tổng dung lượng ghi nhận ở Cũ và Mới.
+- Chênh lệch là một số với nhãn GB/MB/KB trong GUI; phép tính giữ nguyên byte gốc.
+- Tab Tóm tắt lấy tổng quan và top 10 thư mục tăng, giảm, thêm và mất trên toàn cặp mốc. Chỉ Cũ/Chỉ Mới không đồng nghĩa đã xác minh thêm/xóa.
+- Tải top khi mở tab, không quét lại ổ. Giữ nguyên schema Parquet, lịch sử và cấu hình khi nâng cấp.
+
 # Disk Growth Monitor 2.2.2 — Parquet + DuckDB — 12/11/2026
 
 - Ghi nhớ profile quét; nếu chưa có lựa chọn, ưu tiên profile của lịch đang bật khi xác định được duy nhất.

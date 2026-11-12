@@ -140,8 +140,8 @@ def test_cards_keep_correct_historical_disk_measurements_and_saved_overview(rest
     try:
         wait(app,window);window.compare();wait(app,window)
         ui=window.browser
-        assert '138 GiB' in ui.metrics[1].text() and '164 GB' not in ui.metrics[1].value.text()
-        assert 'Sức chứa 150 GiB' in ui.info.text() and 'Windows đã dùng 138 GiB' in ui.info.text()
+        assert ui.metrics[1].value.text()=='138,33 GB'
+        assert 'Sức chứa 150 GB' in ui.info.text() and 'Windows đã dùng 138 GB' in ui.info.text()
         assert ui.current_summary['disks_new'][0]['residual']==615059456
         saved=window.comparison_history()[0];assert json.loads(saved['summary'])['partition_valid']
         window.clear_comparison();assert not window.sessions.queries

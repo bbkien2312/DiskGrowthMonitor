@@ -49,6 +49,7 @@ class CompactNote(QLabel):
     def __init__(self):
         super().__init__();self.setObjectName('metricNote');self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
+        self.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
 
     def sizeHint(self):return QSize(0,2*self.fontMetrics().height())
     def minimumSizeHint(self):return self.sizeHint()
@@ -76,8 +77,11 @@ class CompactNote(QLabel):
     def paintEvent(self,event):
         painter=QPainter(self);painter.setPen(self.palette().color(QPalette.ColorRole.WindowText))
         line_height=self.fontMetrics().height()
-        for i,line in enumerate(self.display_lines()):
-            painter.drawText(0,i*line_height,self.width(),line_height,Qt.AlignmentFlag.AlignHCenter|Qt.AlignmentFlag.AlignVCenter,line)
+        lines=self.display_lines()
+        offset=(self.height()-len(lines)*line_height)//2 if self.alignment() & Qt.AlignmentFlag.AlignVCenter else 0
+        align=self.alignment() & Qt.AlignmentFlag.AlignHorizontal_Mask
+        for i,line in enumerate(lines):
+            painter.drawText(0,offset+i*line_height,self.width(),line_height,align|Qt.AlignmentFlag.AlignVCenter,line)
 
 
 class HelpBox(QWidget):

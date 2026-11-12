@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QLabel,QHBoxLayout,QMessageBox
 
 from .gui import Window as FeatureWindow
 from .browser_ui import DiskBrowser
+from .comparison_summary_ui import ComparisonSummaryPanel
 from .history_ui import HistoryPanel
 from .task_ui import TaskPanel
 from .columnar_gui_backend import CatalogStore,Sessions
@@ -16,6 +17,8 @@ from .config import load,save
 from . import production_core as core
 from .comparison_policy import choose_measure
 from .delta_accounting import COMPARISON_VERSION
+from .disk_measurements import display_delta,display_size,exact
+from .platform_ops import ProcessCancelled
 from .snapshot_scope import capture_time
 
 
@@ -27,6 +30,10 @@ class ColumnarBrowser(DiskBrowser):
         self._measurement_pair=None;self._forced_measurement=False;self.unified=True
         self._milestones=[];self._follow_latest=True
         super().__init__(owner)
+        self.summary_panel=ComparisonSummaryPanel();self.result_stack.addWidget(self.summary_panel)
+        self._summary_worker=None;self._summary_cache=None;self.current_summary=None
+        self.result_tabs.currentChanged.connect(self.show_result_tab)
+        self.summary_panel.retry.connect(self.refresh_summary_panel)
         self.measurement_notice=QLabel();self.measurement_notice.setWordWrap(True)
         self.measurement_notice.setObjectName('measurementNotice')
         self.measurement_notice.setStyleSheet('background:#fff5da;color:#715214;border:1px solid #ead6a3;border-radius:4px;padding:3px 7px;')
@@ -34,11 +41,6 @@ class ColumnarBrowser(DiskBrowser):
         self.layout().insertWidget(self.layout().indexOf(self.info),self.measurement_notice)
         self.sections.hide()
         self.model.header_labels[4]='± File'
-        controls=self.presence.parentWidget().layout()
-        for i in range(controls.count()):
-            row=controls.itemAt(i).layout()
-            if row is not None and row.indexOf(self.presence)>=0:
-                row.addStretch(1);break
         self.presence.setToolTip('Lọc hiện diện: Cả hai / Chỉ Cũ / Chỉ Mới. Không thay đổi tổng cây hoặc thống kê.')
         self.reason.setToolTip('Lý do chưa xác minh: khác phạm vi, loại trừ, lỗi đọc hoặc dữ liệu thiếu. Không đồng nghĩa đã xóa.')
         for column,hint in {0:'TT: trạng thái; ↑ tăng, ↓ giảm, + thêm, − mất, ? chưa rõ, ≈ chưa quy rõ nguyên nhân.',
@@ -69,8 +71,74 @@ class ColumnarBrowser(DiskBrowser):
         self.owner.start_comparison_progress()
 
     def compare(self):
+        self.current_summary=None;self.reset_summary_panel('Đang chuẩn bị cặp mốc…' if self.newer.currentData() else 'Chưa có mốc hợp lệ.')
         super().compare()
         self.model.private=False
+
+    def show_result_tab(self,index):
+        self.result_stack.setCurrentIndex(index)
+        self.detail_paging.setVisible(index==0)
+        if index==1:self.refresh_summary_panel()
+
+    def reset_summary_panel(self,message):
+        if self._summary_worker:self._summary_worker.stop.set()
+        self._summary_worker=None;self._summary_cache=None
+        self.pair_header.setText(message)
+        self.summary_panel.overview.hide()
+        self.summary_panel.verticalScrollBar().setValue(0)
+        self.summary_panel.set_state(message)
+
+    def refresh_summary_panel(self):
+        if self.result_tabs.currentIndex()!=1:return
+        summary=self.current_summary
+        if not summary:return
+        mode=self.measurement.currentData();baseline=not summary.get('older')
+        counts={}
+        for row in summary.get('counts',[]):
+            counts[row['change']]=counts.get(row['change'],0)+row['count']
+        count=lambda *keys:sum(counts.get(key,0) for key in keys)
+        title='Cấp phát file' if mode=='allocated' else 'Kích thước file'
+        disk_lines=[f"{row['root']} · ± Ổ {self.delta_text(row['used_delta'])}"
+                    for row in summary.get('disk_changes',[]) if row.get('used_delta') is not None]
+        if baseline:
+            details=f"Mốc ban đầu · {self.metrics[3].value.text()} · chưa tính tăng/giảm."
+        else:
+            details=(f"{title} ghi nhận: {self.metrics[2].value.text()} · {self.metrics[3].value.text()}\n"
+                     f"{count('grown'):,} tăng · {count('shrunk'):,} giảm · {count('new'):,} thêm · {count('missing'):,} mất"
+                     f" · {count('not_scanned','unknown','partial'):,} không quét/chưa rõ.")
+            details+='\n'+('  |  '.join(disk_lines) if disk_lines else 'Chưa có số đo Windows đủ để tính ± Ổ.')
+            if summary.get('scope_compatible') is False:details+='\nKhác phạm vi quét: ± ghi nhận có thể gồm phần chỉ được quét ở một mốc.'
+        self.summary_panel.overview.setText(details);self.summary_panel.overview.show()
+        if baseline or not self.pair_id:
+            self.summary_panel.set_state('Chọn thêm mốc Cũ để xếp hạng thay đổi.' if baseline else
+                                         'Bấm So sánh để nạp top thư mục của cặp đã chọn.')
+            return
+        key=self.pair_id,mode
+        unit='binary' if self.units.currentData() else 'decimal'
+        if self._summary_cache and self._summary_cache[0]==key:
+            self.summary_panel.render(self._summary_cache[1],unit,self.delta_text)
+            return
+        if self._summary_worker:
+            if self._summary_worker.summary_key==key and not self._summary_worker.stop.is_set():return
+            self._summary_worker.stop.set()
+        self.summary_panel.set_state('Đang lấy top thư mục từ phiên so sánh…')
+        def fetch(worker):
+            handle=self.comparisons(worker.stop)
+            try:return handle.folder_highlights(*key)
+            except ProcessCancelled:return None
+            finally:handle.close()
+        def done(groups):
+            if groups is None or self._summary_worker is not worker or key!=(self.pair_id,self.measurement.currentData()):return
+            self._summary_cache=(key,groups);self.refresh_summary_panel()
+        def finished():
+            if self._summary_worker is not worker:return
+            self._summary_worker=None
+            if not self._summary_cache or self._summary_cache[0]!=key:
+                if key==(self.pair_id,self.measurement.currentData()):
+                    self.summary_panel.set_state('Chưa tải xong top thư mục.',retry=True)
+        worker=self.owner.job(fetch,done)
+        worker.summary_key=key;self._summary_worker=worker;self.track(worker)
+        worker.finished.connect(finished)
 
     def configure_measurement(self,newer,older=None):
         pair=(older['id'] if older else None,newer['id'])
@@ -94,6 +162,8 @@ class ColumnarBrowser(DiskBrowser):
 
     def measurement_changed(self,*args):
         self._forced_measurement=True
+        if self._summary_worker:self._summary_worker.stop.set()
+        if self.result_tabs.currentIndex()==1:self.summary_panel.set_state('Đang đổi số đo cho cặp mốc…')
         pair=getattr(self,'ids',None) if self.pair_id else self.selected_tree_ids()
         if pair:
             older,newer=pair
@@ -150,6 +220,7 @@ class ColumnarBrowser(DiskBrowser):
         """Never display the old pair's result under a newly selected pair."""
         self.generation+=1;self.stop_details()
         self.ids=(None,None);self.pair_id=None;self.current_summary=None;self.result_caption=''
+        self.reset_summary_panel('Đã chọn mốc · Bấm So sánh')
         self.model.reset();self.owner.rows=[];self.load_button.setEnabled(False)
         self.pending_open=None
         if self.tree_mode.currentData()=='selected':
@@ -197,7 +268,7 @@ class ColumnarBrowser(DiskBrowser):
                 if summary.get('disks_new') is not None:
                     self.configure_measurement(summary['newer'],summary.get('older'))
                     self.render_metrics(summary)
-                    self.info.setText('Tóm tắt đã lưu • '+self.result_caption+' • Bấm So sánh để nạp cây và chi tiết.');return
+                    self.info.setText('Tóm tắt đã lưu • Bấm So sánh để nạp cây và chi tiết.');return
         self.info.setText('Đã nạp danh sách mốc • Bấm So sánh để đọc Parquet; không dựng lại chỉ mục lúc mở app.')
 
     def view_summary(self,summary):
@@ -222,15 +293,25 @@ class ColumnarBrowser(DiskBrowser):
         from .presentation import size,local_time
         from .comparison_visuals import gui_change_color
         mode=self.measurement.currentData();baseline=not summary.get('older')
+        unit='binary' if self.units.currentData() else 'decimal'
+        precise_size=lambda value:display_size(value,unit,precise=True)
         title='Cấp phát file' if mode=='allocated' else 'Kích thước file'
+        captions=[];totals_tips=[]
+        from zoneinfo import ZoneInfo
         for index,side in ((0,'old'),(1,'new')):
             totals=summary.get('full_'+side+'_totals') or {}
             value=totals.get(mode);unknown=totals.get(mode+'_unknown_files',0)
-            text='—' if index==0 and baseline else size(value) if not unknown else 'Chưa rõ' if unknown>=totals.get('files',0) else '≥ '+size(totals.get(mode+'_known'))
+            text='—' if index==0 and baseline else precise_size(value) if not unknown else 'Chưa rõ' if unknown>=totals.get('files',0) else '≥ '+precise_size(totals.get(mode+'_known'))
             self.metrics[index].set_single('CŨ' if index==0 else 'MỚI',text,
                 'Chưa có mốc' if index==0 and baseline else title+(f' · {unknown:,} thiếu số đo' if unknown else ' · toàn phạm vi'))
             self.metrics[index].setToolTip(title+' của tất cả file tại mốc; không cộng chồng folder.\nByte gốc: '+str(value)+
                 '\nLogical không phải Windows đã dùng. ≥ là phần đã đo, không phải tổng đầy đủ.')
+            milestone=summary.get('older' if index==0 else 'newer')
+            if milestone:
+                when=capture_time(milestone).astimezone(ZoneInfo('Asia/Ho_Chi_Minh')).strftime('%d/%m %H:%M')
+                captions.append(f"{'Cũ' if index==0 else 'Mới'} #{milestone['id']} · {when} · {text}")
+                totals_tips.append(local_time(milestone['started'])+' · '+exact(value))
+            else:captions.append('Mốc ban đầu')
         delta=summary.get('observed_disk_delta' if mode=='allocated' else 'observed_delta')
         self.metrics[2].set_single('± GHI NHẬN','—' if baseline else self.delta_text(delta),
             'Mốc ban đầu' if baseline else 'Theo byte gốc · không trừ số đã rút gọn')
@@ -243,11 +324,9 @@ class ColumnarBrowser(DiskBrowser):
         self.metrics[3].setToolTip('Số đường dẫn trong hợp của hai snapshot; TM = thư mục. Không chỉ các dòng đã tải.\n'
             'Cây và tổng quan không đổi khi lọc, sắp xếp hoặc tải thêm.')
         a,b=summary.get('older'),summary.get('newer')
-        from zoneinfo import ZoneInfo
-        def milestone(row):
-            when=capture_time(row).astimezone(ZoneInfo('Asia/Ho_Chi_Minh')).strftime('%d/%m %H:%M')
-            return f"#{row['id']} ({when})"
-        self.result_caption=('Cũ '+milestone(a)+' → ' if a else 'Mốc đầu → ')+'Mới '+milestone(b)
+        self.result_caption=' → '.join(captions)
+        self.pair_header.setText(' →\n'.join(captions))
+        self.pair_header.setToolTip(self.result_caption+'\n'+title+' tại từng mốc (không phải Windows đã dùng):\n'+'\n'.join(totals_tips))
         lines=[]
         for change in summary.get('disk_changes',[]):
             if not baseline:lines.append(f"{change['root']} · ± Ổ {self.delta_text(change['used_delta'])} · ± Cấp phát {self.delta_text(change['files_delta'])} · Còn lại {self.delta_text(change['unassigned_delta'])}")
@@ -263,14 +342,14 @@ class ColumnarBrowser(DiskBrowser):
         lines.append('Logical là kích thước theo đường dẫn, không phải Windows đã dùng. Tổng chỉ cộng file, không cộng chồng folder.\n'
                      'Phần chưa quy vào file không được gán thành file ≤10 MB hoặc kết luận tăng/giảm.')
         self.reconciliation_text='\n'.join(lines)+('\nCũ: '+local_time(a['started']) if a else '')+'\nMới: '+local_time(b['started'])
-        self.reconciliation_label.setText(self.result_caption+' • '+lines[0].splitlines()[0])
+        self.reconciliation_label.setText(lines[0].splitlines()[0])
         self.reconciliation_label.setToolTip(self.reconciliation_text)
         self.owner.status_panel.finish_results(summary,self.measurement.currentData())
+        self.refresh_summary_panel()
 
     def delta_text(self,value):
         from .comparison_visuals import gui_change_text
-        from .disk_measurements import compound_delta
-        return gui_change_text(value) if value is None else compound_delta(value,'binary' if self.units.currentData() else 'decimal')
+        return gui_change_text(value) if value is None else display_delta(value,'binary' if self.units.currentData() else 'decimal')
 
     def show_reconciliation(self):
         summary=getattr(self,'current_summary',None)
@@ -286,6 +365,7 @@ class ColumnarBrowser(DiskBrowser):
         super().cache_cleared()
         self.tree_generation+=1;self.tree.clear();self.tree_ids=None;self.tree_pair=None
         self.current_summary=None
+        self.reset_summary_panel('Cache đã xóa · Bấm So sánh')
         for card in self.metrics:card.setText('—')
 
 
@@ -501,8 +581,7 @@ class MainWindow(FeatureWindow):
         self.comparison_store=self.sessions.handle
         self.comparison_history=self.sessions.history
         from .presentation import set_size_formatter
-        from .disk_measurements import size
-        set_size_formatter(size)
+        set_size_formatter(display_size)
         super().__init__()
         self.threshold.valueChanged.connect(lambda *_:self.browser.reload() if self.browser.pair_id else None)
 

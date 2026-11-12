@@ -491,14 +491,62 @@ class Comparison:
                     'sort_scope': root or 'Toàn bộ snapshot', 'summary': self._summary, **policy,
                     'minimum_note': 'Giữ mục chưa rõ số đo; không coi số đo thiếu là 0 B' if minimum else ''}
 
+    def _scope_root_keys(self):
+        keys = {self.scope_new.keys.key(path) for path in self.new['scope']['roots']}
+        if self.old:
+            keys.update(self.scope_old.keys.key(path) for path in self.old['scope']['roots'])
+        return sorted(keys)
+
+    def folder_highlights(self, *, measure='allocated', limit=10, stop=None):
+        """Rank whole recorded branches, independently of the detail page/filters."""
+        if not 1 <= limit <= 10:
+            raise ValueError('Tóm tắt hỗ trợ từ 1 đến 10 thư mục mỗi nhóm')
+        groups = {key: [] for key in ('grown', 'shrunk', 'new', 'missing')}
+        if not self.old:
+            return groups
+        measure = choose_measure(self.new, self.old, measure)['measurement']
+        before, after, unknown = ('allocated_before', 'allocated_after', 'unknown_disk_files') if measure == 'allocated' else ('"before"', '"after"', 'unknown_files')
+        roots = self._scope_root_keys()
+        # Match display_result's observed byte accounting. Classify one-sided
+        # folders by actual presence, keeping the original evidence status:
+        # the rolled-up view can call a verified new folder "grown".
+        def top(group):
+            return (f"(SELECT * FROM candidates WHERE bucket='{group}' "
+                    "ORDER BY abs(delta::HUGEINT) DESC NULLS LAST,path_key,item_id LIMIT ?)")
+        choices = ' UNION ALL '.join(top(group) for group in groups)
+        with self.session.operation(stop):
+            rows = self.session.rows(f'''WITH measured AS (
+                SELECT c.item_id,c.path_key,c.old_row,c.new_row,c.old_kind,c.new_kind,c.presence,c.change,c.reason,
+                    c.{before} AS "before",c.{after} AS "after",
+                    CASE WHEN (c.old_row IS NOT NULL AND c.{before} IS NULL)
+                           OR (c.new_row IS NOT NULL AND c.{after} IS NULL) THEN NULL
+                         ELSE coalesce(c.{after},0)-coalesce(c.{before},0) END delta,
+                    coalesce(f.{unknown},0) unknown_files
+                FROM comparison c LEFT JOIN folder_parts f USING(path_key)
+                WHERE c.is_folder AND NOT list_contains(?::VARCHAR[],c.path_key)),
+            candidates AS MATERIALIZED (
+                SELECT *,CASE WHEN presence='new' THEN 'new'
+                              WHEN presence='old' THEN 'missing'
+                              WHEN old_kind='folder' AND new_kind='folder'
+                                  THEN CASE WHEN delta>0 THEN 'grown' WHEN delta<0 THEN 'shrunk' END END bucket
+                FROM measured),
+            chosen AS ({choices})
+            SELECT c.*,coalesce(n.path,o.path) path FROM chosen c
+            LEFT JOIN new_source n ON n.row_id=c.new_row
+            LEFT JOIN old_source o ON o.row_id=c.old_row
+            ORDER BY abs(c.delta::HUGEINT) DESC NULLS LAST,c.path_key,c.item_id''', [roots, *([limit] * len(groups))])
+        for row in rows:
+            tags = set(row['reason'].split('|'))
+            row['reason_text'] = ' • '.join(text for tag, text in REASONS.items() if tag in tags)
+            groups[row['bucket']].append(row)
+        return groups
+
     def tree(self, root=None, *, limit=100, cursor=None, measure='allocated', stop=None):
         if root is not None:
             return self.page(root=root, recursive=False, folders_only=True, sort='new',
                              limit=limit, cursor=cursor, measure=measure, stop=stop)
         # A tree root is a captured scope root, not an extra copy of every folder.
-        keys = {self.scope_new.keys.key(path) for path in self.new['scope']['roots']}
-        if self.old:
-            keys.update(self.scope_old.keys.key(path) for path in self.old['scope']['roots'])
+        keys = self._scope_root_keys()
         result = self.page(folders_only=True, sort='path', direction='asc', limit=1000, root_keys=sorted(keys), measure=measure, stop=stop)
         result['cursor'] = None
         result['total'] = len(result['rows'])

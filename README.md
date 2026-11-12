@@ -1,5 +1,11 @@
 # Disk Growth Monitor
 
+## 2.3.0 — Tóm tắt so sánh
+
+Thanh **Chi tiết** hiển thị mã mốc, ngày giờ và tổng dung lượng ghi nhận ở Cũ → Mới. Chênh lệch hiển thị bằng một số, ví dụ `↓ −6,68 GB`; chế độ GB Windows giữ cơ số 1.024 và phép tính vẫn dùng byte gốc.
+
+Tab **Tóm tắt** lấy tối đa 10 thư mục mỗi nhóm tăng, giảm, thêm và mất từ toàn bộ cặp mốc, không phụ thuộc bộ lọc hay trang đang xem. Mục chỉ xuất hiện ở một mốc mà chưa đủ bằng chứng được ghi **Chỉ Cũ** hoặc **Chỉ Mới**. Tab tải theo yêu cầu từ phiên so sánh, không quét lại ổ hay đổi định dạng lịch sử.
+
 ## 2.2.2 — Mốc, profile và thông báo cập nhật
 
 Profile quét được ghi nhớ. Nếu chưa có lựa chọn, app ưu tiên profile của lịch duy nhất đang bật. Danh sách mốc Parquet xếp theo thời điểm quét, không ưu tiên profile quét; Mới tự theo lượt mới nhất, chọn mốc cũ hơn để ghim. Cũ chỉ chứa các mốc trước Mới. Thay cặp không giữ lại tổng của cặp trước; tổng ghi rõ số mốc/ngày và giữ phần MiB/MB của chênh lệch.

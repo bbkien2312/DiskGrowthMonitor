@@ -53,6 +53,33 @@ def compound_delta(value, unit='binary'):
     return f'{sign}{whole:,} {high}'+(f' {remainder:,} {low}' if remainder else '')
 
 
+def display_size(value, unit='binary', *, precise=False):
+    """GUI labels match Windows; the selected byte scale is unchanged."""
+    if not precise or value is None:
+        return size(value, unit).replace('iB', 'B')
+    base = {'binary': 1024, 'decimal': 1000}[unit]
+    labels = ('B', 'KB', 'MB', 'GB', 'TB', 'PB')
+    amount = abs(Decimal(value))
+    index = 0
+    while index < len(labels) - 1:
+        rounded = amount.quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+        if rounded < base:
+            break
+        amount /= base
+        index += 1
+    number = format(amount.quantize(Decimal('.01'), rounding=ROUND_HALF_UP), 'f')
+    number = number.rstrip('0').rstrip('.').replace('.', ',')
+    return ('−' if value < 0 else '') + f'{number} {labels[index]}'
+
+
+def display_delta(value, unit='binary'):
+    if value is None:
+        return '?'
+    if not value:
+        return '= 0 B'
+    return ('↑ +' if value > 0 else '↓ −') + display_size(abs(value), unit, precise=True)
+
+
 def exact(value):
     return 'Chưa rõ dung lượng; không coi là 0 byte' if value is None else f'{value:,} byte'
 

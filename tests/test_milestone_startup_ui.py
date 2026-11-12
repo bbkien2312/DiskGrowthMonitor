@@ -113,11 +113,80 @@ def test_saved_byte_shapes_for_november_pairs_render_distinct_results(gui_factor
         assert summary['observed_disk_delta']==observed and summary['accounting_valid']
         assert summary['disk_changes'][0]['used_delta']==specs[3][2]-specs[index][2]
         assert ui.metrics[2].value.text()==ui.delta_text(observed)
-        assert 'MiB' in ui.metrics[2].value.text() and '11/11 09:03' in ui.result_caption
+        assert ui.metrics[2].value.text().endswith(' GB') and '11/11 09:03' in ui.pair_header.text()
+        assert ui.metrics[0].value.text() in ui.pair_header.text()
+        assert ui.metrics[1].value.text() in ui.pair_header.text()
+        assert ui.pair_header.parentWidget() is ui.result_tabs.parentWidget()
+        assert '11/11 09:03' not in ui.info.text()
+        ui.splitter.setSizes([sum(ui.splitter.sizes())-430,430])
+        app.processEvents()
+        caption=' '.join(ui.pair_header.display_lines())
+        assert all(ui.metrics[i].value.text() in caption for i in (0,1))
+        assert all(f"#{r['id']}" in caption for r in (rows[index],rows[3]))
         assert ui.tree.topLevelItemCount()==1
         assert ui.tree.topLevelItem(0).text(2)==ui.delta_text(observed)
         assert ui.delta_text(observed) in w.status.text()
     assert not errors
+
+
+def test_summary_tab_is_lazy_and_preserves_detail_rows(gui_factory,monkeypatch):
+    from dgm.columnar_gui_backend import Handle
+    app,open_window,errors=gui_factory
+    repo=core.repository()
+    calls=[]
+    original=Handle.folder_highlights
+    def record(self,pair,measure):
+        calls.append((pair,measure))
+        return original(self,pair,measure)
+    monkeypatch.setattr(Handle,'folder_highlights',record)
+    def snapshot(day,grown,new_folder):
+        meta=metadata_for(['C:\\'],profile='MrK',mft=True,engine='wiztree',
+            started=f'2026-11-{day:02}T09:03:00+07:00',volume_map={'c:':'volume-A'},
+            coverage={'source':'export','unknown_roots':[],'error_regions':[]})
+        folder='new' if new_folder else 'old'
+        return import_entries([entry('C:\\',0,0,kind='folder'),
+            entry('C:\\growth',0,0,kind='folder'),entry('C:\\growth\\a',grown,grown*2),
+            entry(f'C:\\{folder}',0,0,kind='folder'),entry(f'C:\\{folder}\\b',500,1000)],
+            meta,repository=repo)
+    old=snapshot(10,100,False);new=snapshot(11,400,True)
+    w=open_window();ui=w.browser
+    w.threshold.setValue(0)
+    ui.compare();settle(app,lambda:not w.workers)
+    assert calls==[]
+    # No highlight depends on this folder filter or threshold.
+    ui.select_scope('C:\\growth');settle(app,lambda:not w.workers)
+    detail=(ui.model.loaded,ui.model.total,ui.root)
+    assert detail[:2]==(1,1)
+    ui.result_tabs.setCurrentIndex(1)
+    settle(app,lambda:not w.workers)
+    assert calls==[((old['id'],new['id']),'allocated')]
+    assert ui.summary_panel.isVisible() and not ui.table.isVisible()
+    assert not ui.detail_paging.isVisible()
+    groups=ui.summary_panel.groups
+    assert '600 B' in groups['grown'][1].topLevelItem(0).text(1)
+    assert 'C:\\new' in groups['new'][1].topLevelItem(0).text(0)
+    assert groups['missing'][1].topLevelItem(0).text(2)=='Đã xác minh'
+    assert 'Cấp phát file' in ui.summary_panel.overview.text()
+    app.processEvents()
+    for key in ('grown','new','missing'):
+        table=groups[key][1]
+        assert table.viewport().rect().contains(table.visualItemRect(table.topLevelItem(0)))
+    ui.result_tabs.setCurrentIndex(0)
+    assert ui.table.isVisible() and ui.detail_paging.isVisible()
+    assert (ui.model.loaded,ui.model.total,ui.root)==detail
+    ui.result_tabs.setCurrentIndex(1)
+    assert len(calls)==1
+    ui.units.setCurrentIndex(0);settle(app,lambda:not w.workers)
+    assert len(calls)==1
+    ui.measurement.setCurrentIndex(ui.measurement.findData('logical'))
+    settle(app,lambda:not w.workers)
+    assert len(calls)==2 and calls[-1][-1]=='logical'
+    assert '300 B' in groups['grown'][1].topLevelItem(0).text(1)
+    ui.older.setCurrentIndex(ui.older.findData(0))
+    assert not groups['grown'][1].topLevelItemCount()
+    ui.compare();settle(app,lambda:not w.workers)
+    assert 'Mốc ban đầu' in ui.summary_panel.overview.text()
+    assert len(calls)==2 and not errors
 
 
 def test_prior_uses_real_time_and_excludes_equal_timestamp(gui_factory):

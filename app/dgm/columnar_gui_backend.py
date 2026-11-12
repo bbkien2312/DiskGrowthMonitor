@@ -165,6 +165,9 @@ class Handle:
             return key
     def summary(self,pair):
         with self.pool.operation(self.stop):return summary_row(self._query(pair).summary())
+    def folder_highlights(self,pair,measure):
+        with self.pool.operation(self.stop):
+            return self._query(pair).folder_highlights(measure=measure,stop=self.stop)
     def page(self,pair,**options):
         changes=options.get('changes','all')
         if isinstance(changes,(list,tuple)):
