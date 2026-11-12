@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import time
-from PySide6.QtCore import QTimer,Qt
+from PySide6.QtCore import QTimer,Qt,QSignalBlocker
 from PySide6.QtWidgets import QLabel,QHBoxLayout,QMessageBox
 
 from .gui import Window as FeatureWindow
@@ -16,12 +16,16 @@ from .config import load,save
 from . import production_core as core
 from .comparison_policy import choose_measure
 from .delta_accounting import COMPARISON_VERSION
+from .snapshot_scope import capture_time
 
 
 class ColumnarBrowser(DiskBrowser):
     """Original widgets/model, with backend-specific data/presentation only."""
+    independent_scan_profile=True
+
     def __init__(self,owner):
         self._measurement_pair=None;self._forced_measurement=False;self.unified=True
+        self._milestones=[];self._follow_latest=True
         super().__init__(owner)
         self.measurement_notice=QLabel();self.measurement_notice.setWordWrap(True)
         self.measurement_notice.setObjectName('measurementNotice')
@@ -52,16 +56,19 @@ class ColumnarBrowser(DiskBrowser):
         from .columnar_compare import REASONS
         if self.reason.findData('volume')<0:self.reason.addItem(REASONS['volume'],'volume')
         self.tree.headerItem().setToolTip(1,'Chiếm trên đĩa tại mốc mới của cặp đang dùng cho cây')
+        self.newer.setToolTip('Mốc mới nhất đứng đầu và tự theo lượt mới. Chọn một mốc cũ hơn để ghim. Danh sách không phụ thuộc profile quét.')
+        self.older.setToolTip('Chỉ liệt kê mốc trước Mới. Tự động lấy mốc trước cùng profile của lượt Mới.')
+        self.newer.currentIndexChanged.connect(self.newer_changed)
+        self.older.currentIndexChanged.connect(self.clear_selected_result)
 
     def options(self):return dict(super().options(),measure=self.measurement.currentData(),section='all')
 
-    def compare(self):
-        pair=self.selected_tree_ids()
-        if pair:
-            old,new=pair
-            self.configure_measurement(self.owner.repo.get(new),self.owner.repo.get(old) if old else None)
+    def before_compare(self,older,newer):
+        self.configure_measurement(newer,older)
         self.auto_baseline=False;self.model.private=False
-        if self.newer.currentData():self.owner.start_comparison_progress()
+        self.owner.start_comparison_progress()
+
+    def compare(self):
         super().compare()
         self.model.private=False
 
@@ -87,7 +94,7 @@ class ColumnarBrowser(DiskBrowser):
 
     def measurement_changed(self,*args):
         self._forced_measurement=True
-        pair=getattr(self,'ids',None) or self.selected_tree_ids()
+        pair=getattr(self,'ids',None) if self.pair_id else self.selected_tree_ids()
         if pair:
             older,newer=pair
             self.measurement_policy=choose_measure(self.owner.repo.get(newer),self.owner.repo.get(older) if older else None,self.measurement.currentData())
@@ -114,9 +121,55 @@ class ColumnarBrowser(DiskBrowser):
             ' tại mốc mới của cặp dùng cho cây.\n'+policy['measurement_note'])
 
     def snapshot_rows(self,rows,profile):
-        # Keep this profile's latest first, but include adopted/imported mốc
-        # whose source profile has no saved scanning configuration in this app.
-        return [r for r in rows if r['profile']==profile]+[r for r in rows if r['profile']!=profile]
+        self._milestones=rows
+        return rows
+
+    def milestone_order(self,row):return capture_time(row),row['id']
+    def keep_newer(self,changed):return not self._follow_latest
+    def keep_older(self,changed):return True
+
+    def older_candidates(self,rows):
+        newer=next((r for r in rows if r['id']==self.newer.currentData()),None)
+        return [r for r in rows if capture_time(r)<capture_time(newer)] if newer else []
+
+    def refresh(self,profile,*,load_tree=True):
+        before=self.older.currentData(),self.newer.currentData()
+        with QSignalBlocker(self.newer),QSignalBlocker(self.older):
+            super().refresh(profile,load_tree=load_tree)
+        after=self.older.currentData(),self.newer.currentData()
+        if self.newer.currentIndex()<=0:self._follow_latest=True
+        if before[1] and before!=after:self.clear_selected_result()
+
+    def newer_changed(self,*_):
+        self._follow_latest=self.newer.currentIndex()<=0
+        with QSignalBlocker(self.older):
+            self.populate_older(self._milestones,self.older.currentData())
+        self.clear_selected_result()
+
+    def clear_selected_result(self,*_):
+        """Never display the old pair's result under a newly selected pair."""
+        self.generation+=1;self.stop_details()
+        self.ids=(None,None);self.pair_id=None;self.current_summary=None;self.result_caption=''
+        self.model.reset();self.owner.rows=[];self.load_button.setEnabled(False)
+        self.pending_open=None
+        if self.tree_mode.currentData()=='selected':
+            for worker in list(self.loading_workers):worker.stop.set()
+            self.tree_generation+=1;self.tree.clear();self.tree_ids=None;self.tree_pair=None
+        self.update_page_text()
+        self.measurement_notice.hide()
+        for metric,label in zip(self.metrics,('CŨ','MỚI','± GHI NHẬN','PHẠM VI')):
+            metric.set_single(label,'—','Chưa so sánh cặp đã chọn')
+            metric.setToolTip('')
+        self.reconciliation_text=''
+        self.reconciliation_label.setText('Đã đổi mốc · Bấm So sánh để nạp kết quả')
+        self.reconciliation_label.setToolTip('')
+        self.info.setText('Đã chọn cặp mới. Bấm So sánh để xem kết quả của đúng hai mốc.')
+        self.info.setToolTip('')
+        self.owner.status_panel.clear_comparison()
+        if self.owner.scan_worker is None and not self.owner._scan_pipeline:
+            self.owner.status.setText('Đã đổi mốc · chờ So sánh')
+            self.owner.scan_progress.setValue(0)
+            self.owner.scan_progress.setFormat('Chờ so sánh')
 
     def add_node(self,row,parent=None):
         super().add_node(row,parent)
@@ -124,9 +177,12 @@ class ColumnarBrowser(DiskBrowser):
         from .disk_measurements import exact
         disk=self.tree_measurement()=='allocated'
         value=row.get('allocated_after' if disk else 'after')
+        difference=row.get('allocated_delta' if disk else 'delta')
+        if difference is not None and not row.get('baseline'):
+            item.setText(2,self.delta_text(difference))
         item.setToolTip(1,('Chiếm trên đĩa' if disk else 'Kích thước file')+' toàn nhánh tại mốc mới: '+exact(value)+
             '\nGồm mọi file ghi nhận trong nhánh; không cộng folder thêm lần nữa.')
-        item.setToolTip(2,'± = tổng nhánh Mới − Cũ, gồm cả file chỉ có ở một mốc.\n'+
+        item.setToolTip(2,'± = tổng nhánh Mới − Cũ, gồm cả file chỉ có ở một mốc.\n'+exact(difference)+'\n'+
             ('Có phần chưa xác minh nguyên nhân; không khẳng định mọi mục vắng là đã xóa.' if row.get('attribution_uncertain') else 'Tính theo byte gốc, không theo các số đã làm tròn.'))
 
     def units_changed(self):
@@ -164,7 +220,7 @@ class ColumnarBrowser(DiskBrowser):
             self.measurement_notice.setText(self.measurement_notice.text()+' Khác phạm vi/loại trừ: ± ghi nhận không đồng nghĩa dung lượng ổ tăng/giảm do file. Xem ± Ổ riêng.')
             self.measurement_notice.show()
         from .presentation import size,local_time
-        from .comparison_visuals import gui_change_text,gui_change_color
+        from .comparison_visuals import gui_change_color
         mode=self.measurement.currentData();baseline=not summary.get('older')
         title='Cấp phát file' if mode=='allocated' else 'Kích thước file'
         for index,side in ((0,'old'),(1,'new')):
@@ -176,7 +232,7 @@ class ColumnarBrowser(DiskBrowser):
             self.metrics[index].setToolTip(title+' của tất cả file tại mốc; không cộng chồng folder.\nByte gốc: '+str(value)+
                 '\nLogical không phải Windows đã dùng. ≥ là phần đã đo, không phải tổng đầy đủ.')
         delta=summary.get('observed_disk_delta' if mode=='allocated' else 'observed_delta')
-        self.metrics[2].set_single('± GHI NHẬN','—' if baseline else gui_change_text(delta),
+        self.metrics[2].set_single('± GHI NHẬN','—' if baseline else self.delta_text(delta),
             'Mốc ban đầu' if baseline else 'Theo byte gốc · không trừ số đã rút gọn')
         self.metrics[2].value.setStyleSheet('color:'+gui_change_color(delta)+';')
         self.metrics[2].setToolTip('Hiệu tổng số đo hai snapshot, gồm cả đường dẫn chỉ Cũ/Mới.\n'
@@ -187,10 +243,14 @@ class ColumnarBrowser(DiskBrowser):
         self.metrics[3].setToolTip('Số đường dẫn trong hợp của hai snapshot; TM = thư mục. Không chỉ các dòng đã tải.\n'
             'Cây và tổng quan không đổi khi lọc, sắp xếp hoặc tải thêm.')
         a,b=summary.get('older'),summary.get('newer')
-        self.result_caption=('Cũ #'+str(a['id'])+' → ' if a else 'Mốc đầu → ')+'Mới #'+str(b['id'])
+        from zoneinfo import ZoneInfo
+        def milestone(row):
+            when=capture_time(row).astimezone(ZoneInfo('Asia/Ho_Chi_Minh')).strftime('%d/%m %H:%M')
+            return f"#{row['id']} ({when})"
+        self.result_caption=('Cũ '+milestone(a)+' → ' if a else 'Mốc đầu → ')+'Mới '+milestone(b)
         lines=[]
         for change in summary.get('disk_changes',[]):
-            if not baseline:lines.append(f"{change['root']} · ± Ổ {gui_change_text(change['used_delta'])} · ± Cấp phát {gui_change_text(change['files_delta'])} · Còn lại {gui_change_text(change['unassigned_delta'])}")
+            if not baseline:lines.append(f"{change['root']} · ± Ổ {self.delta_text(change['used_delta'])} · ± Cấp phát {self.delta_text(change['files_delta'])} · Còn lại {self.delta_text(change['unassigned_delta'])}")
         for row in summary.get('disks_new',[]):
             valid=row['valid']
             line=(f"{row['root']} · Sức chứa {size(row.get('capacity') if valid else None)} · "
@@ -206,6 +266,11 @@ class ColumnarBrowser(DiskBrowser):
         self.reconciliation_label.setText(self.result_caption+' • '+lines[0].splitlines()[0])
         self.reconciliation_label.setToolTip(self.reconciliation_text)
         self.owner.status_panel.finish_results(summary,self.measurement.currentData())
+
+    def delta_text(self,value):
+        from .comparison_visuals import gui_change_text
+        from .disk_measurements import compound_delta
+        return gui_change_text(value) if value is None else compound_delta(value,'binary' if self.units.currentData() else 'decimal')
 
     def show_reconciliation(self):
         summary=getattr(self,'current_summary',None)
@@ -228,7 +293,7 @@ class ColumnarHistory(HistoryPanel):
     """Keep the original history tables, cards, selections and details."""
     def __init__(self,owner):
         super().__init__(owner)
-        for table,labels in ((self.scans,('Lần','Lúc','Phạm vi','Tool','Lưu','File / TM','File / Đĩa','Giây','Δ Log','Độ phủ','Chuẩn','Tùy chọn')),
+        for table,labels in ((self.scans,('Lần / Profile','Lúc','Phạm vi','Tool','Lưu','File / TM','File / Đĩa','Giây','Δ Log','Độ phủ','Chuẩn','Tùy chọn')),
                              (self.pairs,('Mốc','Cũ','Mới','±','↑','↓','+','−','Khác','Δ Log'))):
             for index,label in enumerate(labels):
                 old=table.horizontalHeaderItem(index).text();table.horizontalHeaderItem(index).setText(label)
@@ -242,10 +307,9 @@ class ColumnarHistory(HistoryPanel):
         self.refresh_migration()
 
     def render_pair_summary(self,summary):
-        from .comparison_visuals import gui_change_text
         mode=summary.get('history_measure','allocated')
         value=summary.get('observed_disk_delta' if mode=='allocated' else 'observed_delta')
-        self.summary_cards[0].set_value(gui_change_text(value),'Hiệu toàn bộ hai mốc · '+('Đĩa' if mode=='allocated' else 'File'))
+        self.summary_cards[0].set_value(self.owner.browser.delta_text(value),'Hiệu toàn bộ hai mốc · '+('Đĩa' if mode=='allocated' else 'File'))
         self.summary_cards[1].set_value(f"{summary.get('unverified_all_files',0):,} file",'Chưa xác minh nguyên nhân, không phải thiếu toàn bộ dung lượng')
         self.scope_note.setText('± ghi nhận gồm mọi file hai mốc; chỉ Cũ/Mới không tự khẳng định xóa/thêm thật. '+
             ('Chi tiết dùng thuật toán cũ; sẽ tính lại khi mở, giữ nguyên snapshot.' if summary.get('needs_recompare') else 'Đã kiểm tra hiệu tổng bằng đóng góp file.'))
@@ -256,15 +320,15 @@ class ColumnarHistory(HistoryPanel):
         index=self.pairs.currentRow()
         if not 0<=index<len(self.pair_rows):return
         from .presentation import local_time
-        from .comparison_visuals import gui_change_text
+        show_delta=self.owner.browser.delta_text
         s=json.loads(self.pair_rows[index]['summary'] or '{}');a,b=s.get('older'),s.get('newer')
         lines=[('Cũ #'+str(a['id'])+' · '+local_time(a['started'])) if a else 'Chưa có mốc cũ',
                ('Mới #'+str(b['id'])+' · '+local_time(b['started'])) if b else 'Chưa có mốc mới',
-               '± File: '+gui_change_text(s.get('observed_delta')),
-               '± Cấp phát: '+gui_change_text(s.get('observed_disk_delta')),
-               'Phần cấp phát đủ bằng chứng: '+gui_change_text(s.get('verified_allocated_delta'))]
+               '± File: '+show_delta(s.get('observed_delta')),
+               '± Cấp phát: '+show_delta(s.get('observed_disk_delta')),
+               'Phần cấp phát đủ bằng chứng: '+show_delta(s.get('verified_allocated_delta'))]
         for row in s.get('disk_changes',[]):
-            lines.append(row['root']+' · ± Ổ '+gui_change_text(row['used_delta'])+' · Còn lại '+gui_change_text(row['unassigned_delta']))
+            lines.append(row['root']+' · ± Ổ '+show_delta(row['used_delta'])+' · Còn lại '+show_delta(row['unassigned_delta']))
         lines.append('Hiệu tổng ghi nhận không tự khẳng định mọi đường dẫn vắng là đã xóa. Không gán phần còn lại cho file nhỏ.')
         if s.get('needs_recompare'):lines.append('Chi tiết cũ sẽ tính lại bằng thuật toán mới khi mở, không sửa snapshot.')
         self.details.setPlainText('\n'.join(lines))
@@ -322,7 +386,10 @@ class ColumnarTasks(TaskPanel):
         self.rows=rows;self.signature=signature;self.table.setRowCount(len(rows))
         for index,row in enumerate(rows):
             state=row['state']
-            values=({'scan':'Quét','legacy':'Nhập JSONL','csv':'Nhập WizTree CSV'}[row['operation']],
+            operation={'scan':'Quét','legacy':'Nhập JSONL','csv':'Nhập WizTree CSV'}[row['operation']]
+            if row['operation']=='scan':
+                operation+=' · '+row['arguments'].get('name','preview')
+            values=(operation,
                 {'complete':'Đã xong','pending':'Chưa chạy','stopped':'Đã dừng','failed':'Lỗi','interrupted':'Dang dở','running':'Đang chạy'}.get(state,state),
                 ' • '.join(filter(None,(row.get('error'),row.get('checkpoint_note'))))
                 or ('Đã lưu nguồn đủ' if row.get('sources') else 'Quét dở chạy lại; nguồn đủ dùng tiếp'),
@@ -461,6 +528,12 @@ class MainWindow(FeatureWindow):
         rows=self.repo.list()
         return (rows[0]['id'],rows[0]['status']) if rows else (0,'')
 
+    def notify_scan_saved(self,ident):
+        try:row=self.repo.get(ident)
+        except ValueError:return
+        self.tray.showMessage('Có kết quả quét mới',
+            f"Đã lưu mốc #{ident} · profile {row['profile']}. Mở Kiểm tra để so sánh.")
+
     def startup_history_maintenance(self):pass
 
     def progress(self,event,data):
@@ -536,7 +609,10 @@ class MainWindow(FeatureWindow):
         self.refresh_history()
         if result.get('status') in ('complete','partial'):
             self.newer.setCurrentIndex(self.newer.findData(result['scan_id']))
-            self.status.setText(f"Đã lưu mốc #{result['scan_id']} · {result.get('files',0):,} file; tiếp tục so sánh và nạp bảng")
+            name=result.get('profile') or self.repo.get(result['scan_id'])['profile']
+            self.last_scan_brief=f"Đã lưu mốc #{result['scan_id']} · profile {name} · {result.get('files',0):,} file"
+            self.status_panel.legacy_details(self.last_scan_brief)
+            self.status.setText(self.last_scan_brief+'; tiếp tục so sánh và nạp bảng')
             self.compare()
         else:self.fail(result.get('error','Quét không hoàn tất; xem Nhật ký'))
 

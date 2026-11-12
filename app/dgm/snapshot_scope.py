@@ -1,7 +1,14 @@
 """Compare captured scope policies without querying today's filesystem."""
 import fnmatch
 import json
+from datetime import datetime, timezone
 from .config import comparison_path_key, browser_path, inside
+
+
+def capture_time(row):
+    """Compare captured instants, not text containing different UTC offsets."""
+    value = datetime.fromisoformat(row['started'])
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def captured(scan):

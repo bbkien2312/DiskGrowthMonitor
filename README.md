@@ -1,5 +1,13 @@
 # Disk Growth Monitor
 
+## 2.2.2 — Mốc, profile và thông báo cập nhật
+
+Profile quét được ghi nhớ. Nếu chưa có lựa chọn, app ưu tiên profile của lịch duy nhất đang bật. Danh sách mốc Parquet xếp theo thời điểm quét, không ưu tiên profile quét; Mới tự theo lượt mới nhất, chọn mốc cũ hơn để ghim. Cũ chỉ chứa các mốc trước Mới. Thay cặp không giữ lại tổng của cặp trước; tổng ghi rõ số mốc/ngày và giữ phần MiB/MB của chênh lệch.
+
+Hệ thống → Cập nhật app → **Kiểm tra khi mở app** mặc định bật. Mỗi lần mở kiểm tra Release chính thức ở nền một lần; chỉ hiện thông báo nếu có bản mới, không tải/cài tự động. Có thể tắt và kiểm tra thủ công bất cứ lúc nào.
+
+Mốc đã lưu, thông báo quét lịch, nhật ký và kết quả CLI ghi rõ profile thực tế chạy. Tên file Parquet và schema lịch sử giữ nguyên để không làm hỏng mốc cũ.
+
 ## 2.2.1 — Điểm tiếp tục gọn
 
 Hạn mức export áp dụng cho **mỗi lượt đang chạy**, không cộng điểm tiếp tục cũ. App kiểm tra chỗ trống trước khi chạy tool và trong lúc xuất. Khi ghi Parquet thành công, bỏ export; quét chưa đủ các phạm vi thì không giữ dữ liệu dở.

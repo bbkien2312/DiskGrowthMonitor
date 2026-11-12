@@ -1,3 +1,11 @@
+# Disk Growth Monitor 2.2.2 — Parquet + DuckDB — 12/11/2026
+
+- Ghi nhớ profile quét; nếu chưa có lựa chọn, ưu tiên profile của lịch đang bật khi xác định được duy nhất.
+- Sắp xếp mốc theo thời gian chụp, độc lập với profile. Theo mốc mới nhất hoặc ghim thủ công; không hiển thị kết quả cũ dưới cặp mới.
+- Hiển thị ngày/mã mốc và phần MiB/MB của chênh lệch; giữ nguyên phép tính byte và lịch sử.
+- Kết quả quét tay/lịch, nhật ký, thông báo và danh sách mốc ghi rõ profile đã dùng.
+- Kiểm tra Release chính thức khi mở app (mặc định bật, có nút tắt); chỉ thông báo, không tự tải hoặc cài.
+
 # Disk Growth Monitor 2.2.1 — Parquet + DuckDB — 04/11/2026
 
 - Export tạm có hạn mức riêng cho mỗi lượt; kiểm tra dung lượng thực trước khi mở công cụ và trong lúc xuất.

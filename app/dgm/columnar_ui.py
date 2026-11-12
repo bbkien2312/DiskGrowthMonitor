@@ -31,7 +31,7 @@ ROLE = Qt.ItemDataRole.UserRole
 
 def scan_label(row):
     browser = 'không Chrome/Edge' if row['scope'].get('strict_browsers') else 'có Chrome/Edge'
-    return f"#{row['id']} · {local_time(row['started'])[:16]} · {row['engine']} · {browser} · {'MFT' if row.get('mft') else 'walk'} · v{row.get('app_version','?')}"
+    return f"#{row['id']} · {row['profile']} · {local_time(row['started'])[:16]} · {row['engine']} · {browser} · {'MFT' if row.get('mft') else 'walk'} · v{row.get('app_version','?')}"
 
 
 class Worker(QThread):

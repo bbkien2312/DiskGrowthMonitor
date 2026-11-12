@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-from datetime import datetime
 import fnmatch
 import hashlib
 import json
@@ -14,6 +13,7 @@ from .columnar_store import Repository, MemorySession, CapturedPaths, quote
 from .columnar_ingest import rollup_values, insert_records, PATH_KEY_VERSION
 from .comparison_policy import choose_measure
 from .delta_accounting import COMPARISON_VERSION, snapshot_changes, disk_changes, same_scope
+from .snapshot_scope import capture_time
 
 REASONS = {'scope': 'Khác phạm vi/loại trừ', 'browser': 'Không quét Chrome/Edge',
            'coverage': 'Vùng chưa xác minh/quyền đọc', 'legacy': 'Thiếu bằng chứng độ bao phủ',
@@ -135,7 +135,7 @@ class Comparison:
         self.timeline=Timeline('comparison',notify)
         self.session = MemorySession(self.repo, notify=self.timeline)
         try:
-            if self.old and datetime.fromisoformat(self.old['started']) >= datetime.fromisoformat(self.new['started']):
+            if self.old and capture_time(self.old) >= capture_time(self.new):
                 raise ValueError('Mốc cũ phải trước mốc mới; đổi vị trí hai mốc')
             with self.session.operation(stop):
                 self._prepare(stop)

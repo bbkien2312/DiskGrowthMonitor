@@ -235,7 +235,7 @@ class HistoryPanel(QWidget):
                 from .measurements import provenance
                 norm_text=normalization(summary)+' · '+provenance(summary)
                 from .snapshot_scope import option_label
-                values=[f"Lần {row.get('ordinal',row['id'])}",local_time(row["started"]).replace(' UTC+07',''),roots,row["engine"],status_text,
+                values=[f"Lần {row.get('ordinal',row['id'])} · {row['profile']}",local_time(row["started"]).replace(' UTC+07',''),roots,row["engine"],status_text,
                         f"{summary.get('files',0):,} / {summary.get('folders',0):,}",size(summary.get("logical"))+" / "+size(summary.get("allocated")),f"{whole(summary.get('seconds',0)):,} s",storage_delta(summary.get("storage")),coverage,norm_text,option_label(row)]
                 for j,value in enumerate(values):
                     cell=QTableWidgetItem(value);cell.setToolTip(value+f"\nID nội bộ: {row['id']}\n"+storage_tooltip(summary.get("storage")))
@@ -307,7 +307,9 @@ class HistoryPanel(QWidget):
             try:profile=store.scan(newer)["profile"]
             except ValueError:self.info.setText("Snapshot chi tiết đã được dọn; chỉ còn tóm tắt lịch sử.");return
             finally:store.close()
-        self.owner.profile_combo.setCurrentText(profile);self.owner.refresh_history()
+        if not getattr(self.owner.browser,'independent_scan_profile',False):
+            self.owner.profile_combo.setCurrentText(profile)
+        self.owner.refresh_history()
         self.owner.newer.setCurrentIndex(self.owner.newer.findData(newer));self.owner.older.setCurrentIndex(max(0,self.owner.older.findData(older)))
         self.owner.tabs.setCurrentIndex(0);self.owner.compare()
 

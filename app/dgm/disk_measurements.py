@@ -41,6 +41,18 @@ def delta(value, unit='binary', *, partial=False):
     return ('≈ ' if partial else '') + text
 
 
+def compound_delta(value, unit='binary'):
+    """Keep the MiB/MB remainder in summary deltas without decimal fractions."""
+    base=1024 if unit=='binary' else 1000
+    if abs(value)<base**3:
+        return delta(value,unit)
+    count=(abs(value)+base**2//2)//base**2
+    whole,remainder=divmod(count,base)
+    high,low=('GiB','MiB') if unit=='binary' else ('GB','MB')
+    sign='↑ +' if value>0 else '↓ −'
+    return f'{sign}{whole:,} {high}'+(f' {remainder:,} {low}' if remainder else '')
+
+
 def exact(value):
     return 'Chưa rõ dung lượng; không coi là 0 byte' if value is None else f'{value:,} byte'
 

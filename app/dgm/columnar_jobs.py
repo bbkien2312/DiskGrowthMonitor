@@ -234,12 +234,17 @@ class Jobs:
                 from .scanner import ScanLock
                 with ScanLock(stop) if getattr(self.repo, 'production', False) else nullcontext():
                     results = [self._scan(value, stop, notify)]
-            timing=timeline.finish('complete',message='Đã lưu metadata và hoàn tất tác vụ')
+            message='Đã lưu metadata và hoàn tất tác vụ'
+            if value['operation']=='scan':
+                message=f"Đã lưu mốc #{results[0]['id']} · profile {results[0]['profile']}"
+            timing=timeline.finish('complete',message=message)
             with self.repo.locked():
                 value.update(state='complete', snapshots=[r['id'] for r in results], owner=None,timing=timing)
                 value.pop('checkpoint_note', None)
                 self._save(value)
                 self._remove_outputs(value)
+            if value['operation']=='scan':
+                _LOG.info('[scan] %s: %s',ident[:8],message)
             return results
         except BaseException as exc:
             if 'timeline' in locals():value['timing']=timeline.finish('cancelled' if isinstance(exc,(ProcessCancelled,KeyboardInterrupt)) else 'failed')

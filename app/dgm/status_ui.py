@@ -72,6 +72,11 @@ class StatusPanel(QWidget):
         operation=timing['operation'];self.operations[operation]=timing
         self.updated[operation]=time.perf_counter();self.render()
 
+    def clear_comparison(self):
+        self.results='';self.page_time=None;self.tree_time=None
+        self.operations.pop('comparison',None);self.updated.pop('comparison',None)
+        self.render()
+
     def finish_results(self,summary,mode='allocated',page_time=None,tree_time=None):
         counts=summary.get('counts_logical') if mode=='logical' else summary.get('counts')
         counts=counts or []
@@ -86,10 +91,11 @@ class StatusPanel(QWidget):
             '\nKhông quét/chưa xác định không được tính thành file đã xóa; tổng dung lượng chỉ cộng file.')
         if summary.get('delta_basis')=='captured-totals':
             from .comparison_visuals import gui_change_text
+            text=getattr(self.owner.browser,'delta_text',gui_change_text)
             value=summary.get('observed_disk_delta' if mode=='allocated' else 'observed_delta')
-            self.results+='\n± Ghi nhận: '+gui_change_text(value)+' · Tổng Mới − Cũ, gồm mục chỉ một mốc.'
+            self.results+='\n± Ghi nhận: '+text(value)+' · Tổng Mới − Cũ, gồm mục chỉ một mốc.'
             for row in summary.get('disk_changes',[]):
-                self.results+='\n'+row['root']+' · ± Ổ '+gui_change_text(row['used_delta'])+' · ± Cấp phát '+gui_change_text(row['files_delta'])+' · Còn lại '+gui_change_text(row['unassigned_delta'])
+                self.results+='\n'+row['root']+' · ± Ổ '+text(row['used_delta'])+' · ± Cấp phát '+text(row['files_delta'])+' · Còn lại '+text(row['unassigned_delta'])
         if page_time is not None:self.page_time=page_time
         if tree_time is not None:self.tree_time=tree_time
         self.render()

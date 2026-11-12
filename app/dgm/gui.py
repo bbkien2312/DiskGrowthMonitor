@@ -124,6 +124,15 @@ class Window(QMainWindow):
         self.setStyleSheet(LIGHT)
         outer = QWidget()
         layout = QVBoxLayout(outer);layout.setContentsMargins(6,4,6,4);layout.setSpacing(3)
+        self.update_notice=QWidget()
+        self.update_notice.setObjectName('updateNotice')
+        self.update_notice.setStyleSheet('QWidget#updateNotice{background:#eaf5ff;border:1px solid #bad6ed;border-radius:4px;}')
+        notice=QHBoxLayout(self.update_notice);notice.setContentsMargins(8,3,4,3)
+        self.update_notice_label=ElidingLabel()
+        notice.addWidget(self.update_notice_label,1)
+        self.button('Xem cập nhật',self.open_update_notice,notice)
+        self.button('Đóng',self.update_notice.hide,notice)
+        layout.addWidget(self.update_notice);self.update_notice.hide()
         self.tabs = QTabWidget()
         title = QLabel("DISK GROWTH MONITOR");title.setStyleSheet('font-size:12px;font-weight:700;color:#325572;padding:0 8px;')
         self.tabs.setCornerWidget(title,Qt.Corner.TopRightCorner)
@@ -198,6 +207,17 @@ class Window(QMainWindow):
         if self.isMinimized():
             self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
         self.show();self.raise_();self.activateWindow()
+
+    def show_update_notice(self,version):
+        text=f'Có Disk Growth Monitor {version} mới. Chưa tải hay cài.'
+        self.update_notice_label.setText(text)
+        self.update_notice.show()
+        if not self.isVisible() and QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray.showMessage('Có bản cập nhật',text)
+
+    def open_update_notice(self):
+        self.tabs.setCurrentIndex(1)
+        self.system_tabs.setCurrentIndex(0)
 
     def resizeEvent(self,event):
         super().resizeEvent(event)
@@ -486,14 +506,21 @@ class Window(QMainWindow):
 
     def refresh_profiles(self):
         current = self.profile_combo.currentText()
+        cfg=load()
+        profiles=cfg["profiles"]
+        remembered=self.preferences.values.get('scan/active-profile')
+        scheduled={s.get('profile') for s in cfg.get('schedules',[])
+                   if s.get('enabled',True) and s.get('profile') in profiles}
+        fallback=next(iter(scheduled)) if len(scheduled)==1 else 'daily'
+        chosen=next((p for p in (current,remembered,fallback) if p in profiles),next(iter(profiles),''))
         self.profile_combo.blockSignals(True)
-        self.profile_combo.clear(); self.profile_combo.addItems(load()["profiles"])
-        self.profile_combo.setCurrentText(current if current in load()["profiles"] else "daily")
+        self.profile_combo.clear(); self.profile_combo.addItems(profiles)
+        self.profile_combo.setCurrentText(chosen)
         self.profile_combo.blockSignals(False)
         self.load_profile(self.profile_combo.currentText())
         if hasattr(self, "schedule_profile"):
             old = self.schedule_profile.currentText()
-            self.schedule_profile.clear(); self.schedule_profile.addItems(load()["profiles"])
+            self.schedule_profile.clear(); self.schedule_profile.addItems(profiles)
             self.schedule_profile.setCurrentText(old)
 
     def load_profile(self, name):
@@ -516,10 +543,12 @@ class Window(QMainWindow):
         self.mft.setChecked(bool(p.get('mft') and p.get('engine','wiztree')=='wiztree' and not p.get('strict_browsers')))
         self.threshold.setValue(p["threshold_mb"])
         self.loaded_profile = name; self.loaded_values = self.edited_profile()
+        if self.preferences.values.get('scan/active-profile')!=name:
+            self.preferences.set('scan/active-profile',name)
         self.update_scope_note()
         self.refresh_history()
         if self.starting_up:self.browser.show_saved_overview()
-        else:self.compare()
+        elif not getattr(self.browser,'independent_scan_profile',False):self.compare()
 
     def profile_dirty(self):
         try:
@@ -1315,11 +1344,14 @@ class Window(QMainWindow):
         if signature != self.last_scan_signature:
             self.refresh_history(); self.last_scan_id = signature[0]; self.last_scan_signature = signature
             if signature[1] in ("complete", "partial"):
-                self.tray.showMessage("Có kết quả quét mới", "Mở tab Kiểm tra để xem thay đổi dung lượng.")
+                self.notify_scan_saved(signature[0])
         s = Store(readonly=True); count = s.db.execute("SELECT COUNT(*) FROM plans WHERE status='pending'").fetchone()[0]; s.close()
         if count > self.last_plan_count:
             self.refresh_plans(); self.tray.showMessage("Có đề xuất dọn", f"{count} plan đang chờ bạn duyệt; chưa xóa gì.")
         self.last_plan_count = count
+
+    def notify_scan_saved(self,ident):
+        self.tray.showMessage("Có kết quả quét mới", "Mở tab Kiểm tra để xem thay đổi dung lượng.")
 
     def closeEvent(self, event):
         if any(w.isRunning() for w in self.workers):
@@ -1369,6 +1401,8 @@ def start(tray=False,smoke_test=False):
     window.closed.connect(app.quit)
     if not tray:
         window.show()
+    if not smoke_test:
+        window.app_update_panel.schedule_startup_check()
     report={}
     if smoke_test:
         import time

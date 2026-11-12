@@ -185,6 +185,11 @@ class DiskBrowser(QWidget):
     def view_summary(self,summary):return summary
 
     def snapshot_rows(self,rows,profile):return [r for r in rows if r['profile']==profile]
+    def milestone_order(self,row):return row['started'],row['id']
+    def keep_newer(self,changed):return not changed
+    def keep_older(self,changed):return not changed
+    def older_candidates(self,rows):return rows
+    def before_compare(self,older,newer):pass
 
     def __init__(self, owner):
         super().__init__(); self.owner = owner; self.generation = 0; self.tree_generation = 0; self.detail_worker = None; self.loading_workers=set()
@@ -319,23 +324,28 @@ class DiskBrowser(QWidget):
         footer.addStretch(); owner.button("Hỏi AI",owner.ai_snapshot,footer); layout.addLayout(footer)
         self.install_shortcuts()
 
+    def populate_older(self,rows,selection):
+        self.older.clear();self.older.addItem("Tự động: lượt hợp lệ trước mốc mới",None)
+        self.older.addItem("Mốc ban đầu: không so với lượt cũ",0)
+        for row in self.older_candidates(rows):
+            if row['status'] in ('complete','partial'):
+                self.older.addItem(gui_scan_label(row,self.profile),row['id'])
+                self.older.setItemData(self.older.count()-1,scan_label(row)+'\n'+row['config'],Qt.ItemDataRole.ToolTipRole)
+        if selection is not None:self.older.setCurrentIndex(max(0,self.older.findData(selection)))
+
     def refresh(self, profile, *, load_tree=True):
         tree_ids=None
         store=self.store(readonly=True)
         try:
-            all_rows=sorted(store.scans(),key=lambda r:(r["started"],r["id"]),reverse=True)
+            all_rows=sorted(store.scans(),key=self.milestone_order,reverse=True)
             rows=self.snapshot_rows(all_rows,profile)
             prior=self.newer.currentData(); old=self.older.currentData(); changed=profile!=self.profile
-            self.profile=profile; self.newer.clear(); self.older.clear(); self.older.addItem("Tự động: lượt hợp lệ trước mốc mới",None)
-            self.older.addItem("Mốc ban đầu: không so với lượt cũ",0)
+            self.profile=profile; self.newer.clear()
             valid=[r for r in rows if r["status"] in ("complete","partial")]
             for row in valid:
                 self.newer.addItem(gui_scan_label(row,profile),row['id']);self.newer.setItemData(self.newer.count()-1,scan_label(row)+'\n'+row['config'],Qt.ItemDataRole.ToolTipRole)
-            for row in all_rows:
-                if row['status'] in ('complete','partial'):
-                    self.older.addItem(gui_scan_label(row,profile),row['id']);self.older.setItemData(self.older.count()-1,scan_label(row)+'\n'+row['config'],Qt.ItemDataRole.ToolTipRole)
-            if prior and not changed: self.newer.setCurrentIndex(max(0,self.newer.findData(prior)))
-            if old is not None and not changed: self.older.setCurrentIndex(max(0,self.older.findData(old)))
+            if prior and self.keep_newer(changed):self.newer.setCurrentIndex(max(0,self.newer.findData(prior)))
+            self.populate_older(all_rows,old if self.keep_older(changed) else None)
             if changed: self.root=None
             if valid:
                 latest=valid[0]; previous=store.previous(latest["id"])
@@ -540,12 +550,14 @@ class DiskBrowser(QWidget):
             a=store.scan(older) if older else None;b=store.scan(newer)
         finally:store.close()
         self.ids=(older,newer)
+        self.before_compare(a,b)
         if older is None:
             self.sections.blockSignals(True);self.sections.setCurrentIndex(1);self.sections.blockSignals(False)
-            self.auto_baseline=True;self.model.private=True;self.query_options=self.options()
+            self.auto_baseline=True;self.model.private=True
         elif self.auto_baseline:
             self.sections.blockSignals(True);self.sections.setCurrentIndex(0);self.sections.blockSignals(False)
-            self.auto_baseline=False;self.model.private=False;self.query_options=self.options()
+            self.auto_baseline=False;self.model.private=False
+        self.query_options=self.options()
         self.result_help_pending=True
         if self.tree_mode.currentData()=='selected':
             self.tree_generation+=1;self.tree.clear();self.tree_pair=None;self.tree_ids=self.ids
@@ -731,7 +743,7 @@ class DiskBrowser(QWidget):
                 brief=f"{count_change('grown'):,} tăng • {count_change('shrunk'):,} giảm • {count_change('new'):,} mới • {count_change('missing'):,} mất • {count_change('not_scanned'):,} không quét • {count_change('unknown')+count_change('partial'):,} chưa rõ"
                 if getattr(self,'unified',False):
                     observed=summary.get('observed_disk_delta' if self.measurement.currentData()=='allocated' else 'observed_delta')
-                    brief='Đã quy: '+brief+' · ± ghi nhận '+change_text(observed)
+                    brief='Đã quy: '+brief+' · ± ghi nhận '+getattr(self,'delta_text',change_text)(observed)
                 self.owner.status.setText((f'Đang lấy lại {self.model.loaded:,}/{self.restore_target:,} mục theo thứ tự mới…' if restoring else f"Đã tải {self.model.loaded:,}/{page['total']:,} dòng • Toàn phạm vi: {brief} • Δ data/log {storage_delta(summary.get('storage'))}"))
             if self.pending_open and self.pending_open[0]==generation:
                 pending_row=self.pending_open[1];start=self.model.starts[group]

@@ -339,7 +339,8 @@ def _publish(session, metadata, *, stop=None, started=None):
     metadata['status'] = 'complete' if not metadata.get('coverage', {}).get('unknown_roots') and not metadata.get('errors') else 'partial'
     _check(stop)
     result = session.repo.publish(destination, metadata, after)
-    session.progress(100, f"Đã lưu mốc #{result['id']}: {after['files']:,} file • {after['folders']:,} thư mục", stage='done')
+    session.progress(100, f"Đã lưu mốc #{result['id']} · profile {result['profile']}: "
+                     f"{after['files']:,} file • {after['folders']:,} thư mục", stage='done')
     return result
 
 

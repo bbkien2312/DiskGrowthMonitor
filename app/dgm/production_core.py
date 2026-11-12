@@ -40,12 +40,14 @@ def repository():
 
 
 def previous(ident, repo=None):
+    from .snapshot_scope import capture_time
     repo = repo or repository()
     current = repo.get(ident)
+    moment = capture_time(current)
     rows = [row for row in repo.list() if row['id'] != int(ident)
             and row['profile'] == current['profile'] and row.get('status') in ('complete', 'partial')
-            and (row['started'], row['id']) < (current['started'], current['id'])]
-    return max(rows, key=lambda row: (row['started'], row['id']))['id'] if rows else None
+            and capture_time(row) < moment]
+    return max(rows, key=lambda row: (capture_time(row), row['id']))['id'] if rows else None
 
 
 def history(profile=None):
@@ -76,8 +78,8 @@ def scan(name, profile, stop=None, notify=None, *, allow_uac=True, replace_check
     try:
         row = jobs.execute(job['id'], stop=stop, notify=notify)[0]
     except ProcessCancelled:
-        return {'status': 'cancelled', 'job_id': job['id'], 'scan_id': None, 'backend': 'parquet'}
-    return {**row['summary'], 'scan_id': row['id'], 'status': row['status'], 'job_id': job['id'],
+        return {'status': 'cancelled', 'job_id': job['id'], 'scan_id': None, 'backend': 'parquet', 'profile':name}
+    return {**row['summary'], 'scan_id': row['id'], 'status': row['status'], 'job_id': job['id'], 'profile':row['profile'],
             'seconds': time.perf_counter()-started, 'backend': 'parquet',
             'timing':jobs.get(job['id']).get('timing'),
             'completed_steps': ['Thu thập metadata', 'Chuẩn hóa một lần', 'Lưu snapshot Parquet']}
