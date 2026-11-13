@@ -15,6 +15,7 @@ ai = typer.Typer(help="Tạo câu hỏi và mở AI web")
 app_updates = typer.Typer(help='Kiểm tra/tải/cài bản app chính thức; không dùng pip hoặc ghi đè source')
 storage_app=typer.Typer(help='Dung lượng riêng của app: xem trước, dọn backup/installer, thu gọn cache; không tự xóa lịch sử')
 tasks_app=typer.Typer(help='Điểm tiếp tục tác vụ; không tự phát lại thao tác xóa')
+move_app=typer.Typer(help='Dò và chuyển thư mục riêng của ứng dụng khác sang phân vùng khác')
 app.add_typer(profiles, name="profile")
 app.add_typer(cleanup_app, name="cleanup")
 app.add_typer(schedules, name="schedule")
@@ -23,6 +24,7 @@ app.add_typer(ai, name="ai")
 app.add_typer(app_updates, name='app-update')
 app.add_typer(storage_app,name='storage')
 app.add_typer(tasks_app,name='tasks')
+app.add_typer(move_app,name='app-move')
 from .columnar_cli import app as columnar_app
 app.add_typer(columnar_app, name='fast')
 
@@ -178,6 +180,51 @@ def invoke_action(function,*args,**kwargs):
 
 def admin_progress(event,data):
     if event=='info':typer.echo('INFO '+data['message'],err=True)
+
+
+@move_app.command('discover')
+def move_discover(selection:Path):
+    from .app_move_paths import discover
+    output(discover(selection))
+
+
+@move_app.command('preview')
+def move_preview(destination:Path, folder:list[Path]=typer.Option(...,'--folder'),
+                 selection:Optional[Path]=typer.Option(None,'--app'), portable:bool=False):
+    from .app_move import plan
+    output(plan(folder,destination,selection=selection,portable=portable))
+
+
+@move_app.command('apply')
+def move_apply(destination:Path, folder:list[Path]=typer.Option(...,'--folder'),
+               selection:Optional[Path]=typer.Option(None,'--app'), portable:bool=False,
+               yes:bool=typer.Option(False,'--yes')):
+    from .app_move import plan,execute
+    preview=plan(folder,destination,selection=selection,portable=portable)
+    output(preview)
+    if yes or typer.confirm('App đã thoát? Chuyển các mục trên, tạo junction và giữ bản gốc?'):
+        output(execute(preview,notify=admin_progress))
+
+
+@move_app.command('list')
+def move_list():
+    from .app_move import history
+    output(history())
+
+
+@move_app.command('undo')
+def move_undo(ident:str, yes:bool=typer.Option(False,'--yes')):
+    from .app_move import undo
+    if yes or typer.confirm('Khôi phục bản nguồn chưa thay đổi, giữ bản ở đích?'):
+        output(undo(ident,notify=admin_progress))
+
+
+@move_app.command('retire')
+def move_retire(ident:str, permanent:bool=typer.Option(False,'--permanent'),yes:bool=typer.Option(False,'--yes')):
+    from .app_move import retire
+    action='Xóa vĩnh viễn bản trùng đã xác minh' if permanent else 'Đưa bản trùng đã xác minh vào Thùng rác'
+    if yes or typer.confirm(action+'?'):
+        output(retire(ident,notify=admin_progress,permanent=permanent))
 
 
 @app.callback()

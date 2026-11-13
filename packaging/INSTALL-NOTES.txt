@@ -1,4 +1,4 @@
-Disk Growth Monitor 2.3.0 - Parquet + DuckDB - Windows x64
+Disk Growth Monitor 2.4.0 - Parquet + DuckDB - Windows x64
 
 Private Python/Qt runtime is bundled under .venv.
 New snapshots use checksummed ZSTD Parquet metadata; file contents are never backed up.
@@ -27,6 +27,10 @@ The detail header shows both snapshot IDs, capture times and measured totals.
 The Summary tab ranks up to 10 folders each for growth, shrinkage, additions and
 missing records, across the entire pair. It loads on demand from the open session.
 The GUI shows GB/MB and one signed change value; calculations still use raw bytes.
+App Move previews and relocates selected private data or confirmed portable
+folders between local NTFS volumes. It verifies copies before making junctions,
+keeps the old data, and requires separate approval for old-copy cleanup.
+It does not move registered Windows/Store packages or modify their registrations.
 The footer has a Show/Hide timing/result report and separates collection, import/save, comparison and table loading.
 No global Python, pip, System PATH, Task Scheduler job or Windows Service is installed.
 Choose an empty folder, preferably on D: to avoid consuming C: space.

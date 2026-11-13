@@ -160,6 +160,10 @@ class Window(QMainWindow):
         self.make_schedule()
         self.make_log()
         self.make_history()
+        from .app_move_ui import AppMovePanel
+        move_tab=self.add_tab('Chuyển ứng dụng',scroll=False)
+        self.app_move_panel=AppMovePanel(self)
+        move_tab.addWidget(self.app_move_panel)
         self.tabs.currentChanged.connect(lambda index: self.history_panel.ensure_loaded()
                                          if self.tabs.widget(index).isAncestorOf(self.history_panel) else None)
         QTimer.singleShot(0, self.history_panel.ensure_loaded)

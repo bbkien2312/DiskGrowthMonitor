@@ -1,5 +1,13 @@
 # Disk Growth Monitor
 
+## 2.4.0 — Chuyển ứng dụng sang phân vùng khác
+
+Tab **Chuyển ứng dụng** nhận EXE hoặc shortcut .lnk (không chạy shortcut), gợi ý thư mục dữ liệu riêng và cho dán thêm đường dẫn thủ công. Tích từng thư mục, chọn ổ/thư mục đích có sẵn rồi bấm **Xem trước**. Bản đầu hỗ trợ dữ liệu riêng và app portable được xác nhận trên hai ổ NTFS cố định; bản cài Windows/MSIX chỉ được nhận diện. Không duyệt Chrome/Edge, không tự tắt app hay sửa Task/Service.
+
+Sau khi bạn đóng app đích và duyệt, Disk Growth Monitor sao chép, kiểm SHA-256, rồi giữ đường dẫn cũ bằng junction Windows. Shortcut cũ vẫn dùng được; app không tự mở chương trình để thử. Nhật ký ghi đường dẫn của cả hai bản. **Hoàn tác** giữ bản đích và từ chối nếu dữ liệu đã đổi. **Dọn bản cũ** chỉ chấp nhận bản đã xác minh; Thùng rác không trả ngay dung lượng, xóa vĩnh viễn cần xác nhận riêng. Nếu tác vụ dừng khi sao chép, nguồn vẫn còn; nhật ký cho biết vị trí bản đích chưa dùng.
+
+CLI dùng cùng cơ chế: `dgm app-move discover`, `preview`, `apply`, `list`, `undo`, `retire`. Ví dụ xem trước: `dgm app-move preview F:\ --app "D:\Example\Example.lnk" --folder "C:\Users\me\AppData\Roaming\Example"`.
+
 ## 2.3.0 — Tóm tắt so sánh
 
 Thanh **Chi tiết** hiển thị mã mốc, ngày giờ và tổng dung lượng ghi nhận ở Cũ → Mới. Chênh lệch hiển thị bằng một số, ví dụ `↓ −6,68 GB`; chế độ GB Windows giữ cơ số 1.024 và phép tính vẫn dùng byte gốc.

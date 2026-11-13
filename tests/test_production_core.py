@@ -120,7 +120,7 @@ def test_main_gui_keeps_feature_tabs_with_columnar_inspection(production,monkeyp
         assert not window.workers
     try:
         app.processEvents()
-        assert [window.tabs.tabText(i) for i in range(window.tabs.count())]==['Kiểm tra','Hệ thống','Dọn dẹp','Lịch chạy','Nhật ký','Lịch sử']
+        assert [window.tabs.tabText(i) for i in range(window.tabs.count())]==['Kiểm tra','Hệ thống','Dọn dẹp','Lịch chạy','Nhật ký','Lịch sử','Chuyển ứng dụng']
         from dgm.browser_ui import DiskBrowser,PAGE_SIZES
         from dgm.history_ui import HistoryPanel
         assert isinstance(window.browser,DiskBrowser) and isinstance(window.history_panel,HistoryPanel)

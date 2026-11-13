@@ -117,7 +117,7 @@ assert edited['name']=='Fixture renamed'
 assert 'events' in cli('log-events','--anonymize')
 report['checks'].append('1.4 frozen CLI: compressed/paged review plan, exact confirmed deletion of one D: fixture cache, project preserved, protected catalog, bounded read-only inspector, named schedule edit without registering Windows tasks, redacted log events')
 gui=cli('gui','--smoke-test')
-assert __version__ in gui['title'] and gui['tabs']==6 and gui['image_saved'] and gui['rows']==0
+assert __version__ in gui['title'] and gui['tabs']==7 and gui['image_saved'] and gui['rows']==0
 assert not (target/'data/tmp/history-index/history.sqlite').exists()
 execute([target/'DiskGrowthMonitor.exe','gui','--smoke-test'])
 report['checks'].append('console and windowed GUI bootloaders render/close; metadata-only startup leaves detail rows empty and releases temporary SQLite')

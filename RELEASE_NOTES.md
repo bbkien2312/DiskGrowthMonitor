@@ -1,3 +1,9 @@
+# Disk Growth Monitor 2.4.0 — Parquet + DuckDB — 13/11/2026
+
+- Tab Chuyển ứng dụng nhận EXE/shortcut và đường dẫn thư mục nhập tay; xem trước các cặp nguồn/đích và dung lượng trước khi duyệt.
+- Chuyển thư mục dữ liệu riêng hoặc app portable trên NTFS cục bộ, kiểm SHA-256 và giữ đường dẫn cũ bằng junction.
+- Nhật ký, hoàn tác có kiểm tra thay đổi, dọn bản cũ sau xác nhận; GUI và CLI dùng chung cơ chế. Bản cài Windows/Store chỉ được nhận diện.
+
 # Disk Growth Monitor 2.3.0 — Parquet + DuckDB — 12/11/2026
 
 - Thanh Chi tiết ghi rõ mã mốc, ngày giờ và tổng dung lượng ghi nhận ở Cũ và Mới.

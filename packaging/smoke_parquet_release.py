@@ -75,9 +75,9 @@ report['checks'].append('excluded subtree contributes to captured totals but sta
 for executable in (target/'dgm.exe',target/'DiskGrowthMonitor.exe'):
     raw=execute([executable,'gui','--smoke-test'])
     if executable.name=='dgm.exe':
-        gui=json.loads(raw);assert __version__ in gui['title'] and 'Parquet + DuckDB' in gui['title'] and gui['tabs']==6 and gui['rows']==0 and gui['image_saved']
+        gui=json.loads(raw);assert __version__ in gui['title'] and 'Parquet + DuckDB' in gui['title'] and gui['tabs']==7 and gui['rows']==0 and gui['image_saved']
 assert not any((target/'data/columnar/work').iterdir())
-report['checks'].append('both frozen Qt entry points render/close the original six-tab GUI, metadata-only startup, spill work released')
+report['checks'].append('both frozen Qt entry points render/close the seven-tab GUI, metadata-only startup, spill work released')
 
 # Resume a durable journal with an already-complete snapshot: no new live scan.
 jobs=cli('tasks','list','--all');completed=next(r for r in jobs if r['snapshots']==[first['scan_id']])
