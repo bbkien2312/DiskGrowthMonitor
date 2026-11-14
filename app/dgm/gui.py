@@ -360,12 +360,8 @@ class Window(QMainWindow):
         self.status.setText("Đã khôi phục chiều rộng cột mặc định.")
 
     def show_text(self, value, title="Kết quả"):
-        text = value if isinstance(value, str) else display_json(value)
-        box = QMessageBox(self)
-        box.setWindowTitle(title)
-        box.setText(text[:2000])
-        box.setDetailedText(text)
-        box.exec()
+        from .details_ui import ReportDialog,key_section
+        ReportDialog(self,title,[key_section('Kết quả',value)]).exec()
 
     def progress(self, event, data):
         if event=='task-progress':
@@ -737,15 +733,23 @@ class Window(QMainWindow):
     def context_tree(self, point):
         self.browser.tree_menu(point)
 
-    def path_menu(self, path, position, extra=None):
+    def path_menu(self, path, position, extra=None, *, browse_only=False, destination=None):
         menu = QMenu(self)
         if extra:
             menu.addAction('Xem dữ liệu hai mốc',extra);menu.addSeparator()
-        for label, action in [("Mở", "open"), ("Mở thư mục chứa", "reveal"), ("Properties", "properties"), ("Đổi tên", "rename"), ("Đưa vào Thùng rác", "trash")]:
+        choices = [("Mở thư mục", "open-folder") if browse_only else ("Mở", "open"), ("Mở thư mục cha", "parent"),
+                   ("Hiện mục trong Explorer", "reveal"), ("Thuộc tính", "properties")]
+        if not browse_only:
+            choices += [("Đổi tên", "rename"), ("Đưa vào Thùng rác", "trash")]
+        item = Path(path)
+        for label, action in choices:
             act = menu.addAction(label)
-            act.setEnabled(Path(path).exists())
+            act.setEnabled(item.parent.is_dir() if action == "parent" else item.is_dir() if action=="open-folder" else
+                           item.exists() or (action == "reveal" and item.parent.is_dir()))
             act.triggered.connect(lambda checked=False, a=action: self.file_action(path, a))
         menu.addAction("Sao chép đường dẫn", lambda: QApplication.clipboard().setText(path))
+        if destination:
+            menu.addAction("Sao chép đường dẫn đích", lambda: QApplication.clipboard().setText(destination))
         menu.exec(position)
 
     def file_action(self, path, action):
@@ -760,8 +764,8 @@ class Window(QMainWindow):
                 note = "Đưa vào Thùng rác trên cùng ổ chưa giải phóng dung lượng.\n" if action == "trash" else ""
                 if QMessageBox.question(self, "Xác nhận", note + f"{action}: {path}") != QMessageBox.StandardButton.Yes:
                     return
-            manual_action(path, action, name)
-            self.status.setText(f"Đã thực hiện {action}; quét lại để cập nhật snapshot")
+            result = manual_action(path, action, name)
+            self.status.setText(result or ("Đã thực hiện; quét lại để cập nhật snapshot" if action in ("rename","trash") else "Đã gửi yêu cầu mở tới Windows."))
         except Exception as exc:
             self.fail(str(exc))
 
@@ -875,9 +879,10 @@ class Window(QMainWindow):
         for i,values in enumerate(PROTECTED):
             for j,value in enumerate(values):protected.setItem(i,j,QTableWidgetItem(value))
         self.columns(protected,'system-protected-v140',[260,360,650]);windows.addWidget(protected,1)
-        self.system_details_toggle = QToolButton(); self.system_details_toggle.setText("> Chẩn đoán chi tiết"); self.system_details_toggle.setCheckable(True)
+        self.system_details_toggle = QToolButton(); self.system_details_toggle.setText("Chẩn đoán chi tiết"); self.system_details_toggle.setCheckable(True)
         layout.addWidget(self.system_details_toggle)
-        self.system_output = QPlainTextEdit(); self.system_output.setReadOnly(True); self.system_output.setMaximumHeight(170); self.system_output.hide(); layout.addWidget(self.system_output)
+        from .details_ui import DetailPanel
+        self.system_output = DetailPanel();self.system_output.setMaximumHeight(300);self.system_output.hide();layout.addWidget(self.system_output)
         self.system_details_toggle.toggled.connect(self.system_output.setVisible)
         self.system_tabs.currentChanged.connect(lambda index:self.storage_panel.refresh_timer.start(100) if index==2 else None)
         self.doctor()
@@ -886,7 +891,8 @@ class Window(QMainWindow):
         from .diagnostics import doctor
         from .updates import inventory
         info = doctor()
-        self.system_output.setPlainText(json.dumps(info, ensure_ascii=False, indent=2))
+        from .details_ui import environment_sections
+        self.system_output.populate(environment_sections(info))
         self.environment_note.setText(f"App {info['app_version']} • Python {info['python'].split()[0]} • Môi trường riêng: {'Có' if info['isolated'] else 'Không'} • Quyền: {'Administrator' if info['admin'] else 'Thông thường'}")
         self.package_rows = inventory(); self.package_table.setRowCount(len(self.package_rows))
         self.update_buttons = []
@@ -949,8 +955,25 @@ class Window(QMainWindow):
         self.job(lambda worker:probe(notify=worker.event.emit,stop=worker.stop),self.system_result)
 
     def system_result(self, value):
-        self.system_output.setPlainText(display_json(value)); self.system_details_toggle.setChecked(True)
-        self.status.setText('Tác vụ đã kết thúc an toàn sau yêu cầu dừng; xem kết quả bên dưới.' if value.get('cancel_requested') else 'Đã hoàn tất. Xem kết quả chi tiết trong tab Hệ thống.')
+        from .details_ui import key_section
+        from .diagnostics import diagnostic_rows
+        raw=None
+        if isinstance(value,dict) and ('stdout' in value or 'stderr' in value):
+            out=value.get('stdout','');err=value.get('stderr','')
+            rows=diagnostic_rows(value.get('tool'),out)
+            info={'Công cụ':value.get('tool'),'Mã thoát':value.get('exit'),
+                  'Yêu cầu dừng':value.get('cancel_requested',False),
+                  'Ghi chú':'Không nhận dạng được trường của công cụ/ngôn ngữ này. Xem Log gốc.' if not rows and out else None}
+            sections=[key_section('Tổng quan',info)]
+            if rows:sections.append(('Số liệu',('Nhóm','Chỉ số','Giá trị'),rows))
+            raw='\n\n'.join(text for text in (out,('Lỗi chuẩn:\n'+err) if err else '') if text)
+        else:
+            sections=[key_section('Kết quả',value)]
+        self.system_output.populate(sections,raw);self.system_details_toggle.setChecked(True)
+        self.status.setText('Tác vụ đã kết thúc an toàn sau yêu cầu dừng; xem kết quả bên dưới.'
+            if isinstance(value,dict) and value.get('cancel_requested') else
+            'Công cụ báo lỗi; xem mã thoát và Log gốc.' if isinstance(value,dict) and value.get('exit') not in (None,0,3010) else
+            'Đã hoàn tất. Xem kết quả chi tiết trong tab Hệ thống.')
 
     def pick_engine(self):
         path, _ = QFileDialog.getOpenFileName(self, "Chọn engine portable", "", "Executable (*.exe)")
@@ -976,7 +999,7 @@ class Window(QMainWindow):
             return self.fail("Chọn engine benchmark")
         self.status.setText("Đang đo; engine chạy lần lượt, không chạy đồng thời")
         repeats = self.bench_repeats.value()
-        self.job(lambda worker: benchmark(name, p, engines, repeats, worker.event.emit, cancel=worker.stop), lambda value: (self.system_output.setPlainText(display_json(value)), self.system_details_toggle.setChecked(True)), scan_job=True)
+        self.job(lambda worker: benchmark(name, p, engines, repeats, worker.event.emit, cancel=worker.stop), self.system_result, scan_job=True)
 
     def make_cleanup(self):
         from .cleanup_ui import CleanupPanel
@@ -1008,26 +1031,34 @@ class Window(QMainWindow):
 
     def cleanup_result(self,value):
         self.status.setText('Đã dừng an toàn; các mục chưa xử lý được giữ nguyên. Xem kết quả dọn.' if value.get('cancelled') else 'Đã hoàn tất xử lý đề xuất. Xem kết quả dọn.')
-        self.refresh_plans();self.show_text(value,'Kết quả dọn')
+        from .details_ui import cleanup_dialog
+        self.refresh_plans();cleanup_dialog(self,value).exec()
 
-    def ai_dialog(self, scan_id=None, plan_id=None):
-        from .report import ai_question, open_provider
-        provider, ok = QInputDialog.getItem(self, "Hỏi AI", "Dịch vụ (mở web; đăng nhập tùy dịch vụ)", list(load()["ai_providers"]), 0, False)
-        if not ok:
-            return
-        text = ai_question(scan_id, plan_id, True)
-        box = QMessageBox(self); box.setWindowTitle("Xem trước câu hỏi"); box.setText("Chỉ metadata đã chọn, đã che username. Sao chép câu hỏi và mở trang AI?"); box.setDetailedText(text); box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-        if box.exec() == QMessageBox.StandardButton.Ok:
-            QApplication.clipboard().setText(text); open_provider(provider)
-            self.status.setText("Đã sao chép câu hỏi; dán vào trang AI. App chưa gửi tự động.")
+    def ai_dialog(self, scan_id=None, plan_id=None, pair=None, selected=None):
+        from .report import ai_data,open_provider,MAX_AI_ROWS
+        from .ai_preview_ui import AiPreview
+        browser=self.browser
+        active=browser.pair_id if pair is not None and getattr(browser,'ids',None)==pair and getattr(browser,'unified',False) else None
+        measure=browser.measurement.currentData()
+        def work(worker):
+            def fetch():
+                handle=browser.comparisons(worker.stop)
+                try:
+                    return handle.summary(active),handle.page(active,kind='file',limit=MAX_AI_ROWS,
+                        sort='abs_delta',measure=measure)['rows']
+                finally:handle.close()
+            return ai_data(scan_id,plan_id,older=pair[0] if pair else None,pair_explicit=pair is not None,
+                           selected=selected,stop=worker.stop,fetch=fetch if active is not None else None,measure=measure)
+        self.job(work,lambda data:AiPreview(self,data,load()['ai_providers'],open_provider).exec())
 
     def ai_snapshot(self):
         if self.newer.currentData():
-            self.ai_dialog(scan_id=self.newer.currentData())
+            pair=self.browser.selected_tree_ids()
+            if pair:self.ai_dialog(scan_id=pair[1],pair=pair)
 
     def ai_plan(self):
         if self.current_plan:
-            self.ai_dialog(plan_id=self.current_plan["id"])
+            self.ai_dialog(plan_id=self.current_plan["id"],selected=tuple(self.cleanup_panel.selected))
 
     def make_schedule(self):
         layout = self.add_tab("Lịch chạy")

@@ -1,5 +1,11 @@
 # Disk Growth Monitor
 
+## 2.4.1 — Bảng chi tiết và duyệt dọn dẹp
+
+- **Chuyển ứng dụng:** nhấp đúp để mở thư mục đã tìm thấy; chuột phải để mở thư mục cha, hiện mục trong Explorer, xem thuộc tính hoặc sao chép đường dẫn nguồn/đích. Menu này không đổi tên hay xóa file.
+- **Chi tiết:** dữ liệu hai mốc, chẩn đoán, kết quả dọn và nhật ký chuyển ứng dụng có bảng riêng. Log gốc của công cụ chẩn đoán vẫn xem được khi cần.
+- **Dọn dẹp:** file/cache và công cụ nằm ở hai danh sách riêng. Xem lại mọi mục đã chọn ở nhiều trang trước khi nhập xác nhận. Biên bản tách dung lượng file đã xóa khỏi mức thay đổi dung lượng trống và cho lọc các mục bị bỏ qua.
+
 ## 2.4.0 — Chuyển ứng dụng sang phân vùng khác
 
 Tab **Chuyển ứng dụng** nhận EXE hoặc shortcut .lnk (không chạy shortcut), gợi ý thư mục dữ liệu riêng và cho dán thêm đường dẫn thủ công. Tích từng thư mục, chọn ổ/thư mục đích có sẵn rồi bấm **Xem trước**. Bản đầu hỗ trợ dữ liệu riêng và app portable được xác nhận trên hai ổ NTFS cố định; bản cài Windows/MSIX chỉ được nhận diện. Không duyệt Chrome/Edge, không tự tắt app hay sửa Task/Service.
@@ -469,7 +475,7 @@ Nếu cập nhật/khôi phục lỗi, đọc `coordinator.log`, `installer.log`
 .\launch-cli.cmd ai question --plan-id PLAN_ID --copy --provider Gemini
 ```
 
-Tạo câu hỏi metadata và che username; GUI xem trước rồi sao chép/mở trang. Chưa hỗ trợ tự gửi hoặc API AI. Website có thể cần đăng nhập. Không tự upload lịch sử hoặc nội dung file.
+Tạo câu hỏi từ metadata, che tên tài khoản Windows và bỏ các đường dẫn Chrome/Edge. Trong GUI, có thể xem bảng mẫu, chọn từng dòng và kiểm tra prompt trước khi sao chép. Mặc định chọn 10 dòng; khi mở từ màn so sánh, prompt ghi đúng cặp mốc đã chọn. **Sao chép và mở AI** chỉ mở trang để bạn tự dán câu hỏi. Website có thể cần đăng nhập; app không tự gửi lịch sử hoặc nội dung file.
 
 ## Kiểm thử
 

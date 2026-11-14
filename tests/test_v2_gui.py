@@ -281,4 +281,5 @@ def test_admin_stop_targets_own_non_scan_worker_and_unlocks(gui,monkeypatch):
 def test_successful_admin_result_has_final_status(gui):
     app,w=gui;w.status.setText('Đã cấp quyền; đang khởi động...')
     w.system_result({'admin':True})
-    assert 'Đã hoàn tất' in w.status.text() and '"admin": true' in w.system_output.toPlainText()
+    result=w.system_output.tabs.widget(0)
+    assert 'Đã hoàn tất' in w.status.text() and result.item(0,0).text()=='admin' and result.item(0,1).text()=='Có'

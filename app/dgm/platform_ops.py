@@ -121,14 +121,37 @@ def system_tool(name):
 
 def open_item(path, action="open"):
     p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(str(p))
     if os.name != "nt":
         raise RuntimeError("Thao tác Explorer chỉ có trên Windows")
+    if action == "parent":
+        if not p.parent.is_dir():
+            raise FileNotFoundError("Không tìm thấy thư mục cha: " + str(p.parent))
+        os.startfile(str(p.parent))
+        from .logging_utils import audit
+        audit("shell", path=str(p), operation=action)
+        return "Đã mở thư mục cha."
+    if not p.exists():
+        if action == "reveal" and p.parent.is_dir():
+            os.startfile(str(p.parent))
+            return "Mục không còn ở đường dẫn đã lưu; đã mở thư mục cha."
+        raise FileNotFoundError("Không tìm thấy hoặc không truy cập được: " + str(p))
+    if action=="open-folder" and not p.is_dir():
+        raise ValueError("Mục không còn là thư mục: " + str(p))
     from .logging_utils import audit
     audit("shell", path=str(p), operation=action)
     if action == "reveal":
-        subprocess.Popen([system_tool("explorer.exe"), "/select,", str(p)])
+        import pythoncom
+        import pywintypes
+        from win32com.shell import shell
+        pythoncom.CoInitialize()
+        try:
+            item, _ = shell.SHParseDisplayName(str(p.absolute()),0)
+            shell.SHOpenFolderAndSelectItems(item,[],0)
+        except (pywintypes.error,OSError,AttributeError):
+            os.startfile(str(p.parent))
+            return "Không bôi chọn được mục; đã mở thư mục cha."
+        finally:
+            pythoncom.CoUninitialize()
     elif action == "properties":
         from win32com.shell import shell, shellcon
         shell.ShellExecuteEx(fMask=shellcon.SEE_MASK_INVOKEIDLIST, lpVerb="properties", lpFile=str(p), nShow=1)
@@ -159,7 +182,7 @@ def dangerous_path(path):
 
 def manual_action(path, action, new_name=None):
     p = Path(path).absolute()
-    if action in ("open", "reveal", "properties"):
+    if action in ("open", "open-folder", "reveal", "parent", "properties"):
         return open_item(p, action)
     if dangerous_path(p):
         raise ValueError("Mục được bảo vệ; hãy dùng quy tắc dọn phù hợp hoặc công cụ Windows.")

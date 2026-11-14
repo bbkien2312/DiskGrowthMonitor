@@ -214,7 +214,10 @@ def select(plan_id, paths,*,compact=False,expected_digest=None):
     finally:s.close()
     try:remove_artifacts(old)
     except OSError:pass  # another reader holds the old disposable index; expiry can remove it later
-    return get_plan(plan_id,compact=compact)
+    # Return the exact catalog written by this selection, not a fresh read
+    # that could already have changed before the caller calculates its digest.
+    if compact:return {**p,'status':'pending','result':None}
+    return get_plan(plan_id)
 
 
 def plan_page(plan_id,**options):
@@ -282,7 +285,7 @@ def apply(plan_id, confirmation, *, allow_uac=True, expected_digest=None, notify
     if needs_admin and not is_admin():
         if not allow_uac:raise PermissionError('Dọn hệ thống cần quyền Admin; không tự xin UAC lặp lại.')
         return request('cleanup-apply',{'plan_id':plan_id,'confirmation':confirmation,'plan_digest':digest(p)},stop=stop,notify=notify)
-    results, deleted_bytes, processed = [], 0, 0
+    results, skipped, deleted_bytes, processed = [], [], 0, 0
     counts={'deleted':0,'skipped':0,'tool':0}
     from .progress import TaskProgress
     progress=TaskProgress('cleanup-apply',notify or (lambda *a:None),[('check','Kiểm tra lại đề xuất đã duyệt',10),('items','Xử lý từng mục đã chọn',95),('summary','Lưu biên bản dọn',100)])
@@ -316,10 +319,12 @@ def apply(plan_id, confirmation, *, allow_uac=True, expected_digest=None, notify
             processed+=1;counts[result['status']]+=1
             if processed%100==0:progress.advance(processed,p.get('entry_count',len(p['entries'])),detail=f"Đã xử lý {processed:,} mục; bỏ qua {counts['skipped']:,}")
             if len(results)<1000:results.append(result)
+            if result['status']=='skipped' and len(skipped)<1000:skipped.append(result)
     after = shutil.disk_usage("C:\\" if os.name == "nt" else "/").free
     if not stop.is_set():
         progress.complete(f"Đã xử lý {processed:,} mục; xóa {counts['deleted']:,}, bỏ qua {counts['skipped']:,}");progress.stage('summary')
-    result = {"items": results, "deleted_bytes": deleted_bytes, "free_before": before, "free_after": after,
+    result = {"items": results, "skipped_items":skipped,"skipped_truncated":counts['skipped']>len(skipped),
+              "deleted_bytes": deleted_bytes, "free_before": before, "free_after": after,
               "free_delta": after - before,'cancelled':stop.is_set(),'not_processed':p.get('entry_count',len(p['entries']))-processed,
               'processed':processed,'counts':counts,'items_truncated':processed>len(results),
               "note": "Free delta có thể gồm tác vụ khác đang chạy đồng thời. Nếu đã hủy: các mục chưa xử lý được giữ nguyên; xem kết quả trước khi tạo đề xuất mới."}

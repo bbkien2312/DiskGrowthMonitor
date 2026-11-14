@@ -116,14 +116,17 @@ def open_index(content):
     finally:con.close()
 
 
-def page(content, *, offset=0, limit=20, sort='size', direction='desc', rule='', search=''):
+def page(content, *, offset=0, limit=20, sort='size', direction='desc', rule='', search='', kind='all'):
     limit=int(limit);offset=int(offset)
     if not 1<=limit<=1000 or offset<0:raise ValueError('Trang đề xuất không hợp lệ')
     column={'path':'path','size':'size','rule':'rule'}.get(sort)
-    if column is None or direction not in ('asc','desc'):raise ValueError('Sắp xếp đề xuất không hợp lệ')
+    if column is None or direction not in ('asc','desc') or kind not in ('all','files','tools'):
+        raise ValueError('Sắp xếp hoặc loại mục đề xuất không hợp lệ')
     where=[];args=[]
     if rule:where.append('rule=?');args.append(rule)
     if search:where.append('instr(lower(path),lower(?))>0');args.append(search)
+    if kind!='all':
+        where.append("json_extract(payload,'$.tool') IS "+('NOT NULL' if kind=='tools' else 'NULL'))
     clause=' WHERE '+' AND '.join(where) if where else ''
     with open_index(content) as con:
         count=con.execute('SELECT COUNT(*) FROM entries'+clause,args).fetchone()[0]
@@ -152,8 +155,10 @@ def prune(store,*,reserve_slot=False):
         status='expired' if row['status']=='pending' else 'failed' if row['status']=='applying' else row['status']
         store.db.execute('UPDATE plans SET content=?,status=? WHERE id=?',(json.dumps(content,ensure_ascii=False),status,row['id']))
         result=json.loads(row['result']) if row['result'] else None
-        if isinstance(result,dict) and len(result.get('items',[]))>20:
-            result['items']=result['items'][:20];result['items_truncated']=True
+        if isinstance(result,dict) and any(len(result.get(key,[]))>20 for key in ('items','skipped_items')):
+            for key,flag in (('items','items_truncated'),('skipped_items','skipped_truncated')):
+                if len(result.get(key,[]))>20:
+                    result[key]=result[key][:20];result[flag]=True
             store.db.execute('UPDATE plans SET result=? WHERE id=?',(json.dumps(result,ensure_ascii=False),row['id']))
     store.db.commit()
     cfg=load();keep=max(1,int(cfg.get('cleanup_max_summaries',200)));days=max(1,int(cfg.get('cleanup_summary_days',30)))

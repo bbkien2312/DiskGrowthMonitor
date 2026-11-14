@@ -1,9 +1,10 @@
 """Review-first cleanup UI. All execution routes use the CLI cleanup API."""
 import json
 import time
-from PySide6.QtCore import Qt,QSignalBlocker,QTimer
-from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLabel,QTabWidget,QSplitter,
-    QTreeWidget,QTreeWidgetItem,QCheckBox,QComboBox,QLineEdit,QTableWidget,QTableWidgetItem,QMessageBox,QInputDialog,QMenu)
+from PySide6.QtCore import QAbstractTableModel,QModelIndex,Qt,QSignalBlocker,QTimer
+from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QTabWidget,QSplitter,
+    QTreeWidget,QTreeWidgetItem,QCheckBox,QComboBox,QLineEdit,QTableWidget,QTableWidgetItem,QInputDialog,QMenu,
+    QToolButton,QDialog,QDialogButtonBox,QTabBar,QTableView)
 from .cleanup import rules,get_plan,plan_page
 from .cleanup_catalog import GROUPS,PROTECTED,REFERENCES
 from .presentation import size,local_time
@@ -11,10 +12,36 @@ from .panel_widgets import text_label,cards,explanation,setup_table
 from .store import Store
 
 
+class SelectedItemsModel(QAbstractTableModel):
+    """Render reviewed paths on demand; do not create a widget item per file."""
+    headers=('Đường dẫn','Nhóm','Dung lượng','Phạm vi / phương pháp')
+
+    def __init__(self,paths,entries,known,parent=None):
+        super().__init__(parent);self.paths=paths;self.entries=entries;self.known=known
+
+    def rowCount(self,parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self.paths)
+
+    def columnCount(self,parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self.headers)
+
+    def headerData(self,section,orientation,role=Qt.ItemDataRole.DisplayRole):
+        if orientation==Qt.Orientation.Horizontal and role==Qt.ItemDataRole.DisplayRole:
+            return self.headers[section]
+        return super().headerData(section,orientation,role)
+
+    def data(self,index,role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or role not in (Qt.ItemDataRole.DisplayRole,Qt.ItemDataRole.ToolTipRole):return None
+        path=self.paths[index.row()];item=self.entries[path];rule=self.known.get(item['rule'],{})
+        return (path,rule.get('title',item['rule']),
+                size(item['size']) if item.get('size') is not None else 'Chưa ước lượng',
+                rule.get('method',item.get('risk','')))[index.column()]
+
+
 class CleanupPanel(QWidget):
     def __init__(self,owner):
         super().__init__();self.owner=owner;self.known=rules();self.current=None;self.selected=set();self.rows=[]
-        self.worker=None;self.offset=0;self.sort='size';self.direction='desc';self.rendering=False
+        self.worker=None;self.offset=0;self.sort='size';self.direction='desc';self.rendering=False;self.selected_entries={}
         layout=QVBoxLayout(self);layout.setContentsMargins(5,4,5,4);layout.setSpacing(6)
         layout.addWidget(text_label('Dọn dẹp có duyệt','pageTitle'))
         layout.addWidget(text_label('Chọn nhóm → Quét tạo đề xuất → Xem điều kiện → Duyệt đúng các mục đã chọn. Tự động chỉ kiểm tra/nhắc duyệt, không tự xóa.','safeBanner'))
@@ -23,15 +50,15 @@ class CleanupPanel(QWidget):
         self.tabs=QTabWidget();layout.addWidget(self.tabs,1)
         preview=QWidget();v=QVBoxLayout(preview);v.setContentsMargins(0,3,0,0)
         splitter=QSplitter();v.addWidget(splitter,1)
-        self.catalog=QTreeWidget();self.catalog.setHeaderLabels(['Nhóm kiểm tra','Điều kiện']);self.catalog.setMinimumWidth(280)
-        self.catalog.setColumnWidth(0,215);self.catalog.setColumnWidth(1,110)
-        self.rule_boxes={}
+        self.catalog=QTreeWidget();self.catalog.setHeaderLabels(['1 · Nhóm kiểm tra','Điều kiện','Kết quả']);self.catalog.setMinimumWidth(340)
+        self.catalog.setColumnWidth(0,182);self.catalog.setColumnWidth(1,102)
+        self.rule_boxes={};self.rule_items={}
         for category in GROUPS:
             parent=QTreeWidgetItem([category,'']);self.catalog.addTopLevelItem(parent);parent.setExpanded(True)
             for key,info in self.known.items():
                 if info.get('group')!=category:continue
                 item=QTreeWidgetItem(['','Toàn bộ' if info.get('tool') in ('nuget','recycle') else f"≥ {info['days']} ngày" if not info.get('tool') else 'Windows'])
-                item.setData(0,Qt.ItemDataRole.UserRole,key);parent.addChild(item)
+                item.setData(0,Qt.ItemDataRole.UserRole,key);parent.addChild(item);self.rule_items[key]=item
                 check=QCheckBox(info['title']);check.setToolTip(info['title']);self.rule_boxes[key]=check;self.catalog.setItemWidget(item,0,check)
                 check.toggled.connect(lambda _,item=item:self.catalog.setCurrentItem(item))
         self.catalog.currentItemChanged.connect(self.describe);splitter.addWidget(self.catalog)
@@ -40,20 +67,34 @@ class CleanupPanel(QWidget):
             item=QTreeWidgetItem([title,'Chỉ xem']);item.setData(0,Qt.ItemDataRole.UserRole,key);manual_group.addChild(item)
         right=QWidget();r=QVBoxLayout(right);r.setContentsMargins(3,0,0,0);r.setSpacing(5)
         self.rule_title=text_label('Chọn một nhóm để xem giải thích','miniTitle');r.addWidget(self.rule_title)
-        self.roots=text_label('Chỉ các đường dẫn allowlist; không dọn project hay profile trình duyệt.','subTitle');r.addWidget(self.roots)
+        self.help_toggle=QToolButton();self.help_toggle.setCheckable(True);self.help_toggle.setText('Giải thích nhóm')
+        r.addWidget(self.help_toggle)
+        from PySide6.QtWidgets import QScrollArea
+        self.rule_details=QScrollArea();self.rule_details.setWidgetResizable(True);self.rule_details.setMaximumHeight(170)
+        rule_body=QWidget();self.rule_details.setWidget(rule_body)
+        rule_layout=QVBoxLayout(rule_body);rule_layout.setContentsMargins(0,0,0,0)
+        self.roots=text_label('Chỉ các đường dẫn allowlist; không dọn project hay profile trình duyệt.','subTitle');rule_layout.addWidget(self.roots)
         grid=QGridLayout();self.explanations={}
         for i,title in enumerate(('Đây là gì?','Có thể dọn khi nào?','Giữ lại / không đụng','Xử lý / tác động')):
             box,label=explanation(title);self.explanations[title]=label;grid.addWidget(box,i//2,i%2)
-        r.addLayout(grid)
-        self.update_done=QCheckBox('Tôi xác nhận NVIDIA update đã hoàn tất, máy ổn và không cần gói cũ');r.addWidget(self.update_done)
-        self.condition_note=text_label('Tuổi tính theo thời gian sửa cuối. File cũ không đồng nghĩa không còn dùng. Cache xóa vĩnh viễn; không lưu bản sao nội dung.','subTitle');r.addWidget(self.condition_note)
+        rule_layout.addLayout(grid);r.addWidget(self.rule_details);self.rule_details.hide()
+        self.help_toggle.toggled.connect(self.rule_details.setVisible)
+        self.update_done=QCheckBox('NVIDIA: cập nhật đã xong, máy ổn và không cần gói cũ');r.addWidget(self.update_done);self.update_done.hide()
+        self.update_done.toggled.connect(self.condition_changed)
+        self.condition_note=text_label('','warningBanner');r.addWidget(self.condition_note);self.condition_note.hide()
         filterrow=QHBoxLayout();self.plan_combo=QComboBox();self.plan_combo.setMinimumWidth(170)
         filterrow.addWidget(self.plan_combo,1);owner.button('Mở đề xuất',self.load,filterrow)
+        self.report_button=owner.button('Xem kết quả',self.show_result,filterrow);self.report_button.setEnabled(False)
         self.filter=QComboBox();self.filter.addItem('Mọi nhóm','')
         for key,info in self.known.items():self.filter.addItem(info['title'],key)
         self.search=QLineEdit();self.search.setPlaceholderText('Tìm đường dẫn trong đề xuất…')
         filterrow.addWidget(self.filter);filterrow.addWidget(self.search,1);r.addLayout(filterrow)
         self.filter.currentIndexChanged.connect(self.reset_page);self.search.returnPressed.connect(self.reset_page)
+        self.result_tabs=QTabBar();self.result_tabs.setExpanding(False)
+        self.result_tabs.addTab('2 · File / cache')
+        self.result_tabs.addTab('Công cụ riêng')
+        self.result_tabs.currentChanged.connect(self.reset_page)
+        r.addWidget(self.result_tabs)
         self.table=QTableWidget(0,5);self.table.setHorizontalHeaderLabels(['Chọn','Đường dẫn','Đủ điều kiện','Nhóm','Phương pháp'])
         setup_table(self.table);self.table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         owner.columns(self.table,'cleanup-v140',[52,370,110,155,260]);self.table.itemChanged.connect(self.checked)
@@ -64,7 +105,8 @@ class CleanupPanel(QWidget):
         self.page_size=QComboBox();self.page_size.addItems(['20','50','100','200','500','1000']);pager.addWidget(self.page_size)
         self.page_size.currentIndexChanged.connect(self.reset_page)
         owner.button('Trang trước',lambda:self.move_page(-1),pager);owner.button('Trang sau',lambda:self.move_page(1),pager)
-        owner.button('Chọn trang',lambda:self.set_checks(True),pager);owner.button('Bỏ chọn trang',lambda:self.set_checks(False),pager)
+        self.select_page_button=owner.button('Chọn file trang này',lambda:self.set_checks(True),pager)
+        owner.button('Bỏ chọn trang',lambda:self.set_checks(False),pager)
         r.addLayout(pager);splitter.addWidget(right);splitter.setSizes([320,1050]);self.tabs.addTab(preview,'Kiểm tra & đề xuất')
         protected=QWidget();p=QVBoxLayout(protected)
         p.addWidget(text_label('Lớn, cũ hoặc không đổi không có nghĩa là dư thừa. Các vùng này không dùng rule xóa file tự động.','warningBanner'))
@@ -86,7 +128,7 @@ class CleanupPanel(QWidget):
         self.stop_button.setToolTip('Dừng trước mục tiếp theo. Công cụ Windows/DISM đang chạy cần chờ kết thúc an toàn, không cưỡng bức tắt.')
         owner.button('Hỏi AI / xem trước',owner.ai_plan,buttons)
         owner.button('Dọn metadata hết hạn',self.prune,buttons);buttons.addStretch()
-        self.apply_button=owner.button('Duyệt các mục đã chọn',self.apply,buttons);self.apply_button.setProperty('actionRole','danger');self.apply_button.setEnabled(False)
+        self.apply_button=owner.button('3 · Duyệt các mục đã chọn',self.apply,buttons);self.apply_button.setProperty('actionRole','danger');self.apply_button.setEnabled(False)
         owner.cleanup_action_buttons.extend([self.scan_button,self.apply_button]);layout.addLayout(buttons)
         self.timer=QTimer(self);self.timer.timeout.connect(self.update_selection);self.timer.start(1000)
         first=self.catalog.topLevelItem(0).child(0);self.catalog.setCurrentItem(first)
@@ -99,6 +141,30 @@ class CleanupPanel(QWidget):
         rule=self.known[key];self.rule_title.setText(rule['title']);self.roots.setText('\n'.join(rule['roots']))
         for title,text in zip(self.explanations,(rule['what'],rule['when'],rule['keep'],rule['method']+'\n'+rule['risk'])):
             self.explanations[title].setText(text)
+        self.condition_changed()
+
+    def condition_changed(self,*_):
+        box=self.rule_boxes.get('nvidia-update')
+        item=self.catalog.currentItem()
+        is_nvidia=bool(box and (box.isChecked() or (item and item.data(0,Qt.ItemDataRole.UserRole)=='nvidia-update')))
+        self.update_done.setVisible(is_nvidia)
+        show=is_nvidia and not self.update_done.isChecked()
+        self.condition_note.setText('NVIDIA chưa được kiểm tra nếu chưa xác nhận cập nhật đã hoàn tất.')
+        self.condition_note.setVisible(show)
+
+    def rule_statuses(self,content):
+        blocked={item['rule']:item['reason'] for item in content.get('blocked',[])}
+        for key,item in self.rule_items.items():
+            group=content.get('groups',{}).get(key,{})
+            reason=blocked.get(key,'')
+            if reason:status='Bị chặn'
+            elif key not in content.get('rules',[]):status='—'
+            elif group.get('tools'):status='Công cụ'
+            elif group.get('count'):status=f"{group['count']:,} mục"
+            elif content.get('error_count',0):status='0 · Có lỗi đọc'
+            else:status='Không có'
+            item.setText(2,status);item.setToolTip(2,reason or status)
+        return blocked
 
     def run(self,fn,done):
         if self.worker is not None:return
@@ -131,25 +197,39 @@ class CleanupPanel(QWidget):
         if key:self.run(lambda _:get_plan(key,compact=True),self.loaded)
 
     def loaded(self,content):
-        self.current=content;self.owner.current_plan=content;self.selected.clear();self.selected_sizes={};self.offset=0
+        self.current=content;self.owner.current_plan=content;self.selected.clear();self.selected_sizes={};self.selected_entries.clear();self.offset=0
         self.refresh_plans();self.plan_combo.setCurrentIndex(max(0,self.plan_combo.findData(content['id'])))
         tools=content.get('tool_count',0);count=content.get('entry_count',len(content['entries']))
         estimate='Chưa ước lượng' if tools and tools==count else size(content['bytes'])+(' + ?' if tools else '')
         self.cards[0].set_value(estimate,'Chỉ file đủ tuổi/điều kiện; tool chưa biết byte không gán 0 B')
         self.cards[1].set_value(f"{content.get('entry_count',len(content['entries'])):,}")
         self.cards[2].set_value(str(content.get('tool_count',0)),'Dung lượng công cụ chưa được ước lượng')
-        self.info.setText(f"Chưa xóa gì • {len(content.get('blocked',[]))} nhóm bị chặn • {content.get('error_count',len(content.get('errors',[]))):,} lỗi đọc • {content['note']}")
+        blocked=self.rule_statuses(content)
+        note=' · '.join(f"{self.known.get(key,{}).get('title',key)}: {why}" for key,why in blocked.items())
+        self.info.setText(f"Đề xuất: {count:,} mục · {len(blocked)} nhóm bị chặn · {content.get('error_count',len(content.get('errors',[]))):,} lỗi đọc."
+                          + (' '+note if note else ' Chỉ xử lý mục bạn chọn.'))
+        with QSignalBlocker(self.result_tabs),QSignalBlocker(self.filter):
+            self.filter.setCurrentIndex(0);self.search.clear()
+            self.result_tabs.setTabText(0,f'2 · File / cache ({count-tools:,})')
+            self.result_tabs.setTabText(1,f'Công cụ riêng ({tools:,})')
+            self.result_tabs.setCurrentIndex(int(bool(tools and tools==count)))
         self.reload_page()
 
     def reload_page(self):
         if not self.current:return
         if not self.current.get('entry_archive'):
-            self.table.setRowCount(0);self.rows=[];self.page_info.setText('Đề xuất cũ/hết hạn; hãy quét tạo đề xuất mới.');return
-        result=plan_page(self.current['id'],offset=self.offset,limit=int(self.page_size.currentText()),sort=self.sort,direction=self.direction,rule=self.filter.currentData(),search=self.search.text().strip())
+            self.table.setRowCount(0);self.rows=[];self.total=0
+            self.update_selection()
+            self.page_info.setText('Đề xuất cũ/hết hạn; hãy quét tạo đề xuất mới.')
+            return
+        kind='tools' if self.result_tabs.currentIndex()==1 else 'files'
+        self.select_page_button.setEnabled(kind=='files')
+        result=plan_page(self.current['id'],offset=self.offset,limit=int(self.page_size.currentText()),sort=self.sort,direction=self.direction,rule=self.filter.currentData(),search=self.search.text().strip(),kind=kind)
         self.rows=result['entries'];self.total=result['total'];self.rendering=True
         self.table.setRowCount(len(self.rows))
         for i,entry in enumerate(self.rows):
-            check=QTableWidgetItem();check.setFlags(Qt.ItemFlag.ItemIsUserCheckable|Qt.ItemFlag.ItemIsEnabled)
+            valid=self.current.get('status')=='pending' and self.current['expires']>time.time()
+            check=QTableWidgetItem();check.setFlags(Qt.ItemFlag.ItemIsEnabled|(Qt.ItemFlag.ItemIsUserCheckable if valid else Qt.ItemFlag.NoItemFlags))
             check.setCheckState(Qt.CheckState.Checked if entry['path'] in self.selected else Qt.CheckState.Unchecked);self.table.setItem(i,0,check)
             rule=self.known.get(entry['rule'],{})
             for j,value in enumerate((entry['path'],size(entry.get('size')) if entry.get('size') is not None else 'Chưa ước lượng',rule.get('title',entry['rule']),rule.get('method',entry.get('risk',''))),1):
@@ -167,13 +247,18 @@ class CleanupPanel(QWidget):
             self.direction='asc' if self.sort==key and self.direction=='desc' else 'desc';self.sort=key
             self.table.horizontalHeader().setSortIndicator(column,Qt.SortOrder.DescendingOrder if self.direction=='desc' else Qt.SortOrder.AscendingOrder);self.reset_page()
     def checked(self,item):
-        if self.rendering or item.column()!=0:return
+        if self.rendering or item.column()!=0 or not self.current or self.current.get('status')!='pending':return
         entry=self.rows[item.row()];path=entry['path']
-        if item.checkState()==Qt.CheckState.Checked:self.selected.add(path);self.selected_sizes[path]=entry.get('size')
-        else:self.selected.discard(path);self.selected_sizes.pop(path,None)
+        if item.checkState()==Qt.CheckState.Checked:
+            self.selected.add(path);self.selected_sizes[path]=entry.get('size');self.selected_entries[path]=entry
+        else:
+            self.selected.discard(path);self.selected_sizes.pop(path,None);self.selected_entries.pop(path,None)
         self.update_selection()
     def set_checks(self,checked):
-        for i in range(self.table.rowCount()):self.table.item(i,0).setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+        if not self.current or self.current.get('status')!='pending' or self.current['expires']<=time.time():return
+        for i,row in enumerate(self.rows):
+            if not checked or not row.get('tool'):
+                self.table.item(i,0).setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
     def update_selection(self):
         if not self.current:return
         remaining=max(0,int(self.current['expires']-time.time()));valid=self.current.get('status')=='pending' and remaining>0
@@ -181,24 +266,50 @@ class CleanupPanel(QWidget):
         unknown=sum(value is None for value in getattr(self,'selected_sizes',{}).values())
         estimate='Chưa ước lượng' if unknown and unknown==len(self.selected) else size(chosen)+(' + ?' if unknown else '')
         self.cards[3].set_value(estimate,f'{len(self.selected):,} mục • {unknown} công cụ chưa ước lượng')
-        self.page_info.setText(f"{self.offset+1 if self.rows else 0}–{self.offset+len(self.rows)} / {getattr(self,'total',0):,} mục • "+(f'Còn {remaining//60}p {remaining%60}s' if valid else 'Đã xử lý / hết hạn'))
+        label=f"{self.offset+1}–{self.offset+len(self.rows)} / {getattr(self,'total',0):,} mục" if self.rows else 'Không có mục trong bộ lọc'
+        self.page_info.setText(label+' • '+(f'Còn {remaining//60}p {remaining%60}s' if valid else 'Đã xử lý / hết hạn'))
         self.apply_button.setEnabled(valid and bool(self.selected) and self.worker is None and not self.owner.admin_busy)
+        self.select_page_button.setEnabled(valid and self.result_tabs.currentIndex()==0 and bool(self.rows))
+        self.report_button.setEnabled(self.worker is None and self.current.get('status') in ('applied','cancelled')
+                                      and isinstance(self.current.get('result'),dict))
+
+    def show_result(self):
+        if self.report_button.isEnabled():
+            from .details_ui import cleanup_dialog
+            cleanup_dialog(self,self.current['result']).exec()
     def apply(self):
-        if not self.current or not self.selected:return
-        p=self.current;paths=list(self.selected)
+        if self.worker or not self.current or not self.selected or not self.apply_button.isEnabled():return
+        p=self.current;paths=sorted(self.selected)
         from .elevation import digest
         reviewed_digest=digest(p)
+        if not self.review_selected(paths):return
         confirmation,ok=QInputDialog.getText(self,'Duyệt xử lý đề xuất',f"{len(paths):,} mục đã chọn, gồm cả mục ở trang khác.\nXóa cache là vĩnh viễn; tool có thể xử lý TOÀN BỘ cache/Thùng rác hoặc bảo trì Windows theo phương pháp đã ghi.\nKhông có bản sao phục hồi nội dung. Nhập chính xác: {p['confirmation']}")
         if not ok:return
         if confirmation!=p['confirmation']:self.owner.status.setText('Sai chuỗi xác nhận; chưa xử lý mục nào.');return
         from .cleanup import select,apply
         def work(worker):
-            select(p['id'],paths,compact=True,expected_digest=reviewed_digest)
-            return apply(p['id'],confirmation,stop=worker.stop,notify=worker.event.emit)
+            narrowed=select(p['id'],paths,compact=True,expected_digest=reviewed_digest)
+            return apply(p['id'],confirmation,expected_digest=digest(narrowed),stop=worker.stop,notify=worker.event.emit)
         def done(result):
-            self.current=get_plan(p['id'],compact=True);self.owner.current_plan=self.current;self.selected.clear();self.selected_sizes.clear()
-            self.refresh_plans();self.update_selection();self.owner.cleanup_result(result)
+            self.current=get_plan(p['id'],compact=True);self.owner.current_plan=self.current;self.selected.clear();self.selected_sizes.clear();self.selected_entries.clear()
+            self.refresh_plans();self.reload_page();self.owner.cleanup_result(result)
         self.run(work,done)
+
+    def review_selected(self,paths):
+        dialog=QDialog(self);dialog.resize(930,495);dialog.setWindowTitle('Duyệt đúng các mục đã chọn')
+        layout=QVBoxLayout(dialog)
+        layout.addWidget(text_label(f'{len(paths):,} mục đã chọn, gồm cả mục ở trang khác. '
+            'Công cụ được tick riêng có thể xử lý toàn bộ cache hoặc Thùng rác.','warningBanner'))
+        items=QTableView(dialog);setup_table(items)
+        model=SelectedItemsModel(paths,self.selected_entries,self.known,items);items.setModel(model)
+        items.setColumnWidth(0,390)
+        layout.addWidget(items,1)
+        buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons.rejected.connect(dialog.reject)
+        proceed=buttons.addButton('Tiếp tục xác nhận',QDialogButtonBox.ButtonRole.AcceptRole)
+        proceed.clicked.connect(dialog.accept);buttons.button(QDialogButtonBox.StandardButton.Cancel).setDefault(True)
+        layout.addWidget(buttons)
+        return dialog.exec()==QDialog.DialogCode.Accepted
     def prune(self):
         if self.worker:return
         from .cleanup_storage import prune

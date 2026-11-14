@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from PySide6.QtCore import Qt,QEvent,QPoint
 from PySide6.QtGui import QHelpEvent
-from PySide6.QtWidgets import QApplication,QLabel,QPushButton,QToolTip,QDialog,QPlainTextEdit
+from PySide6.QtWidgets import QApplication,QLabel,QPushButton,QToolTip,QDialog,QTableWidget
 from dgm.store import Store
 from dgm.conditional_tooltips import clipped_text
 from dgm.browser_ui import HEADERS,SORT_COLUMNS
@@ -86,10 +86,14 @@ def test_manual_column_width_survives_reload_and_snapshot_details_are_read_only(
     b.table.setColumnWidth(1,241);b.reload();pump(app,lambda:not w.workers)
     assert b.table.columnWidth(1)==241
     seen=[]
-    def show(dialog):seen.append(dialog.findChild(QPlainTextEdit).toPlainText());return 0
+    def show(dialog):
+        titles=[label.text() for label in dialog.findChildren(QLabel)]
+        cells=[table.item(i,j).text() for table in dialog.findChildren(QTableWidget)
+               for i in range(table.rowCount()) for j in range(table.columnCount())]
+        seen.append('\n'.join(titles+cells));return 0
     monkeypatch.setattr(QDialog,'exec',show)
     b.sections.setCurrentIndex(1);pump(app,lambda:not w.workers)
     row=next(b.model.row_at(i) for i in range(b.model.loaded) if b.model.row_at(i)['change']=='not_scanned')
     b.snapshot_details(row)
-    assert 'Lần quét 01' in seen[0] and 'Lần quét 02' in seen[0] and 'Chrome/Edge' in seen[0] and '90000000' in seen[0]
+    assert 'Lần quét 01' in seen[0] and 'Lần quét 02' in seen[0] and 'Chrome/Edge' in seen[0] and '90,000,000 byte' in seen[0]
     assert w.conditional_tooltips is app._dgm_tooltip_filter

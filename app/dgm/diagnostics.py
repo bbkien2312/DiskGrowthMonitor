@@ -2,6 +2,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -60,5 +61,34 @@ def system_check(tool, *, allow_uac=True, notify=None,stop=None):
         return request('system-check',{'tool':tool},notify=notify,stop=stop)
     arg = args[tool]
     result = run([system_tool(arg[0]), *arg[1:]], timeout=7200,maintenance=tool=='winsxs',stop=stop)
-    return {"exit": result.returncode, "stdout": result.stdout, "stderr": result.stderr,'cancel_requested':getattr(result,'interrupted',False)}
+    return {"tool":tool,"exit": result.returncode, "stdout": result.stdout, "stderr": result.stderr,'cancel_requested':getattr(result,'interrupted',False)}
+
+
+def diagnostic_rows(tool, text):
+    """Extract only recognized fields. Preserve original output separately."""
+    keys = {
+        'winsxs': {'windows explorer reported size of component store':'Dung lượng Explorer báo',
+                   'actual size of component store':'Dung lượng thực',
+                   'shared with windows':'Dùng chung với Windows',
+                   'backups and disabled features':'Sao lưu / tính năng tắt',
+                   'cache and temporary data':'Cache và dữ liệu tạm',
+                   'date of last cleanup':'Lần dọn cuối','number of reclaimable packages':'Gói có thể thu hồi',
+                   'component store cleanup recommended':'Windows khuyên dọn'},
+        'drivers': {'published name':'Tên INF','original name':'INF gốc','provider name':'Nhà cung cấp',
+                    'class name':'Nhóm thiết bị','driver version':'Phiên bản','signer name':'Chữ ký',
+                    'attributes':'Thuộc tính'},
+        'shadowstorage': {'for volume':'Phân vùng','shadow copy storage volume':'Ổ chứa shadow',
+                          'used shadow copy storage space':'Đã dùng','allocated shadow copy storage space':'Đã cấp',
+                          'maximum shadow copy storage space':'Tối đa'},
+    }.get(tool,{})
+    rows = []
+    group = 0
+    for line in text.splitlines():
+        match=re.match(r'^\s*([^:]+)\s*:\s*(.+?)\s*$',line)
+        if not match:continue
+        label,value=match.groups();name=keys.get(label.strip().casefold())
+        if not name:continue
+        if name in ('Tên INF','Phân vùng'):group+=1
+        rows.append((str(group) if group else '—',name,value))
+    return rows
 

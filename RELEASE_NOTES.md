@@ -1,3 +1,10 @@
+# Disk Growth Monitor 2.4.1 — Parquet + DuckDB — 14/11/2026
+
+- Sửa mở vị trí trong Explorer; tab Chuyển ứng dụng hỗ trợ nhấp đúp và menu chuột phải.
+- Dữ liệu hai mốc, chẩn đoán, kết quả dọn và nhật ký chuyển ứng dụng hiển thị dạng bảng.
+- Hỏi AI dùng đúng cặp mốc, xem trước và chọn dòng để tạo prompt; không tự gửi.
+- Tách file/cache khỏi công cụ dọn; duyệt danh sách đã chọn trên nhiều trang và xem lý do bỏ qua sau khi chạy.
+
 # Disk Growth Monitor 2.4.0 — Parquet + DuckDB — 13/11/2026
 
 - Tab Chuyển ứng dụng nhận EXE/shortcut và đường dẫn thư mục nhập tay; xem trước các cặp nguồn/đích và dung lượng trước khi duyệt.

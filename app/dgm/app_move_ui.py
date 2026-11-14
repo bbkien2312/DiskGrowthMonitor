@@ -32,6 +32,9 @@ class AppMovePanel(QWidget):
         self.table = QTableWidget(0,4)
         self.table.setHorizontalHeaderLabels(['Thư mục','Loại','Dung lượng','Căn cứ / lưu ý'])
         setup_table(self.table)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.path_menu)
+        self.table.doubleClicked.connect(self.open_folder)
         owner.columns(self.table,'app-move-v1',[400,123,105,425])
         layout.addWidget(self.table,1)
         row = QHBoxLayout()
@@ -59,6 +62,22 @@ class AppMovePanel(QWidget):
         self.destination.textChanged.connect(self.invalidate)
         self.exe.textChanged.connect(self.app_changed)
         self.refresh_history()
+
+    def open_folder(self,index):
+        if not self.worker and index.isValid() and 0<=index.row()<len(self.rows):
+            path = self.rows[index.row()]['path']
+            # Never launch an EXE from this discovery table, even if the path changed.
+            if Path(path).is_dir():
+                self.owner.file_action(path,'open-folder')
+            else:
+                self.note.setText('Thư mục không còn truy cập được. Có thể mở thư mục cha từ menu chuột phải.')
+
+    def path_menu(self,point):
+        index=self.table.indexAt(point)
+        if self.worker or not index.isValid() or not 0<=index.row()<len(self.rows):return
+        path=self.rows[index.row()]['path']
+        destination=next((r['target'] for r in (self.preview or {}).get('entries',[]) if r['source']==path),None)
+        self.owner.path_menu(path,self.table.viewport().mapToGlobal(point),browse_only=True,destination=destination)
 
     def dragEnterEvent(self,event):
         urls = event.mimeData().urls()
@@ -260,7 +279,8 @@ class AppMovePanel(QWidget):
             return
         self.refresh_history()
         if record := self.history.get(self.records.currentData()):
-            self.owner.show_text(record,'Nhật ký chuyển ứng dụng')
+            from .details_ui import move_dialog
+            move_dialog(self,record).exec()
 
     def undo(self):
         if self.worker or not (key := self.records.currentData()):

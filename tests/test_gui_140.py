@@ -219,6 +219,7 @@ def test_cleanup_gui_loads_twenty_unchecked_and_keeps_selection_between_pages(gu
 def test_cleanup_gui_wrong_confirmation_does_not_narrow_or_delete(gui,isolated,monkeypatch):
     app,w=gui;root=cache_fixture(isolated,monkeypatch,2);p=cleanup.plan(['test-cache'],compact=True)
     panel=w.cleanup_panel;panel.loaded(p);panel.table.item(0,0).setCheckState(Qt.CheckState.Checked)
+    monkeypatch.setattr(panel,'review_selected',lambda paths:True)
     monkeypatch.setattr(QInputDialog,'getText',lambda *a:('wrong',True));panel.apply()
     assert cleanup.get_plan(p['id'],compact=True)['entry_count']==2 and len(list(root.iterdir()))==2
 
@@ -229,6 +230,8 @@ def test_tool_only_plan_and_selection_are_unknown_not_zero_bytes(gui,isolated,mo
     p=cleanup.plan(['nuget-cache'],compact=True);panel=w.cleanup_panel;panel.loaded(p)
     assert panel.cards[0].value.text()=='Chưa ước lượng'
     assert panel.table.item(0,2).text()=='Chưa ước lượng'
+    assert panel.result_tabs.currentIndex()==1 and not panel.select_page_button.isEnabled()
+    panel.set_checks(True);assert not panel.selected
     panel.table.item(0,0).setCheckState(Qt.CheckState.Checked)
     assert panel.cards[3].value.text()=='Chưa ước lượng'
 

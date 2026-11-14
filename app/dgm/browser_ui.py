@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal, QEvent
 from PySide6.QtGui import QColor, QFont, QPen, QShortcut, QKeySequence
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit, QPushButton, QCheckBox, QSplitter, QTreeWidget, QTreeWidgetItem, QTableView, QStyledItemDelegate, QTabBar, QStackedWidget, QStyle, QDialog, QPlainTextEdit, QDialogButtonBox
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit, QPushButton, QCheckBox, QSplitter, QTreeWidget, QTreeWidgetItem, QTableView, QStyledItemDelegate, QTabBar, QStackedWidget, QStyle
 from .store import Store
 from .config import comparison_path_key
 from .comparison import Comparisons
@@ -894,22 +894,40 @@ class DiskBrowser(QWidget):
         self.owner.file_action(row['path'],action)
 
     def snapshot_details(self,row):
-        dialog=QDialog(self.owner);dialog.setWindowTitle('Dữ liệu hai mốc — không đọc file hiện tại');dialog.resize(720,460)
-        layout=QVBoxLayout(dialog);text=QPlainTextEdit();text.setReadOnly(True)
+        from .details_ui import ReportDialog,key_section
+        from .disk_measurements import exact
         from .snapshot_scope import REASONS
-        issue_text=lambda side:' • '.join(REASONS.get(tag,tag) for tag in set((row.get(side+'_issue') or '').split('|')) if tag) or 'Không ghi nhận vấn đề'
+        issue_text=lambda side:' • '.join(REASONS.get(tag,tag) for tag in sorted(set((row.get(side+'_issue') or '').split('|'))) if tag) or 'Không ghi nhận vấn đề'
         summary=getattr(self,'current_summary',None) or {};older=summary.get('older');newer=summary.get('newer')
-        facts={'Trạng thái':row_status(row),'Đường dẫn':row['path'],
-               'Lần quét Cũ':scan_name(older) if older else 'Mốc ban đầu','Lần quét Mới':scan_name(newer) if newer else 'Theo cặp đang chọn',
-               'Số đo Cũ':snapshot_cell(row,'old'),'Số đo Mới':snapshot_cell(row,'new'),
-               'Cũ (byte gốc)':row.get('before'),'Mới (byte gốc)':row.get('after'),'Chênh lệch xác định (byte)':row.get('delta'),
-               'Cấp phát cũ (byte)':row.get('allocated_before'),'Cấp phát mới (byte)':row.get('allocated_after'),
-               'Vấn đề mốc cũ':issue_text('old'),'Vấn đề mốc mới':issue_text('new'),
-               'Giải thích':row.get('reason_text',''),'Đường dẫn mốc kia':row.get('other_path'),
-               'Chung Cũ/Mới (byte)': [row.get('common_before'),row.get('common_after')],
-               'Riêng Cũ/Mới (byte)': [row.get('private_before'),row.get('private_after')]}
-        text.setPlainText(json.dumps(facts,ensure_ascii=False,indent=2));layout.addWidget(text)
-        buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Close);buttons.rejected.connect(dialog.reject);layout.addWidget(buttons);dialog.exec()
+        pair=row.get('pair_id')
+        if isinstance(pair,tuple) and len(pair)==2 and pair!=((older or {}).get('id'),(newer or {}).get('id')):
+            # The tree may be showing the latest pair independently of detail.
+            store=self.store(readonly=True)
+            try:older=store.scan(pair[0]) if pair[0] else None;newer=store.scan(pair[1])
+            finally:store.close()
+        def mark(value,side,*,disk=False):
+            if value is not None:return size(value)
+            symbol=gui_snapshot_cell(row,side)
+            if symbol in ('×','∅','?','—'):return symbol
+            return 'Chưa rõ' if disk else symbol
+        show_delta=getattr(self,'delta_text',change_text)
+        pairs=[('Kích thước file',row.get('before'),row.get('after'),row.get('delta')),
+               ('Chiếm trên đĩa',row.get('allocated_before'),row.get('allocated_after'),row.get('allocated_delta'))]
+        data=[(label,mark(a,'old',disk=i==1),mark(b,'new',disk=i==1),show_delta(d))
+              for i,(label,a,b,d) in enumerate(pairs)]
+        data.append(('Phạm vi / xác minh',issue_text('old'),issue_text('new'),'—'))
+        data.extend((label+' (byte gốc)',exact(a) if a is not None else '—',
+                     exact(b) if b is not None else '—',exact(d) if d is not None else '—') for label,a,b,d in pairs)
+        for label,key in (('Chung · kích thước','common'),('Riêng · kích thước','private')):
+            before,after=(row.get(f'{key}_{side}') for side in ('before','after'))
+            if before is not None or after is not None:
+                data.append((label,size(before),size(after),'—'))
+        a=scan_name(older) if older else 'Mốc ban đầu';b=scan_name(newer) if newer else 'Mốc mới'
+        ReportDialog(self.owner,'Dữ liệu hai mốc',[
+            ('Số đo',('Chỉ số','Cũ','Mới','Chênh lệch'),data),
+            key_section('Thông tin',{'Đường dẫn':row['path'],'Trạng thái':row_status(row),
+                'Giải thích':row.get('reason_text'),'Đường dẫn ở mốc kia':row.get('other_path')})],
+            description=a+' → '+b+'\n'+row['path']+'\nChỉ dùng dữ liệu đã lưu; —/×/∅/? không phải 0 byte.').exec()
 
     def open_row(self,index):
         if not index.isValid():return
